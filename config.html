@@ -760,20 +760,20 @@ Always use absolute paths: /home/jhin/Documentos/..., /home/jhin/NEXO_DASHBOARD_
 PROJECT CONTEXT
 ════════════════════════════════════════════════════════════════════════════
 
-${agentsMd ? agentsMd + '\\n\\n' : ''}
+\${agentsMd ? agentsMd + '\\n\\n' : ''}
 
 SKILLS LOADED:
-${skillIndex || '(none loaded)'}
+\${skillIndex || '(none loaded)'}
 
-${memoryContext ? 'MEMORIES:\\n' + memoryContext + '\\n' : ''}
+\${memoryContext ? 'MEMORIES:\\n' + memoryContext + '\\n' : ''}
 
-${personaContent ? 'ACTIVE PERSONA:\\n' + personaContent + '\\n' : ''}
+\${personaContent ? 'ACTIVE PERSONA:\\n' + personaContent + '\\n' : ''}
 
 AVAILABLE PERSONAS:
-${personaRegistry || '(none)'}
+\${personaRegistry || '(none)'}
 
 AVAILABLE SKILLS:
-${skillRegistry || '(none)'}`;
+\${skillRegistry || '(none)'}`;
 
     // ============================================================
     // STATE
