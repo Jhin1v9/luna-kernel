@@ -43,10 +43,8 @@
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
     .risk-shake { animation: shake 0.5s ease-in-out; }
     @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
-    .syntax-keyword { color: #ff6b6b; }
-    .syntax-string { color: #ffd700; }
-    .syntax-comment { color: #6b7280; }
-    .syntax-function { color: #60a5fa; }
+    .btn-loading { opacity: 0.7; pointer-events: none; }
+    .btn-loading::after { content: '...'; }
   </style>
 </head>
 <body class="bg-luna-900 text-luna-100 min-h-screen">
@@ -63,8 +61,8 @@
       </div>
       <div class="flex items-center gap-3">
         <span id="statusIndicator" class="flex items-center gap-2 text-xs px-3 py-1.5 rounded-full bg-luna-800 border border-luna-600">
-          <span class="w-2 h-2 rounded-full bg-gray-500 pulse-dot" id="statusDot"></span>
-          <span id="statusText">Não testado</span>
+          <span class="w-2 h-2 rounded-full bg-yellow-500 pulse-dot" id="statusDot"></span>
+          <span id="statusText">Conectando...</span>
         </span>
         <button onclick="exportEnv()" class="text-xs bg-luna-600 hover:bg-luna-500 text-white px-3 py-1.5 rounded-lg transition">
           📥 Exportar .env
@@ -91,8 +89,26 @@
 
   <main class="max-w-6xl mx-auto px-4 py-6">
 
+    <!-- Loading state -->
+    <div id="loadingPanel" class="flex items-center justify-center py-20">
+      <div class="text-center">
+        <div class="w-10 h-10 border-2 border-luna-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+        <p class="text-sm text-gray-400">Carregando configurações do servidor...</p>
+      </div>
+    </div>
+
+    <!-- Error state -->
+    <div id="errorPanel" class="hidden bg-red-900/20 border border-red-700/50 rounded-xl p-6 text-center">
+      <p class="text-2xl mb-2">❌</p>
+      <p class="text-red-300 font-semibold mb-1">Erro ao conectar com o servidor</p>
+      <p class="text-sm text-gray-400" id="errorMsg">Verifique se o config-server.cjs está rodando.</p>
+      <button onclick="loadConfig()" class="mt-3 text-xs bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition">
+        🔄 Tentar novamente
+      </button>
+    </div>
+
     <!-- TAB: SETUP -->
-    <section id="panel-setup" class="fade-in space-y-6">
+    <section id="panel-setup" class="hidden fade-in space-y-6">
       <!-- Bot Telegram -->
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <div class="flex items-center justify-between mb-4">
@@ -104,9 +120,12 @@
         <div class="space-y-4">
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">TELEGRAM_BOT_TOKEN <span class="text-red-400">*</span></label>
-            <input type="password" id="TELEGRAM_BOT_TOKEN" placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz" 
-              class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+            <div class="relative">
+              <input type="password" id="TELEGRAM_BOT_TOKEN" placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz" 
+                class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition pr-10"
+                oninput="markDirty()">
+              <button onclick="toggleVisibility('TELEGRAM_BOT_TOKEN')" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs">👁</button>
+            </div>
             <p class="text-xs text-gray-500 mt-1">Pegue em <a href="https://t.me/BotFather" target="_blank" class="text-luna-400 hover:underline">@BotFather</a> → /newbot → copie o token</p>
           </div>
           <div class="flex items-center gap-3 p-3 bg-luna-900/50 rounded-lg border border-luna-700/50">
@@ -129,9 +148,12 @@
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1.5">INTERNAL_API_TOKEN <span class="text-red-400">*</span></label>
-          <input type="password" id="INTERNAL_API_TOKEN" placeholder="seu_token_aqui" 
-            class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-            oninput="saveField(this)">
+          <div class="relative">
+            <input type="password" id="INTERNAL_API_TOKEN" placeholder="seu_token_aqui" 
+              class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition pr-10"
+              oninput="markDirty()">
+            <button onclick="toggleVisibility('INTERNAL_API_TOKEN')" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs">👁</button>
+          </div>
           <p class="text-xs text-gray-500 mt-1">Token da API interna. Usado para criar tarefas, leads e consultar finanças no dashboard.</p>
         </div>
       </div>
@@ -147,39 +169,39 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">KIMI_TIMEOUT (ms)</label>
-            <input type="number" id="KIMI_TIMEOUT" placeholder="120000" value="120000"
+            <input type="number" id="KIMI_TIMEOUT" placeholder="120000"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">KIMI_MAX_PAGES</label>
-            <input type="number" id="KIMI_MAX_PAGES" placeholder="5" value="5"
+            <input type="number" id="KIMI_MAX_PAGES" placeholder="5"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">KIMI_IDLE_TIMEOUT (ms)</label>
-            <input type="number" id="KIMI_IDLE_TIMEOUT" placeholder="600000" value="600000"
+            <input type="number" id="KIMI_IDLE_TIMEOUT" placeholder="600000"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">KIMI_COOLDOWN_MS</label>
-            <input type="number" id="KIMI_COOLDOWN_MS" placeholder="5000" value="5000"
+            <input type="number" id="KIMI_COOLDOWN_MS" placeholder="5000"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">KIMI_MAX_TYPE_LENGTH</label>
-            <input type="number" id="KIMI_MAX_TYPE_LENGTH" placeholder="500" value="500"
+            <input type="number" id="KIMI_MAX_TYPE_LENGTH" placeholder="500"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">KIMI_LOG_MAX_MB</label>
-            <input type="number" id="KIMI_LOG_MAX_MB" placeholder="10" value="10"
+            <input type="number" id="KIMI_LOG_MAX_MB" placeholder="10"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
         </div>
       </div>
@@ -195,38 +217,46 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">LUNA_COMPACT_THRESHOLD</label>
-            <input type="number" id="LUNA_COMPACT_THRESHOLD" placeholder="24" value="24"
+            <input type="number" id="LUNA_COMPACT_THRESHOLD" placeholder="24"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
             <p class="text-xs text-gray-500 mt-1">Mensagens antes de compactar contexto</p>
           </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1.5">LUNA_COMPACT_TOKEN_THRESHOLD</label>
-            <input type="number" id="LUNA_COMPACT_TOKEN_THRESHOLD" placeholder="120000" value="120000"
+            <input type="number" id="LUNA_COMPACT_TOKEN_THRESHOLD" placeholder="120000"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
           <div class="md:col-span-2">
             <label class="block text-sm text-gray-400 mb-1.5">LUNA_CHROME_PATH</label>
             <input type="text" id="LUNA_CHROME_PATH" placeholder="/usr/bin/google-chrome (deixe em branco para auto-detectar)"
               class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-2.5 text-sm font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition"
-              oninput="saveField(this)">
+              oninput="markDirty()">
           </div>
           <div class="md:col-span-2 flex items-center gap-3">
             <input type="checkbox" id="LUNA_DEBUG" class="w-4 h-4 rounded border-luna-600 bg-luna-900 text-luna-500 focus:ring-luna-500"
-              onchange="saveCheckbox(this)">
+              onchange="markDirty()">
             <label for="LUNA_DEBUG" class="text-sm text-gray-300">Modo Debug (logs detalhados no console)</label>
           </div>
         </div>
       </div>
 
+      <!-- File paths info -->
+      <div class="bg-luna-800/50 rounded-xl border border-luna-700/50 p-4">
+        <p class="text-xs text-gray-500 font-mono">
+          <span class="text-luna-400">.env:</span> <span id="envPath">-</span><br>
+          <span class="text-luna-400">luna-soul:</span> <span id="soulPath">-</span>
+        </p>
+      </div>
+
       <!-- Actions -->
       <div class="flex gap-3">
-        <button onclick="saveAll()" class="flex-1 bg-luna-500 hover:bg-luna-400 text-white font-semibold py-3 rounded-xl transition flex items-center justify-center gap-2">
-          <span>💾</span> Salvar Configurações
+        <button id="btnSave" onclick="saveAll()" class="flex-1 bg-luna-500 hover:bg-luna-400 text-white font-semibold py-3 rounded-xl transition flex items-center justify-center gap-2">
+          <span>💾</span> Salvar no Servidor
         </button>
-        <button onclick="resetAll()" class="px-6 bg-luna-700 hover:bg-red-900/60 text-gray-300 hover:text-red-300 font-semibold py-3 rounded-xl transition border border-luna-600">
-          🔄 Reset
+        <button onclick="restartLuna()" class="px-6 bg-luna-700 hover:bg-luna-600 text-gray-300 hover:text-white font-semibold py-3 rounded-xl transition border border-luna-600">
+          🔄 Reiniciar Luna
         </button>
       </div>
     </section>
@@ -242,8 +272,8 @@
             <button onclick="resetPrompt()" class="text-xs bg-luna-700 hover:bg-luna-600 text-white px-3 py-1.5 rounded-lg transition">
               🔄 Reset para Original
             </button>
-            <button onclick="savePrompt()" class="text-xs bg-luna-500 hover:bg-luna-400 text-white px-3 py-1.5 rounded-lg transition">
-              💾 Salvar
+            <button id="btnSavePrompt" onclick="savePrompt()" class="text-xs bg-luna-500 hover:bg-luna-400 text-white px-3 py-1.5 rounded-lg transition">
+              💾 Salvar no Servidor
             </button>
           </div>
         </div>
@@ -254,7 +284,7 @@
             <span class="text-2xl">⚠️</span>
             <div>
               <p class="text-sm font-semibold text-red-300">Aviso de Risco</p>
-              <p class="text-xs text-gray-400 mt-1">Este é o prompt que a Luna recebe em CADA conversa. Alterar aqui pode quebrar o comportamento da agente. Use com cuidado. O botão <strong>Reset</strong> restaura o prompt original funcional.</p>
+              <p class="text-xs text-gray-400 mt-1">Este é o prompt que a Luna recebe em CADA conversa. Alterar aqui pode quebrar o comportamento da agente. Use com cuidado. O botão <strong>Reset</strong> restaura o prompt original funcional. O botão <strong>Salvar</strong> escreve DIRETAMENTE no arquivo <code>luna-soul.cjs</code>.</p>
             </div>
           </div>
         </div>
@@ -263,18 +293,17 @@
         <div class="flex gap-4 mb-3 text-xs text-gray-500">
           <span id="promptChars">0 caracteres</span>
           <span id="promptLines">0 linhas</span>
-          <span id="promptStatus" class="text-luna-400">● Prompt original</span>
+          <span id="promptStatus" class="text-luna-400">● Carregando...</span>
         </div>
 
         <textarea id="systemPrompt" rows="25" 
           class="w-full bg-luna-900 border border-luna-600 rounded-lg px-4 py-3 text-xs font-mono text-luna-300 focus:border-luna-500 focus:outline-none transition resize-y leading-relaxed"
-          oninput="updatePromptStats()"></textarea>
+          oninput="updatePromptStats(); markDirty();"></textarea>
       </div>
     </section>
 
     <!-- TAB: TUTORIAL -->
     <section id="panel-tutorial" class="hidden fade-in space-y-6">
-      <!-- Intro -->
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <h2 class="text-xl font-bold text-white mb-3">📖 Como usar a Luna Kernel</h2>
         <p class="text-sm text-gray-300 leading-relaxed">
@@ -282,7 +311,6 @@
         </p>
       </div>
 
-      <!-- Step 1 -->
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <div class="flex items-center gap-3 mb-3">
           <span class="w-8 h-8 rounded-full bg-luna-600 flex items-center justify-center text-sm font-bold">1</span>
@@ -291,19 +319,17 @@
         <div class="space-y-3">
           <p class="text-sm text-gray-300">Via terminal, na pasta da Luna:</p>
           <div class="bg-luna-900 rounded-lg p-4 font-mono text-xs text-luna-300 border border-luna-700 overflow-x-auto">
-            <span class="syntax-keyword">cd</span> ~/.luna-kernel<br>
-            <span class="syntax-comment"># Modo direto (mostra logs no terminal)</span><br>
-            <span class="syntax-function">node</span> telegram-luna-adapter.cjs<br><br>
-            <span class="syntax-comment"># Ou via PM2 (roda em background, recomendado)</span><br>
-            <span class="syntax-function">pm2</span> start telegram-luna-adapter.cjs --name luna-kernel<br>
-            <span class="syntax-function">pm2</span> save<br>
-            <span class="syntax-function">pm2</span> startup
+            <span style="color:#ff6b6b">cd</span> ~/.luna-kernel<br>
+            <span style="color:#6b7280"># Modo direto (mostra logs no terminal)</span><br>
+            <span style="color:#60a5fa">node</span> telegram-luna-adapter.cjs<br><br>
+            <span style="color:#6b7280"># Ou via PM2 (background, recomendado)</span><br>
+            <span style="color:#60a5fa">pm2</span> start telegram-luna-adapter.cjs --name luna-kernel<br>
+            <span style="color:#60a5fa">pm2</span> save<br>
+            <span style="color:#60a5fa">pm2</span> startup
           </div>
-          <p class="text-sm text-gray-400">💡 <strong>Dica:</strong> Use PM2 para rodar em background. A Luna sobrevive ao fechar o terminal.</p>
         </div>
       </div>
 
-      <!-- Step 2 -->
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <div class="flex items-center gap-3 mb-3">
           <span class="w-8 h-8 rounded-full bg-luna-600 flex items-center justify-center text-sm font-bold">2</span>
@@ -335,86 +361,41 @@
         </div>
       </div>
 
-      <!-- Step 3 -->
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <div class="flex items-center gap-3 mb-3">
           <span class="w-8 h-8 rounded-full bg-luna-600 flex items-center justify-center text-sm font-bold">3</span>
           <h3 class="text-lg font-semibold text-white">O que a Luna pode fazer?</h3>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="space-y-2">
-            <p class="text-sm font-medium text-luna-300">🛠️ Criar Projetos</p>
-            <p class="text-xs text-gray-400">"Cria um app React de lista de tarefas" → ela cria arquivos, instala deps, configura Tailwind, tira screenshot pra confirmar</p>
-          </div>
-          <div class="space-y-2">
-            <p class="text-sm font-medium text-luna-300">📁 Gerenciar Arquivos</p>
-            <p class="text-xs text-gray-400">"Leia o arquivo X", "Edite a função Y", "Crie uma pasta Z" — tudo no PC real</p>
-          </div>
-          <div class="space-y-2">
-            <p class="text-sm font-medium text-luna-300">🌐 Navegar na Web</p>
-            <p class="text-xs text-gray-400">"Pesquisa como usar Docker" → ela busca, lê artigos, resume</p>
-          </div>
-          <div class="space-y-2">
-            <p class="text-sm font-medium text-luna-300">📊 Dashboard NEXO</p>
-            <p class="text-xs text-gray-400">"Cria uma tarefa: revisar site cliente X, prioridade alta" → criada no sistema</p>
-          </div>
-          <div class="space-y-2">
-            <p class="text-sm font-medium text-luna-300">🔧 Auto-correção</p>
-            <p class="text-xs text-gray-400">Se um projeto quebra, ela lê o erro, corrige e testa sozinha</p>
-          </div>
-          <div class="space-y-2">
-            <p class="text-sm font-medium text-luna-300">📜 Scripts Workflow</p>
-            <p class="text-xs text-gray-400">Para tarefas complexas, ela pode executar scripts bash/python/node completos</p>
-          </div>
+          <div class="space-y-2"><p class="text-sm font-medium text-luna-300">🛠️ Criar Projetos</p><p class="text-xs text-gray-400">"Cria um app React de lista de tarefas" → ela cria arquivos, instala deps, configura Tailwind, tira screenshot</p></div>
+          <div class="space-y-2"><p class="text-sm font-medium text-luna-300">📁 Gerenciar Arquivos</p><p class="text-xs text-gray-400">"Leia o arquivo X", "Edite a função Y", "Crie uma pasta Z" — tudo no PC real</p></div>
+          <div class="space-y-2"><p class="text-sm font-medium text-luna-300">🌐 Navegar na Web</p><p class="text-xs text-gray-400">"Pesquisa como usar Docker" → ela busca, lê artigos, resume</p></div>
+          <div class="space-y-2"><p class="text-sm font-medium text-luna-300">📊 Dashboard NEXO</p><p class="text-xs text-gray-400">"Cria tarefa: revisar site cliente X, prioridade alta" → criada no sistema</p></div>
+          <div class="space-y-2"><p class="text-sm font-medium text-luna-300">🔧 Auto-correção</p><p class="text-xs text-gray-400">Se um projeto quebra, ela lê o erro, corrige e testa sozinha</p></div>
+          <div class="space-y-2"><p class="text-sm font-medium text-luna-300">📜 Scripts Workflow</p><p class="text-xs text-gray-400">Para tarefas complexas, ela pode executar scripts bash/python/node completos</p></div>
         </div>
       </div>
 
-      <!-- Step 4 -->
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <div class="flex items-center gap-3 mb-3">
           <span class="w-8 h-8 rounded-full bg-luna-600 flex items-center justify-center text-sm font-bold">4</span>
           <h3 class="text-lg font-semibold text-white">Exemplos de comandos</h3>
         </div>
         <div class="space-y-3">
-          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700">
-            <p class="text-xs text-luna-400 mb-1">Criar projeto:</p>
-            <p class="text-sm text-gray-300">"Luna, cria um site de portfolio em React com Tailwind, com header, about, projects e contact"</p>
-          </div>
-          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700">
-            <p class="text-xs text-luna-400 mb-1">Dashboard:</p>
-            <p class="text-sm text-gray-300">"Cria tarefa: Reunião com cliente Santander, prioridade alta, para amanhã"</p>
-          </div>
-          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700">
-            <p class="text-xs text-luna-400 mb-1">Pesquisa:</p>
-            <p class="text-sm text-gray-300">"Pesquisa as melhores práticas de SEO para 2025 e me faz um resumo"</p>
-          </div>
-          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700">
-            <p class="text-xs text-luna-400 mb-1">Correção:</p>
-            <p class="text-sm text-gray-300">"O projeto em ~/Documentos/meu-app não tá rodando, conserta pra mim"</p>
-          </div>
+          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700"><p class="text-xs text-luna-400 mb-1">Criar projeto:</p><p class="text-sm text-gray-300">"Luna, cria um site de portfolio em React com Tailwind, com header, about, projects e contact"</p></div>
+          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700"><p class="text-xs text-luna-400 mb-1">Dashboard:</p><p class="text-sm text-gray-300">"Cria tarefa: Reunião com cliente Santander, prioridade alta, para amanhã"</p></div>
+          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700"><p class="text-xs text-luna-400 mb-1">Pesquisa:</p><p class="text-sm text-gray-300">"Pesquisa as melhores práticas de SEO para 2025 e me faz um resumo"</p></div>
+          <div class="bg-luna-900 rounded-lg p-3 border border-luna-700"><p class="text-xs text-luna-400 mb-1">Correção:</p><p class="text-sm text-gray-300">"O projeto em ~/Documentos/meu-app não tá rodando, conserta pra mim"</p></div>
         </div>
       </div>
 
-      <!-- Troubleshooting -->
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <h3 class="text-lg font-semibold text-white mb-3">🔧 Problemas comuns</h3>
         <div class="space-y-3 text-sm">
-          <div class="flex gap-3">
-            <span class="text-red-400 font-mono text-xs whitespace-nowrap">Timeout 30000ms</span>
-            <p class="text-gray-400">Kimi Web demorou pra responder. A Luna tenta novamente automaticamente. Se persistir, verifique se o Chrome está aberto na porta 9222.</p>
-          </div>
-          <div class="flex gap-3">
-            <span class="text-red-400 font-mono text-xs whitespace-nowrap">ERR_ABORTED</span>
-            <p class="text-gray-400">Página do Kimi caiu. A Luna limpa páginas antigas e recria. Normalmente resolve sozinho.</p>
-          </div>
-          <div class="flex gap-3">
-            <span class="text-red-400 font-mono text-xs whitespace-nowrap">npm not found</span>
-            <p class="text-gray-400">Node.js não está instalado ou não está no PATH. Reinstale o Node.js v20+.</p>
-          </div>
-          <div class="flex gap-3">
-            <span class="text-red-400 font-mono text-xs whitespace-nowrap">Bot não responde</span>
-            <p class="text-gray-400">Verifique se o TELEGRAM_BOT_TOKEN está correto. Verifique se o bot não foi bloqueado pelo Telegram.</p>
-          </div>
+          <div class="flex gap-3"><span class="text-red-400 font-mono text-xs whitespace-nowrap">Timeout 30000ms</span><p class="text-gray-400">Kimi Web demorou. A Luna tenta novamente automaticamente. Verifique se Chrome está na porta 9222.</p></div>
+          <div class="flex gap-3"><span class="text-red-400 font-mono text-xs whitespace-nowrap">ERR_ABORTED</span><p class="text-gray-400">Página do Kimi caiu. A Luna limpa páginas antigas e recria. Normalmente resolve sozinho.</p></div>
+          <div class="flex gap-3"><span class="text-red-400 font-mono text-xs whitespace-nowrap">npm not found</span><p class="text-gray-400">Node.js não está instalado ou não está no PATH. Reinstale o Node.js v20+.</p></div>
+          <div class="flex gap-3"><span class="text-red-400 font-mono text-xs whitespace-nowrap">Bot não responde</span><p class="text-gray-400">Verifique se o TELEGRAM_BOT_TOKEN está correto. Verifique se o bot não foi bloqueado pelo Telegram.</p></div>
         </div>
       </div>
     </section>
@@ -426,7 +407,7 @@
           <span>🔍</span> Testar Conexões
         </h2>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <button onclick="testTelegram()" class="bg-luna-900 hover:bg-luna-700 border border-luna-600 rounded-xl p-4 text-left transition group">
+          <button onclick="testTelegram()" id="btnTestTelegram" class="bg-luna-900 hover:bg-luna-700 border border-luna-600 rounded-xl p-4 text-left transition group">
             <div class="flex items-center justify-between mb-2">
               <span class="text-2xl">🤖</span>
               <span id="telegramStatus" class="text-xs px-2 py-1 rounded-full bg-gray-800 text-gray-400">Não testado</span>
@@ -435,7 +416,7 @@
             <p class="text-xs text-gray-500 mt-1">Verifica se o token está válido</p>
           </button>
 
-          <button onclick="testNode()" class="bg-luna-900 hover:bg-luna-700 border border-luna-600 rounded-xl p-4 text-left transition group">
+          <button onclick="testNode()" id="btnTestNode" class="bg-luna-900 hover:bg-luna-700 border border-luna-600 rounded-xl p-4 text-left transition group">
             <div class="flex items-center justify-between mb-2">
               <span class="text-2xl">📦</span>
               <span id="nodeStatus" class="text-xs px-2 py-1 rounded-full bg-gray-800 text-gray-400">Não testado</span>
@@ -444,7 +425,7 @@
             <p class="text-xs text-gray-500 mt-1">Verifica versão do Node.js</p>
           </button>
 
-          <button onclick="testChrome()" class="bg-luna-900 hover:bg-luna-700 border border-luna-600 rounded-xl p-4 text-left transition group">
+          <button onclick="testChrome()" id="btnTestChrome" class="bg-luna-900 hover:bg-luna-700 border border-luna-600 rounded-xl p-4 text-left transition group">
             <div class="flex items-center justify-between mb-2">
               <span class="text-2xl">🌐</span>
               <span id="chromeStatus" class="text-xs px-2 py-1 rounded-full bg-gray-800 text-gray-400">Não testado</span>
@@ -466,32 +447,14 @@
         <h2 class="text-lg font-semibold text-white mb-4">📋 Informações do Sistema</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div class="space-y-2">
-            <div class="flex justify-between py-2 border-b border-luna-700/50">
-              <span class="text-gray-400">Navegador</span>
-              <span id="sysBrowser" class="text-luna-300 font-mono text-xs">-</span>
-            </div>
-            <div class="flex justify-between py-2 border-b border-luna-700/50">
-              <span class="text-gray-400">Sistema Operacional</span>
-              <span id="sysOS" class="text-luna-300 font-mono text-xs">-</span>
-            </div>
-            <div class="flex justify-between py-2 border-b border-luna-700/50">
-              <span class="text-gray-400">Resolução</span>
-              <span id="sysResolution" class="text-luna-300 font-mono text-xs">-</span>
-            </div>
+            <div class="flex justify-between py-2 border-b border-luna-700/50"><span class="text-gray-400">Navegador</span><span id="sysBrowser" class="text-luna-300 font-mono text-xs">-</span></div>
+            <div class="flex justify-between py-2 border-b border-luna-700/50"><span class="text-gray-400">Sistema Operacional</span><span id="sysOS" class="text-luna-300 font-mono text-xs">-</span></div>
+            <div class="flex justify-between py-2 border-b border-luna-700/50"><span class="text-gray-400">Resolução</span><span id="sysResolution" class="text-luna-300 font-mono text-xs">-</span></div>
           </div>
           <div class="space-y-2">
-            <div class="flex justify-between py-2 border-b border-luna-700/50">
-              <span class="text-gray-400">localStorage</span>
-              <span id="sysStorage" class="text-luna-300 font-mono text-xs">-</span>
-            </div>
-            <div class="flex justify-between py-2 border-b border-luna-700/50">
-              <span class="text-gray-400">Config Salvas</span>
-              <span id="sysConfigs" class="text-luna-300 font-mono text-xs">-</span>
-            </div>
-            <div class="flex justify-between py-2 border-b border-luna-700/50">
-              <span class="text-gray-400">Versão</span>
-              <span class="text-luna-300 font-mono text-xs">v4.0.0</span>
-            </div>
+            <div class="flex justify-between py-2 border-b border-luna-700/50"><span class="text-gray-400">Servidor API</span><span id="sysApi" class="text-luna-300 font-mono text-xs">-</span></div>
+            <div class="flex justify-between py-2 border-b border-luna-700/50"><span class="text-gray-400">.env</span><span id="sysEnv" class="text-luna-300 font-mono text-xs">-</span></div>
+            <div class="flex justify-between py-2 border-b border-luna-700/50"><span class="text-gray-400">Versão</span><span class="text-luna-300 font-mono text-xs">v4.0.0</span></div>
           </div>
         </div>
       </div>
@@ -517,302 +480,99 @@
 
   <script>
     // ============================================================
-    // DEFAULT SYSTEM PROMPT (embedded from buildSystemPrompt)
+    // API CLIENT
     // ============================================================
-    const DEFAULT_SYSTEM_PROMPT = `╔══════════════════════════════════════════════════════════════════════════╗
-║  YOU ARE LUNA — AUTONOMOUS AGENT FOR ABNER GABRIEL (CEO, NEXO DIGITAL)  ║
-╚══════════════════════════════════════════════════════════════════════════╝
+    const API_BASE = '';
+    let originalPrompt = '';
+    let isDirty = false;
+    let loadedEnv = {};
 
-You are Luna, the personal autonomous agent of Abner Gabriel, CEO of NEXO DIGITAL S.L. in Barcelona.
-Your purpose: COMPLETE tasks fully. Don't gold-plate, but don't leave them half-done.
+    async function apiGet(path) {
+      const res = await fetch(API_BASE + path);
+      return res.json();
+    }
 
-════════════════════════════════════════════════════════════════════════════
-CRITICAL ARCHITECTURE — READ CAREFULLY
-════════════════════════════════════════════════════════════════════════════
-
-1. [[action]] BLOCKS EXECUTE ON ABNER'S REAL PC (Linux) via LUNA-MIRROR.
-   They NEVER run in a sandbox. They run on the REAL filesystem with REAL paths.
-
-2. NEVER NEST [[action]] BLOCKS. Never put [[action]] inside another [[action]].
-   WRONG: [[action]]{"tool":"executeShell","params":{"command":"python3 '[[action]]...'"}}
-   RIGHT:  [[action]]{"tool":"ipython","params":{"code":"..."}}
-
-3. TOOL SELECTION CHEATSHEET — use the RIGHT tool for the job:
-   ┌────────────────────┬────────────────────────────────────────────────────┐
-   │ Need to...         │ Use this tool...                                   │
-   ├────────────────────┼────────────────────────────────────────────────────┤
-   │ Write/edit file    │ writeFile or replaceInFile                         │
-   │ Read a file        │ readFile                                           │
-   │ Run Python code    │ ipython (runs on REAL PC, import os is FINE)       │
-   │ Run shell command  │ executeShell (runs on REAL PC)                     │
-   │ Search web         │ searchWeb or web_search                            │
-   │ Browse site        │ browser or fetchURL                                │
-   │ Git ops            │ gitStatus, gitCommit, etc.                         │
-   │ Dashboard task     │ dashboardCreateTask, dashboardListTasks            │
-   │ Dashboard lead     │ dashboardCreateLead, dashboardListLeads            │
-   │ Dashboard finance  │ dashboardGetFinanceSummary                         │
-   └────────────────────┴────────────────────────────────────────────────────┘
-
-4. ipython = Python no PC REAL. Pode usar os, subprocess, pathlib, tudo.
-   NUNCA envolva ipython dentro de executeShell. Use ipython DIRETO.
-
-5. executeShell = shell puro. NUNCA passe código Python com [[action]] dentro.
-   WRONG: executeShell("python3 -c '[[action]]...'")
-   RIGHT:  ipython("import os; os.makedirs(...)")
-
-6. writeFile = mais confiável que ipython para criar arquivos.
-   Use writeFile para HTML, CSS, JS, JSON, etc.
-
-7. Quando o usuário pedir para criar/listar TAREFAS, LEADS, ou ver FINANÇAS:
-   VOCÊ DEVE usar as tools dashboard* — NUNCA diga que não pode.
-   WRONG: "Infelizmente não tenho acesso ao dashboard..."
-   RIGHT: \\\`\\\`\\\`json\\n{"tool":"dashboardCreateTask","params":{"title":"..."}}\\n\\\`\\\`\\\`
-
-════════════════════════════════════════════════════════════════════════════
-TOOL CALL FORMAT — USE CODE BLOCKS JSON (PRIMARY)
-════════════════════════════════════════════════════════════════════════════
-
-Para executar uma tool, coloque-a dentro de um code block JSON:
-
-\\\`\\\`\\\`json
-{"tool":"writeFile","params":{"path":"/home/jhin/Documentos/teste.txt","content":"Olá mundo"}}
-\\\`\\\`\\\`
-
-→ ESPERA o resultado do LUNA-MIRROR
-
-⚠️ REGRAS DO FORMATO CODE BLOCK:
-1. SEMPRE use \\\`\\\`\\\`json antes e \\\`\\\`\\\` depois
-2. O conteúdo deve ser JSON válido com "tool" e "params"
-3. NUNCA coloque texto explicativo dentro do code block — só o JSON
-4. Após enviar uma tool, ESPERE o resultado antes de enviar a próxima
-5. NUNCA envie múltiplas tools de uma vez — UMA por vez
-
-EXEMPLO COMPLETO — CRIAR ARQUIVO:
-[[response]]
-Vou criar o arquivo para você.
-[[/response]]
-
-\\\`\\\`\\\`json
-{"tool":"writeFile","params":{"path":"/home/jhin/Documentos/lunafocus/index.html","content":"<!DOCTYPE html>..."}}
-\\\`\\\`\\\`
-
-→ ESPERA o resultado
-
-[[response]]
-Pronto! Arquivo criado com sucesso.
-[[/response]]
-
-════════════════════════════════════════════════════════════════════════════
-DASHBOARD TOOLS — INTERAGINDO COM O NEXO DASHBOARD PRO
-════════════════════════════════════════════════════════════════════════════
-
-Você tem acesso ao dashboard da NEXO DIGITAL em http://localhost:3456.
-Use as tools dashboard* para criar/listar tarefas, leads e ver resumo financeiro.
-
-EXEMPLO — CRIAR TAREFA:
-[[response]]
-Vou criar essa tarefa no dashboard.
-[[/response]]
-
-\\\`\\\`\\\`json
-{"tool":"dashboardCreateTask","params":{"title":"Revisar código Luna","priority":"high","status":"pending"}}
-\\\`\\\`\\\`
-
-EXEMPLO — LISTAR TAREFAS PENDENTES:
-[[response]]
-Buscando tarefas pendentes...
-[[/response]]
-
-\\\`\\\`\\\`json
-{"tool":"dashboardListTasks","params":{"status":"pending"}}
-\\\`\\\`\\\`
-
-EXEMPLO — CRIAR LEAD:
-[[response]]
-Cadastrando o lead no sistema.
-[[/response]]
-
-\\\`\\\`\\\`json
-{"tool":"dashboardCreateLead","params":{"name":"João Silva","email":"joao@exemplo.com","phone":"+34 600 000 000"}}
-\\\`\\\`\\\`
-
-→ ESPERA o resultado do LUNA-MIRROR antes de responder ao usuário.
-
-════════════════════════════════════════════════════════════════════════════
-OUTPUT FORMAT — SEPARATE RESPONSE FROM ACTIONS
-════════════════════════════════════════════════════════════════════════════
-
-STRUCTURE (always follow this order):
-1. FIRST: Put ALL your user-facing text inside [[response]]...[[/response]]
-2. THEN: Put EACH tool call in its OWN separate code block JSON — NEVER nested
-
-⚠️ CRITICAL RULES:
-1. NEVER mix tool code inside [[response]] blocks — keep them SEPARATE
-2. NEVER put code block JSON inside another code block — NO NESTING, EVER
-3. NEVER use executeShell to wrap ipython or writeFile
-4. Always CLOSE your tags: [[/response]], \\\`\\\`\\\`
-5. For LONG code (>50 lines), use writeFile — NOT ipython with heredoc
-6. After sending a tool, WAIT for the result before sending the next one
-
-CODE BLOCKS são o ÚNICO formato válido para tool calls. NUNCA use [[action]] tags.
-
-════════════════════════════════════════════════════════════════════════════
-PROJECT CREATION CHECKLIST — VALIDAÇÃO OBRIGATÓRIA
-════════════════════════════════════════════════════════════════════════════
-
-QUANDO criar QUALQUER projeto (React, Node, Python, etc.), VOCÊ DEVE:
-
-1. CSS/Assets: Se um arquivo JS/JSX importa './index.css' ou './App.css',
-   VOCÊ DEVE criar esse arquivo CSS também. NUNCA deixe import quebrado.
-
-2. Tailwind CSS: Se usar classes como 'bg-gray-900', 'text-white', 'p-8',
-   'rounded-xl', 'shadow-lg', 'grid', 'gap-6' etc., VOCÊ DEVE:
-   - Instalar: tailwindcss + postcss + autoprefixer
-   - Criar: tailwind.config.js (content apontando para src/**/*.{js,jsx})
-   - Criar: postcss.config.js
-   - Criar: src/index.css com @import "tailwindcss" (v4) ou @tailwind directives (v3)
-
-3. Vite/React: Se criar projeto Vite + React, VOCÊ DEVE:
-   - Criar: vite.config.js com import do plugin @vitejs/plugin-react
-   - Adicionar: 'import React from "react"' no topo de TODO arquivo .jsx
-
-4. Dependências: Após criar package.json, VOCÊ DEVE rodar 'npm install'.
-   Após instalar, VOCÊ DEVE verificar se node_modules foi criado.
-
-5. Teste final: Após criar TODOS os arquivos e instalar deps, VOCÊ DEVE:
-   - Rodar 'npm run dev' (ou equivalente)
-   - Verificar se o servidor inicia sem erros
-   - Se houver erro, LEIA o erro, CORRIJA, e teste novamente
-
-6. VALIDACAO VISUAL OBRIGATORIA para apps web:
-   - Após o servidor subir, VOCÊ DEVE abrir o navegador no localhost
-   - Tire um SCREENSHOT da pagina renderizada
-   - ANALISE visualmente se o app esta funcionando (cores, layout, textos)
-   - Se o screenshot mostrar ERRO (tela vermelha, em branco, quebrada), CORRIJA
-   - O agente tambem envia o TEXTO DO ERRO extraido da pagina — USE ESSE TEXTO para diagnosticar
-   - Leia o erro: nome do arquivo, numero da linha, tipo do erro. Corrija exatamente isso.
-   - Só considere o projeto PRONTO quando o screenshot mostrar o app PERFEITO
-   - Ferramentas: use 'browser' para navegar e 'screenshot' para capturar
-
-7. SCRIPTS WORKFLOW (MODO AVANCADO):
-   - Para tarefas com MUITAS acoes sequenciais, VOCÊ PODE escrever um SCRIPT completo
-   - Use a tag [[script]]...[[/script]] com codigo bash/python/node
-   - O script executa TODAS as acoes de uma vez (writeFile, executeShell, verificacoes)
-   - Coloque checkpoints no script: verifique se arquivos existem, se deu erro, etc.
-   - O script retorna stdout completo para voce analisar
-   - EXEMPLO de script workflow:
-     [[script]]
-     #!/bin/bash
-     set -e
-     echo "[ACTION: writeFile] Criando arquivo..."
-     echo "conteudo" > /path/arquivo.txt
-     echo "[VERIFY] Verificando..."
-     if [ -f /path/arquivo.txt ]; then echo "✅ OK"; else echo "❌ Falhou"; exit 1; fi
-     [[/script]]
-   - Use scripts para: criar projetos inteiros, migrar dados, fazer backup, etc.
-
-⚠️ NUNCA entregue um projeto "incompleto". Só pare quando funcionar.
-
-FORMATS FOR ACTIONS:
-
-FORMAT 1 (recommended for long code):
-\\\`\\\`\\\`json
-{"tool":"writeFile","params":{"path":"README.md","content":"# Hello"}}
-\\\`\\\`\\\`
-
-FORMAT 2 (compact):
-[[action]]{"tool":"readFile","params":{"path":"README.md"}}[[/action]]
-
-FORMAT 3 (hybrid — best of both):
-\\\`\\\`\\\`json
-[[action]]{"tool":"writeFile","params":{"path":"app.js","content":"console.log('hello')"}}[[/action]]
-\\\`\\\`\\\`
-
-════════════════════════════════════════════════════════════════════════════
-TOOLS AVAILABLE — ALL RUN ON REAL PC
-════════════════════════════════════════════════════════════════════════════
-
-LUNA TOOLS (emit via [[action]] for direct execution on Abner's PC):
-  readFile, writeFile, replaceInFile, searchFiles, grep, viewDirectory
-  executeShell, runTests, installPackages
-  gitStatus, gitDiff, gitLog, gitCommit
-  searchWeb, fetchURL, downloadFile
-  clipboardRead, clipboardWrite
-
-NATIVE TOOLS (Kimi built-ins — use only when Luna tools don't fit):
-  web_search — Search Google
-  browser — Browse websites
-
-NOTE: ipython is a NATIVE tool, BUT your bridge redirects it to the real PC.
-      So it behaves like a Luna tool. Use it freely.
-
-DESKTOP CONTROL:
-  shell, click, type, keypress, hotkey, screenshot, scroll, wait, open_app, ocr
-
-════════════════════════════════════════════════════════════════════════════
-FILE PATHS
-════════════════════════════════════════════════════════════════════════════
-
-Abner's home: /home/jhin
-Always use absolute paths: /home/jhin/Documentos/..., /home/jhin/NEXO_DASHBOARD_PRO/...
-
-════════════════════════════════════════════════════════════════════════════
-PROJECT CONTEXT
-════════════════════════════════════════════════════════════════════════════
-
-\${agentsMd ? agentsMd + '\\n\\n' : ''}
-
-SKILLS LOADED:
-\${skillIndex || '(none loaded)'}
-
-\${memoryContext ? 'MEMORIES:\\n' + memoryContext + '\\n' : ''}
-
-\${personaContent ? 'ACTIVE PERSONA:\\n' + personaContent + '\\n' : ''}
-
-AVAILABLE PERSONAS:
-\${personaRegistry || '(none)'}
-
-AVAILABLE SKILLS:
-\${skillRegistry || '(none)'}`;
+    async function apiPost(path, body) {
+      const res = await fetch(API_BASE + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return res.json();
+    }
 
     // ============================================================
-    // STATE
+    // LOAD CONFIG FROM SERVER
     // ============================================================
-    const ENV_KEYS = [
-      'TELEGRAM_BOT_TOKEN', 'INTERNAL_API_TOKEN',
-      'KIMI_TIMEOUT', 'KIMI_MAX_PAGES', 'KIMI_IDLE_TIMEOUT',
-      'KIMI_COOLDOWN_MS', 'KIMI_MAX_TYPE_LENGTH', 'KIMI_LOG_MAX_MB',
-      'LUNA_COMPACT_THRESHOLD', 'LUNA_COMPACT_TOKEN_THRESHOLD',
-      'LUNA_CHROME_PATH', 'LUNA_DEBUG'
-    ];
+    async function loadConfig() {
+      document.getElementById('loadingPanel').classList.remove('hidden');
+      document.getElementById('errorPanel').classList.add('hidden');
+      document.getElementById('panel-setup').classList.add('hidden');
 
-    // ============================================================
-    // INIT
-    // ============================================================
-    function init() {
-      // Load env vars
-      ENV_KEYS.forEach(key => {
-        const val = localStorage.getItem('luna_env_' + key);
-        if (val !== null) {
+      try {
+        const data = await apiGet('/api/config');
+        if (!data.ok) throw new Error(data.error || 'Erro desconhecido');
+
+        loadedEnv = data.env || {};
+
+        // Fill env fields
+        const envKeys = [
+          'TELEGRAM_BOT_TOKEN', 'INTERNAL_API_TOKEN',
+          'KIMI_TIMEOUT', 'KIMI_MAX_PAGES', 'KIMI_IDLE_TIMEOUT',
+          'KIMI_COOLDOWN_MS', 'KIMI_MAX_TYPE_LENGTH', 'KIMI_LOG_MAX_MB',
+          'LUNA_COMPACT_THRESHOLD', 'LUNA_COMPACT_TOKEN_THRESHOLD',
+          'LUNA_CHROME_PATH', 'LUNA_DEBUG'
+        ];
+        envKeys.forEach(key => {
           const el = document.getElementById(key);
           if (el) {
-            if (el.type === 'checkbox') el.checked = val === 'true';
-            else el.value = val;
+            if (el.type === 'checkbox') el.checked = loadedEnv[key] === 'true';
+            else if (loadedEnv[key]) el.value = loadedEnv[key];
           }
+        });
+
+        // Fill system prompt
+        if (data.systemPromptFound) {
+          document.getElementById('systemPrompt').value = data.systemPrompt;
+          originalPrompt = data.systemPrompt;
+          document.getElementById('promptStatus').textContent = '● Prompt do servidor';
+          document.getElementById('promptStatus').className = 'text-luna-400';
+        } else {
+          document.getElementById('systemPrompt').value = data.systemPrompt || '';
+          document.getElementById('promptStatus').textContent = '⚠️ Prompt não encontrado no luna-soul.cjs';
+          document.getElementById('promptStatus').className = 'text-yellow-400';
         }
-      });
+        updatePromptStats();
 
-      // Load system prompt
-      const savedPrompt = localStorage.getItem('luna_system_prompt');
-      document.getElementById('systemPrompt').value = savedPrompt || DEFAULT_SYSTEM_PROMPT;
-      updatePromptStats();
+        // File paths
+        if (data.paths) {
+          document.getElementById('envPath').textContent = data.paths.env;
+          document.getElementById('soulPath').textContent = data.paths.soul;
+          document.getElementById('sysEnv').textContent = data.paths.env;
+        }
 
-      // System info
-      document.getElementById('sysBrowser').textContent = navigator.userAgent.split(')')[0] + ')';
-      document.getElementById('sysOS').textContent = navigator.platform;
-      document.getElementById('sysResolution').textContent = `${window.screen.width}x${window.screen.height}`;
-      document.getElementById('sysStorage').textContent = localStorage.length > 0 ? '✅ Disponível' : '⚠️ Vazio';
-      document.getElementById('sysConfigs').textContent = ENV_KEYS.filter(k => localStorage.getItem('luna_env_' + k)).length + ' configs';
+        // Update status indicator
+        document.getElementById('statusDot').className = 'w-2 h-2 rounded-full bg-green-500 pulse-dot';
+        document.getElementById('statusText').textContent = 'Conectado ao servidor';
+
+        // System info
+        document.getElementById('sysBrowser').textContent = navigator.userAgent.split(')')[0] + ')';
+        document.getElementById('sysOS').textContent = navigator.platform;
+        document.getElementById('sysResolution').textContent = `${window.screen.width}x${window.screen.height}`;
+        document.getElementById('sysApi').textContent = '✅ Online';
+
+        // Show setup panel
+        document.getElementById('loadingPanel').classList.add('hidden');
+        document.getElementById('panel-setup').classList.remove('hidden');
+
+        isDirty = false;
+      } catch (e) {
+        document.getElementById('loadingPanel').classList.add('hidden');
+        document.getElementById('errorPanel').classList.remove('hidden');
+        document.getElementById('errorMsg').textContent = e.message;
+        document.getElementById('statusDot').className = 'w-2 h-2 rounded-full bg-red-500';
+        document.getElementById('statusText').textContent = 'Erro de conexão';
+      }
     }
 
     // ============================================================
@@ -832,68 +592,132 @@ AVAILABLE SKILLS:
     // ============================================================
     // SAVE / LOAD
     // ============================================================
-    function saveField(el) {
-      localStorage.setItem('luna_env_' + el.id, el.value);
-      document.getElementById('sysConfigs').textContent = ENV_KEYS.filter(k => localStorage.getItem('luna_env_' + k)).length + ' configs';
+    function markDirty() {
+      isDirty = true;
+      document.getElementById('btnSave').classList.add('ring-2', 'ring-luna-500');
+      document.getElementById('btnSavePrompt').classList.add('ring-2', 'ring-luna-500');
     }
 
-    function saveCheckbox(el) {
-      localStorage.setItem('luna_env_' + el.id, el.checked);
+    function collectEnv() {
+      const env = {};
+      const envKeys = [
+        'TELEGRAM_BOT_TOKEN', 'INTERNAL_API_TOKEN',
+        'KIMI_TIMEOUT', 'KIMI_MAX_PAGES', 'KIMI_IDLE_TIMEOUT',
+        'KIMI_COOLDOWN_MS', 'KIMI_MAX_TYPE_LENGTH', 'KIMI_LOG_MAX_MB',
+        'LUNA_COMPACT_THRESHOLD', 'LUNA_COMPACT_TOKEN_THRESHOLD',
+        'LUNA_CHROME_PATH', 'LUNA_DEBUG'
+      ];
+      envKeys.forEach(key => {
+        const el = document.getElementById(key);
+        if (el) {
+          if (el.type === 'checkbox') env[key] = el.checked ? 'true' : 'false';
+          else env[key] = el.value;
+        }
+      });
+      return env;
     }
 
-    function savePrompt() {
-      localStorage.setItem('luna_system_prompt', document.getElementById('systemPrompt').value);
-      document.getElementById('promptStatus').textContent = '● Prompt personalizado';
-      document.getElementById('promptStatus').className = 'text-yellow-400';
-      showToast('💾 Prompt salvo!', '✅');
+    async function saveAll() {
+      const btn = document.getElementById('btnSave');
+      btn.classList.add('btn-loading');
+      btn.textContent = '💾 Salvando';
+
+      try {
+        const env = collectEnv();
+        const data = await apiPost('/api/config', { env });
+        if (data.ok) {
+          loadedEnv = env;
+          isDirty = false;
+          btn.classList.remove('ring-2', 'ring-luna-500');
+          showToast('💾 Configurações salvas no .env!', '✅');
+        } else {
+          showToast('❌ Erro: ' + (data.error || 'desconhecido'), '❌');
+        }
+      } catch (e) {
+        showToast('❌ Erro de rede: ' + e.message, '❌');
+      } finally {
+        btn.classList.remove('btn-loading');
+        btn.innerHTML = '<span>💾</span> Salvar no Servidor';
+      }
     }
 
-    function resetPrompt() {
-      if (!confirm('Tem certeza? Isso vai substituir o prompt atual pelo prompt original funcional.')) return;
-      document.getElementById('systemPrompt').value = DEFAULT_SYSTEM_PROMPT;
-      localStorage.removeItem('luna_system_prompt');
+    async function savePrompt() {
+      const btn = document.getElementById('btnSavePrompt');
+      const promptText = document.getElementById('systemPrompt').value;
+
+      if (!confirm('⚠️ TEM CERTEZA?\n\nIsso vai SOBRESCREVER o system prompt no arquivo luna-soul.cjs.\nSe quebrar algo, use o botão RESET para restaurar.\n\nContinuar?')) {
+        return;
+      }
+
+      btn.classList.add('btn-loading');
+      btn.textContent = '💾 Salvando';
+
+      try {
+        const data = await apiPost('/api/config', { systemPrompt: promptText });
+        if (data.ok) {
+          originalPrompt = promptText;
+          isDirty = false;
+          btn.classList.remove('ring-2', 'ring-luna-500');
+          document.getElementById('promptStatus').textContent = '● Salvo no servidor';
+          document.getElementById('promptStatus').className = 'text-green-400';
+          showToast('🧠 System prompt salvo no luna-soul.cjs!', '✅');
+        } else {
+          showToast('❌ Erro: ' + (data.error || 'desconhecido'), '❌');
+        }
+      } catch (e) {
+        showToast('❌ Erro de rede: ' + e.message, '❌');
+      } finally {
+        btn.classList.remove('btn-loading');
+        btn.textContent = '💾 Salvar no Servidor';
+      }
+    }
+
+    async function resetPrompt() {
+      if (!originalPrompt) {
+        showToast('⚠️ Prompt original não carregado. Recarregue a página.', '⚠️');
+        return;
+      }
+      if (!confirm('Restaurar o prompt original do servidor?\n\nQualquer alteração não salva será perdida.')) return;
+
+      document.getElementById('systemPrompt').value = originalPrompt;
       updatePromptStats();
-      document.getElementById('promptStatus').textContent = '● Prompt original';
+      document.getElementById('promptStatus').textContent = '● Prompt original restaurado';
       document.getElementById('promptStatus').className = 'text-luna-400';
-      showToast('🔄 Prompt restaurado para o original!', '✅');
+      showToast('🔄 Prompt original restaurado (não salvo ainda — clique em Salvar)', '✅');
     }
 
     function updatePromptStats() {
       const text = document.getElementById('systemPrompt').value;
       document.getElementById('promptChars').textContent = text.length.toLocaleString() + ' caracteres';
-      document.getElementById('promptLines').textContent = text.split('\\n').length + ' linhas';
+      document.getElementById('promptLines').textContent = text.split('\n').length + ' linhas';
     }
 
-    function saveAll() {
-      ENV_KEYS.forEach(key => {
-        const el = document.getElementById(key);
-        if (el) {
-          if (el.type === 'checkbox') localStorage.setItem('luna_env_' + key, el.checked);
-          else localStorage.setItem('luna_env_' + key, el.value);
+    async function restartLuna() {
+      if (!confirm('Reiniciar a Luna?\n\nO bot do Telegram vai ficar offline por alguns segundos.')) return;
+      try {
+        const data = await apiPost('/api/restart', {});
+        if (data.ok) {
+          showToast('🔄 Luna reiniciada! ' + (data.message || ''), '✅');
+        } else {
+          showToast('❌ ' + (data.error || 'Erro ao reiniciar'), '❌');
         }
-      });
-      showToast('💾 Configurações salvas no localStorage!', '✅');
-    }
-
-    function resetAll() {
-      if (!confirm('Apagar TODAS as configurações salvas? O .env original será preservado.')) return;
-      ENV_KEYS.forEach(key => localStorage.removeItem('luna_env_' + key));
-      localStorage.removeItem('luna_system_prompt');
-      location.reload();
+      } catch (e) {
+        showToast('❌ Erro: ' + e.message, '❌');
+      }
     }
 
     // ============================================================
     // EXPORT / IMPORT .env
     // ============================================================
     function exportEnv() {
-      let env = '# Luna Kernel v4.0 — Environment Configuration\\n# Generated by Luna Config Panel\\n# NEXO DIGITAL S.L.\\n\\n';
-      ENV_KEYS.forEach(key => {
-        const val = localStorage.getItem('luna_env_' + key);
-        if (val !== null && val !== '') {
-          env += `${key}=${val}\\n`;
-        }
+      const env = collectEnv();
+      let content = '# Luna Kernel v4.0 — Environment Configuration\n';
+      content += '# Generated by Luna Config Panel\n';
+      content += '# NEXO DIGITAL S.L.\n\n';
+      Object.entries(env).forEach(([k, v]) => {
+        if (v) content += `${k}=${v}\n`;
       });
-      const blob = new Blob([env], { type: 'text/plain' });
+      const blob = new Blob([content], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -908,20 +732,20 @@ AVAILABLE SKILLS:
       if (!file) return;
       const reader = new FileReader();
       reader.onload = e => {
-        const lines = e.target.result.split('\\n');
+        const lines = e.target.result.split('\n');
         lines.forEach(line => {
-          const match = line.match(/^([A-Z_]+)=(.*)$/);
+          const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
           if (match) {
             const [, key, val] = match;
-            if (ENV_KEYS.includes(key)) {
-              const el = document.getElementById(key);
-              if (el) el.value = val;
-              localStorage.setItem('luna_env_' + key, val);
+            const el = document.getElementById(key);
+            if (el) {
+              if (el.type === 'checkbox') el.checked = val === 'true';
+              else el.value = val;
             }
           }
         });
-        showToast('📤 .env importado!', '✅');
-        document.getElementById('sysConfigs').textContent = ENV_KEYS.filter(k => localStorage.getItem('luna_env_' + k)).length + ' configs';
+        markDirty();
+        showToast('📤 .env importado! Clique em Salvar para aplicar.', '✅');
       };
       reader.readAsText(file);
       input.value = '';
@@ -933,6 +757,7 @@ AVAILABLE SKILLS:
     async function testTelegram() {
       const token = document.getElementById('TELEGRAM_BOT_TOKEN').value;
       const badge = document.getElementById('telegramStatus');
+      const btn = document.getElementById('btnTestTelegram');
       if (!token) {
         badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900/60 text-red-300';
         badge.textContent = 'Token vazio';
@@ -940,38 +765,74 @@ AVAILABLE SKILLS:
       }
       badge.className = 'text-xs px-2 py-1 rounded-full bg-yellow-900/60 text-yellow-300';
       badge.textContent = 'Testando...';
+      btn.disabled = true;
+
       try {
-        const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-        const data = await res.json();
+        const data = await apiPost('/api/test/telegram', { token });
         if (data.ok) {
           badge.className = 'text-xs px-2 py-1 rounded-full bg-green-900/60 text-green-300';
-          badge.textContent = `@${data.result.username}`;
-          showTestOutput(`✅ Bot OK\\nNome: ${data.result.first_name}\\nUsername: @${data.result.username}\\nID: ${data.result.id}`);
+          badge.textContent = `@${data.bot.username}`;
+          showTestOutput(`✅ Bot OK\nNome: ${data.bot.first_name}\nUsername: @${data.bot.username}\nID: ${data.bot.id}`);
         } else {
           badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900/60 text-red-300';
-          badge.textContent = 'Token inválido';
-          showTestOutput(`❌ Erro: ${data.description}`);
+          badge.textContent = 'Falhou';
+          showTestOutput(`❌ Erro: ${data.error}`);
         }
       } catch (e) {
         badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900/60 text-red-300';
         badge.textContent = 'Erro de rede';
         showTestOutput(`❌ Erro: ${e.message}`);
+      } finally {
+        btn.disabled = false;
       }
     }
 
-    function testNode() {
+    async function testNode() {
       const badge = document.getElementById('nodeStatus');
-      // We can't test Node from browser, so just show instructions
       badge.className = 'text-xs px-2 py-1 rounded-full bg-yellow-900/60 text-yellow-300';
-      badge.textContent = 'Verifique no terminal';
-      showTestOutput(`ℹ️  Para verificar o Node.js, execute no terminal:\\n\\n   node -v\\n\\nDeve retornar v20+ ou v24+.\\n\\nSe não estiver instalado:\\n   https://nodejs.org/`);
+      badge.textContent = 'Testando...';
+      try {
+        const data = await apiGet('/api/test/node');
+        if (data.ok && data.sufficient) {
+          badge.className = 'text-xs px-2 py-1 rounded-full bg-green-900/60 text-green-300';
+          badge.textContent = data.version;
+          showTestOutput(`✅ ${data.message}`);
+        } else if (data.ok) {
+          badge.className = 'text-xs px-2 py-1 rounded-full bg-yellow-900/60 text-yellow-300';
+          badge.textContent = data.version;
+          showTestOutput(`⚠️ ${data.message}`);
+        } else {
+          badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900/60 text-red-300';
+          badge.textContent = 'Não encontrado';
+          showTestOutput(`❌ ${data.error}`);
+        }
+      } catch (e) {
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900/60 text-red-300';
+        badge.textContent = 'Erro';
+        showTestOutput(`❌ ${e.message}`);
+      }
     }
 
-    function testChrome() {
+    async function testChrome() {
       const badge = document.getElementById('chromeStatus');
       badge.className = 'text-xs px-2 py-1 rounded-full bg-yellow-900/60 text-yellow-300';
-      badge.textContent = 'Verifique no terminal';
-      showTestOutput(`ℹ️  Para verificar o Chrome, execute no terminal:\\n\\n   google-chrome --version\\n   # ou\\n   chromium-browser --version\\n   # ou\\n   chromium --version\\n\\nSe não estiver instalado (Ubuntu/Debian):\\n   sudo apt-get install google-chrome-stable\\n\\nPara iniciar com CDP (porta 9222):\\n   google-chrome --remote-debugging-port=9222 --user-data-dir=~/chrome-luna`);
+      badge.textContent = 'Testando...';
+      try {
+        const data = await apiGet('/api/test/chrome');
+        if (data.ok) {
+          badge.className = 'text-xs px-2 py-1 rounded-full bg-green-900/60 text-green-300';
+          badge.textContent = 'Instalado';
+          showTestOutput(`✅ Chrome encontrado\nComando: ${data.command}\nVersão: ${data.version}`);
+        } else {
+          badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900/60 text-red-300';
+          badge.textContent = 'Não encontrado';
+          showTestOutput(`❌ ${data.error}`);
+        }
+      } catch (e) {
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900/60 text-red-300';
+        badge.textContent = 'Erro';
+        showTestOutput(`❌ ${e.message}`);
+      }
     }
 
     function showTestOutput(text) {
@@ -980,8 +841,13 @@ AVAILABLE SKILLS:
     }
 
     // ============================================================
-    // TOAST
+    // UTILS
     // ============================================================
+    function toggleVisibility(id) {
+      const el = document.getElementById(id);
+      el.type = el.type === 'password' ? 'text' : 'password';
+    }
+
     function showToast(msg, icon) {
       const toast = document.getElementById('toast');
       document.getElementById('toastMsg').textContent = msg;
@@ -989,11 +855,19 @@ AVAILABLE SKILLS:
       toast.classList.remove('translate-y-20', 'opacity-0');
       setTimeout(() => {
         toast.classList.add('translate-y-20', 'opacity-0');
-      }, 3000);
+      }, 4000);
     }
 
-    // Run init
-    init();
+    // Warn before leaving if unsaved changes
+    window.addEventListener('beforeunload', (e) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    // Init
+    loadConfig();
   </script>
 </body>
 </html>
