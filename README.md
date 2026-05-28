@@ -59,3 +59,22 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/ins
 ## License
 
 Private — NEXO DIGITAL S.L.
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TELEGRAM_BOT_TOKEN` | ✅ Yes | — | Token from @BotFather |
+| `INTERNAL_API_TOKEN` | ✅ Yes | — | NEXO Dashboard API token |
+| `KIMI_TIMEOUT` | No | 120000 | Kimi Web timeout (ms) |
+| `KIMI_MAX_PAGES` | No | 5 | Max Chrome pages |
+| `KIMI_IDLE_TIMEOUT` | No | 600000 | Idle timeout (ms) |
+| `KIMI_COOLDOWN_MS` | No | 5000 | Message cooldown (ms) |
+| `LUNA_COMPACT_THRESHOLD` | No | 24 | Context compaction threshold |
+| `LUNA_CHROME_PATH` | No | auto | Chrome binary path |
+
+Copy `.env.example` to `.env` and fill in your tokens:
+```bash
+cp .env.example .env
+nano .env
+```
