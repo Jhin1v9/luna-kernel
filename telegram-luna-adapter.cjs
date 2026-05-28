@@ -1,0 +1,397 @@
+// ============================================================
+// LUNA TELEGRAM ADAPTER v4.0 — Kernel Unificado
+// Adapter fino: apenas transport layer. Toda inteligência vive no Luna Soul.
+// ============================================================
+
+const TelegramBot = require('node-telegram-bot-api');
+const { LunaSoul } = require('./luna-soul.cjs');
+const { SessionManager } = require('./session-manager.cjs');
+const fs = require('fs');
+const path = require('path');
+
+const SESSION_DIR = path.join(__dirname, '..', 'data', 'telegram-sessions');
+if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+
+// ── CONFIG ──
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+if (!TOKEN) {
+  console.error('❌ TELEGRAM_BOT_TOKEN não configurado');
+  process.exit(1);
+}
+
+// ── ADAPTER ──
+class TelegramLunaAdapter {
+  constructor() {
+    this.bot = new TelegramBot(TOKEN, { polling: true });
+    this.luna = null;
+    this.activeStreams = new Map(); // chatId → { messageId, lastEdit }
+    this.activeUsers = new Set();   // evita overlapping requests
+    this.awakeChats = new Set();    // chats em modo persistente (wake)
+    this._loadAwakeState();
+  }
+
+  async start() {
+    console.log('🚀 Iniciando Luna Telegram Adapter v4.0...');
+
+    this.sessionManager = new SessionManager();
+    this.luna = new LunaSoul({});
+    await this.luna.init();
+    console.log('✅ Luna Soul inicializado');
+
+    this._setupHandlers();
+    console.log('✅ Telegram polling ativo');
+
+    const me = await this.bot.getMe();
+    console.log(`🤖 Bot: @${me.username}`);
+  }
+
+  stop() {
+    if (this.bot) this.bot.stopPolling();
+    console.log('🛑 Telegram Adapter parado');
+  }
+
+  _setupHandlers() {
+    // ── Comandos ──
+    this.bot.onText(/^\/start/, (msg) => this._cmdStart(msg));
+    this.bot.onText(/^\/modo\s+(.+)/, (msg, match) => this._cmdModo(msg, match));
+    this.bot.onText(/^\/persona\s+(.+)/, (msg, match) => this._cmdModo(msg, match));
+    this.bot.onText(/^\/status/, (msg) => this._cmdStatus(msg));
+    this.bot.onText(/^\/newaba/, (msg) => this._cmdNewAba(msg));
+    this.bot.onText(/^\/kimi(?:\s+(on|off))?/, (msg, match) => this._cmdKimi(msg, match));
+
+    // ── Mensagens genéricas ──
+    this.bot.on('message', async (msg) => {
+      if (!msg.text || msg.text.startsWith('/')) return;
+      await this._handleUserMessage(msg);
+    });
+
+    // ── Erros ──
+    this.bot.on('polling_error', (err) => {
+      console.warn('[TG] Polling error:', err.message || err);
+    });
+  }
+
+  // ── COMANDOS ──
+
+  async _cmdStart(msg) {
+    const chatId = msg.chat.id;
+    const name = msg.from?.first_name || 'usuário';
+    await this.bot.sendMessage(chatId,
+      `🌙 *Olá, ${name}!* Sou Luna, sua agente autônoma unificada.\n\n` +
+      `Posso ajudar com:\n` +
+      `• 💻 Código e arquivos no seu PC\n` +
+      `• 📋 Tarefas e leads no dashboard\n` +
+      `• 🔍 Pesquisa na internet\n\n` +
+      `*Comandos:*\n` +
+      `/kimi — ativar modo persistente (respondo todas as msgs)\n` +
+      `/kimi off — desativar modo persistente\n` +
+      `/modo [engenheiro|arquiteto|produto|devops|default] — trocar persona\n` +
+      `/newaba — nova sessão de chat\n` +
+      `/status — status do sistema`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  async _cmdModo(msg, match) {
+    const chatId = msg.chat.id;
+    const persona = match[1].trim().toLowerCase();
+    const valid = ['engenheiro', 'arquiteto', 'produto', 'devops', 'default', 'dev'];
+
+    if (!valid.includes(persona)) {
+      await this.bot.sendMessage(chatId,
+        `⚠️ Persona desconhecida: *${persona}*\n` +
+        `Disponíveis: ${valid.join(', ')}`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // Persiste preferência
+    const prefPath = path.join(SESSION_DIR, `${chatId}-persona.json`);
+    fs.writeFileSync(prefPath, JSON.stringify({ persona, updatedAt: new Date().toISOString() }));
+
+    await this.bot.sendMessage(chatId, `✅ Persona alterada para: *${persona}*`, { parse_mode: 'Markdown' });
+  }
+
+  async _cmdStatus(msg) {
+    const chatId = msg.chat.id;
+    const status = this.luna?.kimiBridge?.getStatus?.() || { running: false };
+    const isAwake = this.awakeChats.has(chatId);
+    await this.bot.sendMessage(chatId,
+      `📊 *Status Luna*\n\n` +
+      `Chrome: ${status.running ? '🟢 Conectado' : '🔴 Desconectado'}\n` +
+      `Modo persistente: ${isAwake ? '🟢 Ativo (respondo todas as msgs)' : '🔴 Inativo'}\n` +
+      `Sessões ativas: ${this.activeStreams.size}\n` +
+      `Usuários processando: ${this.activeUsers.size}`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  async _cmdNewAba(msg) {
+    const chatId = msg.chat.id;
+    const userId = `telegram-${chatId}`;
+    const sessionId = userId;
+    try {
+      await this.luna.newThread(userId);
+      this.sessionManager.clearContext(sessionId);
+      await this.bot.sendMessage(chatId, '🆕 *Nova sessão iniciada!*', { parse_mode: 'Markdown' });
+    } catch (e) {
+      await this.bot.sendMessage(chatId, `❌ Erro: ${e.message}`);
+    }
+  }
+
+  async _cmdKimi(msg, match) {
+    const chatId = msg.chat.id;
+    const arg = (match[1] || '').trim().toLowerCase();
+
+    if (arg === 'off') {
+      this.awakeChats.delete(chatId);
+      this._saveAwakeState();
+      await this.bot.sendMessage(chatId,
+        `😴 *Luna dormindo...*\n\nNão vou mais responder mensagens automáticas.\nMande \`/kimi\` quando quiser me acordar!`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // /kimi ou /kimi on → acorda
+    const wasAwake = this.awakeChats.has(chatId);
+    this.awakeChats.add(chatId);
+    this._saveAwakeState();
+
+    if (!wasAwake) {
+      await this.bot.sendMessage(chatId,
+        `🌙 *Luna acordou!*\n\nEstou no modo persistente — vou responder *todas* as suas mensagens até você mandar \`/kimi off\`.`,
+        { parse_mode: 'Markdown' }
+      );
+    } else {
+      await this.bot.sendMessage(chatId,
+        `🌙 *Já estou acordada!*\n\nModo persistente ativo. Mande \`/kimi off\` para eu dormir.`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
+
+  _loadAwakeState() {
+    try {
+      const p = path.join(SESSION_DIR, 'awake-chats.json');
+      const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (Array.isArray(data)) data.forEach(id => this.awakeChats.add(id));
+    } catch { /* ignora se não existe */ }
+  }
+
+  _saveAwakeState() {
+    try {
+      const p = path.join(SESSION_DIR, 'awake-chats.json');
+      fs.writeFileSync(p, JSON.stringify([...this.awakeChats]));
+    } catch (e) { console.warn('[TG] Erro ao salvar awake state:', e.message); }
+  }
+
+  // ── MENSAGEM PRINCIPAL ──
+
+  async _handleUserMessage(msg) {
+    const chatId = msg.chat.id;
+    const userId = `telegram-${chatId}`;
+    const text = msg.text;
+    const name = msg.from?.first_name || 'usuário';
+
+    // Se o chat NÃO está no modo persistente, ignora mensagens genéricas
+    if (!this.awakeChats.has(chatId)) {
+      return;
+    }
+
+    // Evita overlapping
+    if (this.activeUsers.has(userId)) {
+      await this.bot.sendMessage(chatId, '⏳ Aguarde a resposta anterior...', {
+        reply_to_message_id: msg.message_id,
+      });
+      return;
+    }
+    this.activeUsers.add(userId);
+
+    // Carrega persona salva
+    const prefPath = path.join(SESSION_DIR, `${chatId}-persona.json`);
+    let persona = 'default';
+    try {
+      const pref = JSON.parse(fs.readFileSync(prefPath, 'utf8'));
+      persona = pref.persona;
+    } catch {}
+
+    // Cria/recupera sessão persistente por chat
+    const sessionId = `telegram-${chatId}`;
+    let session = this.sessionManager.loadSession(sessionId);
+    if (!session) {
+      session = this.sessionManager.createSession({
+        id: sessionId,
+        title: `Telegram ${chatId}`,
+        mode: 'CHAT',
+        persona,
+        metadata: { source: 'telegram', chatId },
+      });
+    }
+
+    // Envia "Pensando..."
+    const thinkingMsg = await this.bot.sendMessage(chatId, '🧠 *Pensando...*', {
+      parse_mode: 'Markdown',
+      reply_to_message_id: msg.message_id,
+    });
+
+    this.activeStreams.set(chatId, {
+      messageId: thinkingMsg.message_id,
+      lastText: '',
+      editCount: 0,
+    });
+
+    try {
+      const stream = this.luna.processMessageStream(text, {
+        sessionId: session.id,
+        userId,
+        mode: session.mode,
+        persona,
+      });
+
+      let fullResponse = '';
+      let hasStartedResponding = false;
+
+      for await (const ev of stream) {
+        switch (ev.type) {
+          case 'thinking_start':
+            // já mostramos "Pensando..."
+            break;
+
+          case 'thinking_delta':
+            // Opcional: mostrar thinking ao vivo (pode ser barulho no Telegram)
+            break;
+
+          case 'response_delta': {
+            fullResponse = ev.fullResponse || '';
+            hasStartedResponding = true;
+            await this._updateMessage(chatId, fullResponse);
+            break;
+          }
+
+          case 'action_start': {
+            const toolName = ev.tool || 'tool';
+            await this.bot.sendMessage(chatId, `🔧 *Executando:* \`${toolName}\``, {
+              parse_mode: 'Markdown',
+            });
+            break;
+          }
+
+          case 'action_end': {
+            const res = ev.result;
+            const icon = res?.success !== false ? '✅' : '❌';
+            const output = res?.stdout || res?.output || res?.text || res?.result?.stdout || res?.result?.output || res?.result?.text || '';
+            const short = output.slice(0, 500);
+            await this.bot.sendMessage(chatId,
+              `${icon} *${ev.tool}* concluído${short ? `\n\n\`\`\`\n${short}\n\`\`\`` : ''}`,
+              { parse_mode: 'Markdown' }
+            );
+            break;
+          }
+
+          case 'error': {
+            await this.bot.sendMessage(chatId, `❌ *Erro:* ${ev.message || ev.error || 'desconhecido'}`, {
+              parse_mode: 'Markdown',
+            });
+            break;
+          }
+
+          case 'done': {
+            // Mensagem final já foi editada pelo response_delta
+            const meta = this.activeStreams.get(chatId);
+            if (meta && fullResponse) {
+              await this._finalizeMessage(chatId, fullResponse);
+            }
+            break;
+          }
+        }
+      }
+
+      // Se nunca chegou response_delta, edita com o que temos
+      if (!hasStartedResponding && fullResponse) {
+        await this._finalizeMessage(chatId, fullResponse);
+      }
+
+    } catch (e) {
+      console.error('[TG] Erro no stream:', e);
+      await this.bot.sendMessage(chatId, `❌ Erro interno: ${e.message}`);
+    } finally {
+      this.activeUsers.delete(userId);
+      this.activeStreams.delete(chatId);
+    }
+  }
+
+  // ── HELPERS DE UI ──
+
+  async _updateMessage(chatId, text) {
+    const meta = this.activeStreams.get(chatId);
+    if (!meta) return;
+
+    // Telegram limit: 4096 chars. Trunca para edição.
+    const safe = text.slice(0, 4000);
+    if (safe === meta.lastText) return; // evita edições desnecessárias
+
+    // Rate limit: no máximo 1 edição a cada 2s
+    const now = Date.now();
+    if (now - meta.lastEdit < 2000) return;
+
+    try {
+      await this.bot.editMessageText(safe, {
+        chat_id: chatId,
+        message_id: meta.messageId,
+        parse_mode: 'Markdown',
+      });
+      meta.lastText = safe;
+      meta.lastEdit = now;
+      meta.editCount++;
+    } catch (e) {
+      // Edit conflicts (message not modified) são normais
+      if (!e.message?.includes('not modified')) {
+        console.warn('[TG] Edit error:', e.message);
+      }
+    }
+  }
+
+  async _finalizeMessage(chatId, text) {
+    const meta = this.activeStreams.get(chatId);
+    if (!meta) return;
+
+    const safe = text.slice(0, 4000);
+    try {
+      await this.bot.editMessageText(safe, {
+        chat_id: chatId,
+        message_id: meta.messageId,
+        parse_mode: 'Markdown',
+      });
+    } catch {
+      // Se edit falhar, manda nova mensagem
+      await this.bot.sendMessage(chatId, safe, { parse_mode: 'Markdown' });
+    }
+  }
+}
+
+// ── CLI / SINGLETON ──
+let instance = null;
+
+async function start() {
+  if (!instance) instance = new TelegramLunaAdapter();
+  await instance.start();
+  return instance;
+}
+
+function stop() {
+  if (instance) instance.stop();
+  instance = null;
+}
+
+module.exports = { TelegramLunaAdapter, start, stop };
+
+// Se executado diretamente
+if (require.main === module) {
+  start().catch(e => {
+    console.error('❌ Falha ao iniciar:', e);
+    process.exit(1);
+  });
+  process.on('SIGINT', () => { stop(); process.exit(0); });
+}
