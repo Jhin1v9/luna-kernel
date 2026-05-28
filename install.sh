@@ -10,99 +10,144 @@ REPO_URL="https://github.com/Jhin1v9/luna-kernel"
 INSTALL_DIR="${HOME}/.luna-kernel"
 NODE_MIN_VERSION=20
 
-echo "🌙 Luna Kernel v4.0 Installer"
-echo "=============================="
+echo ""
+echo "🌙 ╔════════════════════════════════════════════╗"
+echo "🌙 ║   Luna Kernel v4.0 Installer              ║"
+echo "🌙 ║   NEXO DIGITAL S.L. — Private Use Only   ║"
+echo "🌙 ╚════════════════════════════════════════════╝"
+echo ""
 
 # Check Node.js version
-echo ""
-echo "📦 Checking Node.js..."
+echo "📦 Verificando Node.js..."
 if ! command -v node &> /dev/null; then
-    echo "❌ Node.js not found. Please install Node.js v${NODE_MIN_VERSION}+ first."
-    echo "   Visit: https://nodejs.org/"
+    echo "❌ Node.js não encontrado. Instale o Node.js v${NODE_MIN_VERSION}+ primeiro."
+    echo "   👉 https://nodejs.org/"
     exit 1
 fi
 
 NODE_VERSION=$(node -v | sed 's/v//;s/\..*//')
 if [ "$NODE_VERSION" -lt "$NODE_MIN_VERSION" ]; then
-    echo "❌ Node.js v${NODE_VERSION} found, but v${NODE_MIN_VERSION}+ is required."
+    echo "❌ Node.js v${NODE_VERSION} encontrado, mas v${NODE_MIN_VERSION}+ é obrigatório."
     exit 1
 fi
 echo "✅ Node.js $(node -v)"
 
 # Check git
 echo ""
-echo "📦 Checking Git..."
+echo "📦 Verificando Git..."
 if ! command -v git &> /dev/null; then
-    echo "❌ Git not found. Please install Git first."
+    echo "❌ Git não encontrado. Instale o Git primeiro:"
+    echo "   sudo apt-get install git"
     exit 1
 fi
 echo "✅ Git $(git --version | awk '{print $3}')"
 
 # Clone or update
 echo ""
-echo "📥 Installing Luna Kernel to ${INSTALL_DIR}..."
+echo "📥 Instalando Luna Kernel em ${INSTALL_DIR}..."
 if [ -d "$INSTALL_DIR" ]; then
-    echo "   Directory exists. Updating..."
+    echo "   Diretório existe. Atualizando..."
     cd "$INSTALL_DIR"
     git pull origin main
 else
-    echo "   Cloning repository..."
+    echo "   Clonando repositório..."
     git clone "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
 fi
 
 # Install dependencies
 echo ""
-echo "📦 Installing dependencies..."
+echo "📦 Instalando dependências..."
 npm install 2>&1 | tail -5
 
 # Check Chrome/Playwright
 echo ""
-echo "🔍 Checking Chrome..."
+echo "🔍 Verificando Chrome/Chromium..."
+CHROME_FOUND=false
 if command -v google-chrome &> /dev/null; then
-    echo "✅ Chrome found"
+    echo "✅ Google Chrome encontrado"
+    CHROME_FOUND=true
 elif command -v chromium-browser &> /dev/null; then
-    echo "✅ Chromium found"
+    echo "✅ Chromium Browser encontrado"
+    CHROME_FOUND=true
 elif command -v chromium &> /dev/null; then
-    echo "✅ Chromium found"
-else
-    echo "⚠️  Chrome/Chromium not found. You'll need it for Kimi Web bridge."
-    echo "   Install: sudo apt-get install google-chrome-stable"
+    echo "✅ Chromium encontrado"
+    CHROME_FOUND=true
+fi
+
+if [ "$CHROME_FOUND" = false ]; then
+    echo "⚠️  Chrome/Chromium NÃO encontrado."
+    echo "   A Luna precisa do Chrome para o Kimi Web Bridge."
+    echo "   Instale: sudo apt-get install google-chrome-stable"
 fi
 
 # Create env template
 echo ""
-echo "📝 Creating environment template..."
+echo "📝 Criando template de ambiente..."
 if [ ! -f ".env" ]; then
     cat > .env << 'ENVEOF'
-# Luna Kernel Environment
-# Fill in your tokens and run: source .env
+# ============================================================
+# Luna Kernel v4.0 — Environment Configuration
+# NEXO DIGITAL S.L.
+# ============================================================
 
-# Telegram Bot Token (get from @BotFather)
-TELEGRAM_BOT_TOKEN=your_token_here
+# ── REQUIRED ──
 
-# Kimi Web credentials (if using browser auth)
-# KIMI_USERNAME=
-# KIMI_PASSWORD=
+# Telegram Bot Token (get from @BotFather: https://t.me/BotFather)
+# Create a bot, copy the token, paste here
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
-# Internal API token for dashboard
-INTERNAL_API_TOKEN=your_api_token_here
-ENVOF
-    echo "✅ .env template created. Please edit it with your tokens."
+# Internal API Token for NEXO Dashboard
+# Used for dashboardCreateTask, dashboardListTasks, etc.
+INTERNAL_API_TOKEN=your_dashboard_api_token_here
+
+# ── OPTIONAL (have defaults) ──
+
+# Kimi Bridge Settings
+KIMI_TIMEOUT=120000
+KIMI_MAX_PAGES=5
+KIMI_IDLE_TIMEOUT=600000
+KIMI_COOLDOWN_MS=5000
+KIMI_MAX_TYPE_LENGTH=500
+KIMI_LOG_MAX_MB=10
+
+# Context Auto-Compaction
+LUNA_COMPACT_THRESHOLD=24
+LUNA_COMPACT_TOKEN_THRESHOLD=120000
+
+# Chrome Path (auto-detected if not set)
+# LUNA_CHROME_PATH=/usr/bin/google-chrome
+
+# Debug Mode
+# LUNA_DEBUG=true
+ENVEOF
+    echo "✅ .env template criado. Preencha com seus tokens!"
 else
-    echo "✅ .env already exists."
+    echo "✅ .env já existe. Mantido o atual."
 fi
 
+# Done
 echo ""
-echo "=============================="
-echo "🌙 Luna Kernel v4.0 installed!"
-echo "=============================="
+echo "🌙 ╔════════════════════════════════════════════╗"
+echo "🌙 ║   Luna Kernel v4.0 instalada!            ║"
+echo "🌙 ╚════════════════════════════════════════════╝"
 echo ""
-echo "Next steps:"
-echo "  1. cd ${INSTALL_DIR}"
-echo "  2. nano .env  # Add your tokens"
-echo "  3. node telegram-luna-adapter.cjs  # Start the bot"
+echo "📋 Próximos passos:"
 echo ""
-echo "Or use PM2:"
-echo "  pm2 start telegram-luna-adapter.cjs --name luna-kernel"
+echo "   1️⃣  cd ${INSTALL_DIR}"
+echo "   2️⃣  Abra o painel visual:"
+echo "       firefox config.html    # ou chrome, chromium"
+echo ""
+echo "   3️⃣  Ou edite direto:"
+echo "       nano .env              # cole seus tokens"
+echo ""
+echo "   4️⃣  Inicie a Luna:"
+echo "       node telegram-luna-adapter.cjs"
+echo ""
+echo "   💡  Ou use PM2 (background):"
+echo "       pm2 start telegram-luna-adapter.cjs --name luna-kernel"
+echo "       pm2 save"
+echo ""
+echo "🤖 Bot do Telegram: @lunanexobot"
+echo "   → Adicione ao seu grupo para começar"
 echo ""
