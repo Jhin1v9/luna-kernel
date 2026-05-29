@@ -1,0 +1,202 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --luna-bg: #0a0a1a;
+  --luna-surface: #12121f;
+  --luna-elevated: #1a1a2e;
+  --luna-border: rgba(255, 255, 255, 0.06);
+  --luna-text: #e2e8f0;
+  --luna-text-secondary: #94a3b8;
+  --luna-primary: #e94560;
+  --luna-primary-hover: #ff6b6b;
+  --luna-gold: #ffd700;
+
+  --tool-writeFile: #3b82f6;
+  --tool-readFile: #22c55e;
+  --tool-executeShell: #a855f7;
+  --tool-searchWeb: #f97316;
+  --tool-gitStatus: #6b7280;
+  --tool-gitDiff: #6b7280;
+  --tool-gitLog: #6b7280;
+  --tool-gitCommit: #6b7280;
+  --tool-dashboard: #ec4899;
+  --tool-replaceInFile: #06b6d4;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--luna-text);
+  background-color: var(--luna-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Selection */
+::selection {
+  background: rgba(233, 69, 96, 0.3);
+  color: var(--luna-text);
+}
+
+/* Focus rings */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--luna-primary);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Code blocks */
+pre {
+  font-family: 'JetBrains Mono', monospace;
+  background: #0d0d1a;
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+
+:not(pre) > code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--luna-primary-hover);
+}
+
+/* Animations */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(233, 69, 96, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 20px 4px rgba(233, 69, 96, 0.1);
+  }
+}
+
+/* Markdown content styles */
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+  color: var(--luna-text);
+}
+
+.markdown-content h1 { font-size: 1.5rem; }
+.markdown-content h2 { font-size: 1.25rem; }
+.markdown-content h3 { font-size: 1.1rem; }
+
+.markdown-content p {
+  margin-bottom: 0.75rem;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin-left: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.markdown-content li {
+  margin-bottom: 0.25rem;
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid var(--luna-primary);
+  padding-left: 1rem;
+  margin: 1rem 0;
+  color: var(--luna-text-secondary);
+}
+
+.markdown-content a {
+  color: var(--luna-primary);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--luna-border);
+  padding: 0.5rem;
+  text-align: left;
+}
+
+.markdown-content th {
+  background: var(--luna-surface);
+  font-weight: 600;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--luna-border);
+  margin: 1.5rem 0;
+}
