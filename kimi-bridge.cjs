@@ -1,6 +1,8 @@
 /**
- * Luna-Kimi Bridge v2.1
+ * Luna-Kimi Bridge v2.2
  * Multi-user Playwright automation for Kimi Web (kimi.com) via CDP
+ * v2.2: Always uses persistent profile (~/.luna/chrome-profile) to preserve Kimi login across sessions.
+ *       Kills Chrome if running with a temporary /tmp/ profile. Copies login data from user's Chrome on first run.
  *
  * Patterns borrowed from luna-cto-agent.cjs (Luna v15.1–v19.0):
  * - Persistent Logger with circular buffer + rotation
@@ -1352,8 +1354,86 @@ class KimiBridge {
   }
 
   /**
+   * Ensure the persistent Chrome profile exists and contains login data.
+   * If missing or empty, copies essential data from the user's default Chrome profile.
+   */
+  _ensureChromeProfile() {
+    const { execSync } = require('child_process');
+    const os = require('os');
+    const userDataDir = path.join(os.homedir(), '.luna', 'chrome-profile');
+    const sourceProfile = path.join(os.homedir(), '.config', 'google-chrome');
+
+    // If persistent profile already has Local Storage data, assume it's good
+    const localStorageDir = path.join(userDataDir, 'Default', 'Local Storage', 'leveldb');
+    if (fs.existsSync(localStorageDir)) {
+      const files = fs.readdirSync(localStorageDir).filter(f => f.endsWith('.ldb') || f.endsWith('.log'));
+      if (files.length > 0) {
+        log.info(`Persistent profile already exists with data: ${userDataDir}`);
+        return userDataDir;
+      }
+    }
+
+    // Create persistent profile directory
+    if (!fs.existsSync(userDataDir)) {
+      fs.mkdirSync(userDataDir, { recursive: true });
+    }
+
+    // If source profile doesn't exist, just return the empty persistent profile
+    if (!fs.existsSync(sourceProfile)) {
+      log.warn(`Source Chrome profile not found at ${sourceProfile}. Starting with empty profile.`);
+      return userDataDir;
+    }
+
+    log.info(`Copying Chrome profile from ${sourceProfile} to ${userDataDir}...`);
+
+    // Copy essential directories/files that contain login/session data
+    const itemsToCopy = [
+      'Default/Cookies',
+      'Default/Network/Cookies',
+      'Default/Login Data',
+      'Default/Web Data',
+      'Default/Local Storage',
+      'Default/Session Storage',
+      'Default/IndexedDB',
+      'Default/SharedStorage',
+      'Default/QuotaManager',
+      'Default/QuotaManager-journal',
+      'Default/Preferences',
+      'Default/Secure Preferences',
+      'Local State',
+    ];
+
+    for (const item of itemsToCopy) {
+      const src = path.join(sourceProfile, item);
+      const dst = path.join(userDataDir, item);
+      if (!fs.existsSync(src)) continue;
+      try {
+        const dstDir = path.dirname(dst);
+        if (!fs.existsSync(dstDir)) {
+          fs.mkdirSync(dstDir, { recursive: true });
+        }
+        const stat = fs.statSync(src);
+        if (stat.isDirectory()) {
+          // Use cp -r for directories
+          execSync(`cp -r "${src}" "${dst}"`, { stdio: 'ignore' });
+        } else {
+          // Use cp for files
+          execSync(`cp "${src}" "${dst}"`, { stdio: 'ignore' });
+        }
+      } catch (e) {
+        log.warn(`Failed to copy ${item}: ${e.message}`);
+      }
+    }
+
+    log.success(`Chrome profile copied to ${userDataDir}`);
+    return userDataDir;
+  }
+
+  /**
    * Check if Chrome is running with CDP and start if needed.
    * Supports dynamic ports (9222-9225). Kills headless Chrome. Starts visible Chrome.
+   * Always uses the persistent profile (~/.luna/chrome-profile).
+   * Kills Chrome if it's running with a temporary /tmp/ profile.
    * Returns { running: bool, started: bool, pid?: number, error?: string, wasHeadless?: bool, port?: number }
    */
   async checkChrome() {
@@ -1361,7 +1441,7 @@ class KimiBridge {
     const http = require('http');
     const os = require('os');
     const net = require('net');
-    const userDataDir = path.join(os.homedir(), '.luna', 'chrome-profile');
+    const userDataDir = this._ensureChromeProfile();
 
     // Helper: check if a port has Chrome responding
     const probePort = (port) => new Promise((resolve) => {
@@ -1388,11 +1468,13 @@ class KimiBridge {
       const ok = await probePort(port);
       if (!ok) continue;
       foundPort = port;
-      // Check if this Chrome is headless
+      // Check if this Chrome is headless or using a temporary /tmp/ profile
       try {
         const psOutput = execSync(`ps aux | grep 'chrome.*remote-debugging-port=${port}' | grep -v grep`, { encoding: 'utf8' });
         const dataDirMatch = psOutput.match(/--user-data-dir=([^\s]+)/);
         if (dataDirMatch) existingProfileDir = dataDirMatch[1];
+
+        // Kill headless Chrome
         if (psOutput.includes('--headless') || psOutput.includes('--ozone-platform=headless')) {
           wasHeadless = true;
           log.warn(`Chrome headless detectado na porta ${port}. Matando...`);
@@ -1401,11 +1483,22 @@ class KimiBridge {
           foundPort = 0;
           wasHeadless = false;
           existingProfileDir = null;
-        } else {
-          // Valid visible Chrome found
-          this.cdpUrl = makeCdpUrl(port);
-          return { running: true, started: false, wasHeadless: false, port };
+          continue;
         }
+
+        // Kill Chrome if using a temporary /tmp/ profile (loses login data)
+        if (existingProfileDir && existingProfileDir.startsWith('/tmp/')) {
+          log.warn(`Chrome na porta ${port} está usando perfil temporário ${existingProfileDir}. Matando para usar perfil persistente...`);
+          execSync(`pkill -f 'chrome.*remote-debugging-port=${port}'`);
+          await new Promise(r => setTimeout(r, 3000));
+          foundPort = 0;
+          existingProfileDir = null;
+          continue;
+        }
+
+        // Valid visible Chrome with persistent profile found
+        this.cdpUrl = makeCdpUrl(port);
+        return { running: true, started: false, wasHeadless: false, port };
       } catch {
         // Could not determine, assume it's ok
         this.cdpUrl = makeCdpUrl(port);
@@ -1446,8 +1539,9 @@ class KimiBridge {
     }
 
     try {
-      const profileDir = existingProfileDir || userDataDir;
-      if (existingProfileDir) log.info(`Reutilizando perfil existente: ${existingProfileDir}`);
+      // Always use the persistent profile, never a temporary one
+      const profileDir = userDataDir;
+      log.info(`Iniciando Chrome com perfil persistente: ${profileDir}`);
 
       const proc = spawn(chromePath, [
         `--remote-debugging-port=${startPort}`,
