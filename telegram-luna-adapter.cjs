@@ -3,11 +3,25 @@
 // Adapter fino: apenas transport layer. Toda inteligência vive no Luna Soul.
 // ============================================================
 
+const fs = require('fs');
+const path = require('path');
+
+// Load .env manually before any module that needs env vars
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+    const eq = line.indexOf('=');
+    if (eq > 0 && !line.startsWith('#')) {
+      const key = line.slice(0, eq).trim();
+      const val = line.slice(eq + 1).trim();
+      if (key && process.env[key] === undefined) process.env[key] = val;
+    }
+  });
+}
+
 const TelegramBot = require('node-telegram-bot-api');
 const { LunaSoul } = require('./luna-soul.cjs');
 const { SessionManager } = require('./session-manager.cjs');
-const fs = require('fs');
-const path = require('path');
 
 const SESSION_DIR = path.join(__dirname, '..', 'data', 'telegram-sessions');
 if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -282,7 +296,7 @@ class TelegramLunaAdapter {
             const res = ev.result;
             const icon = res?.success !== false ? '✅' : '❌';
             const output = res?.stdout || res?.output || res?.text || res?.result?.stdout || res?.result?.output || res?.result?.text || '';
-            const short = output.slice(0, 500);
+            const short = this._sanitizeText(output).slice(0, 500);
             await this.bot.sendMessage(chatId,
               `${icon} *${ev.tool}* concluído${short ? `\n\n\`\`\`\n${short}\n\`\`\`` : ''}`,
               { parse_mode: 'Markdown' }
@@ -291,7 +305,7 @@ class TelegramLunaAdapter {
           }
 
           case 'error': {
-            await this.bot.sendMessage(chatId, `❌ *Erro:* ${ev.message || ev.error || 'desconhecido'}`, {
+            await this.bot.sendMessage(chatId, `❌ *Erro:* ${this._sanitizeText(ev.message || ev.error || 'desconhecido')}`, {
               parse_mode: 'Markdown',
             });
             break;
@@ -324,9 +338,22 @@ class TelegramLunaAdapter {
 
   // ── HELPERS DE UI ──
 
+  _sanitizeText(text) {
+    if (!text) return '';
+    // Converte \n literal (dois chars: backslash + n) em quebra de linha real
+    // Isso acontece quando o Kimi retorna texto com newlines escapados
+    return text
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\\r/g, '\r');
+  }
+
   async _updateMessage(chatId, text) {
     const meta = this.activeStreams.get(chatId);
     if (!meta) return;
+
+    // Sanitiza newlines escapados antes de enviar pro Telegram
+    text = this._sanitizeText(text);
 
     // Telegram limit: 4096 chars. Trunca para edição.
     const safe = text.slice(0, 4000);
@@ -357,6 +384,7 @@ class TelegramLunaAdapter {
     const meta = this.activeStreams.get(chatId);
     if (!meta) return;
 
+    text = this._sanitizeText(text);
     const safe = text.slice(0, 4000);
     try {
       await this.bot.editMessageText(safe, {

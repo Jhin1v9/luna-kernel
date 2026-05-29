@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment
+.env
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Testing
+/test-screenshots
+*.test.ts
+*.test.js
+
+# Playwright MCP
+.playwright-mcp/
+
+# Build artifacts (keep dist for deployment)
+# dist/ is INCLUDED for web deployment

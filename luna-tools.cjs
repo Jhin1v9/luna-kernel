@@ -829,11 +829,14 @@ function think(thought) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const DASHBOARD_BASE = 'http://localhost:3456/api';
-const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+function getInternalApiToken() {
+  return process.env.INTERNAL_API_TOKEN || '';
+}
 
 async function dashboardApi(path, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
-  if (INTERNAL_API_TOKEN) opts.headers['Authorization'] = `Bearer ${INTERNAL_API_TOKEN}`;
+  const token = getInternalApiToken();
+  if (token) opts.headers['Authorization'] = `Bearer ${token}`;
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(`${DASHBOARD_BASE}${path}`, opts);
   if (!res.ok) throw new Error(`Dashboard API ${path}: ${res.status} ${res.statusText}`);
@@ -895,6 +898,37 @@ async function dashboardGetFinanceSummary(params) {
   return ok({ stdout: `💰 Finance Summary:\n- Expected: ${data.totalExpected || 0}\n- Received: ${data.totalReceived || 0}\n- Pending: ${data.totalPending || 0}\n- Overdue: ${data.overduePayments || 0}` });
 }
 
+async function dashboardCreateIdea(params) {
+  const body = {
+    title: params.title || 'Sem título',
+    type: params.type || 'brainstorm',
+    priority: params.priority || 'media',
+    status: params.status || 'rascunho',
+    tags: params.tags || [],
+    createdBy: 'luna-web',
+    createdByName: 'Luna Web'
+  };
+  if (params.description || params.content) {
+    body.content = { blocks: [{ type: 'paragraph', content: params.description || params.content || '' }] };
+  }
+  const data = await dashboardApi('/ideas', 'POST', body);
+  const idea = data.data || data;
+  return ok({ stdout: `💡 Ideia criada: "${idea.title || params.title}" (ID: ${idea.id || 'n/a'})` });
+}
+
+async function dashboardListIdeas(params) {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.type) query.set('type', params.type);
+  if (params.priority) query.set('priority', params.priority);
+  if (params.search) query.set('search', params.search);
+  if (params.limit) query.set('limit', String(params.limit));
+  const data = await dashboardApi(`/ideas?${query.toString()}`);
+  const ideas = data.data?.ideas || data.ideas || [];
+  const lines = ideas.map(i => `- [${i.status}] ${i.title} (tipo: ${i.type}, prio: ${i.priority})`).join('\n');
+  return ok({ stdout: `💡 ${ideas.length} ideia(s):\n${lines || 'Nenhuma ideia encontrada.'}` });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -948,6 +982,13 @@ module.exports = {
   dashboardCreateLead,
   dashboardListLeads,
   dashboardGetFinanceSummary,
+  dashboardCreateIdea,
+  dashboardListIdeas,
   // System
   getCurrentDirectory,
+  // Project Validation
+  validateProject: (projectPath) => {
+    const { validateProject } = require('./luna-code-validator.cjs');
+    return validateProject(projectPath);
+  },
 };

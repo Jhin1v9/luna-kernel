@@ -459,7 +459,7 @@ class KimiBridge {
       // v3.3: Inject DOM MutationObserver to detect tool calls in real-time
       await this._injectDomObserver(page);
 
-      await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2000);
 
       // v3.3-fix: Re-inject via evaluate after navigation to ensure observer is active
@@ -721,9 +721,8 @@ class KimiBridge {
     // detect the previous response as "done" when buttons are still visible.
     log.info('Waiting for new response text to appear...');
     let textHasChanged = false;
-    const changeTimeout = 30000; // wait up to 30s for text to start changing
     const changeStart = Date.now();
-    while (Date.now() - changeStart < changeTimeout) {
+    while (true) {
       try {
         const currentText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
         if (currentText !== initialText && currentText.trim().length > 0) {
@@ -746,7 +745,7 @@ class KimiBridge {
     try {
       await page.waitForSelector('.segment-assistant-actions .icon-button', {
         state: 'visible',
-        timeout: 30000, // 30s max wait for buttons
+        timeout: 0, // NO TIMEOUT — wait forever for buttons
       });
       buttonsVisible = true;
       log.success('Action buttons detected — response likely complete');
@@ -906,7 +905,7 @@ class KimiBridge {
     try {
       // Step 1: Try capturing new tab with extended timeout (15s)
       [newPage] = await Promise.all([
-        this.context.waitForEvent('page', { timeout: 15000 }),
+        this.context.waitForEvent('page', { timeout: 0 }),
         page.click('.sidebar-new-chat, .new-chat-btn, [class*="new-chat"]').catch(() => {
           // Fallback: try JS click if Playwright click fails
           return page.evaluate(() => {
@@ -943,12 +942,12 @@ class KimiBridge {
 
     // Step 3: If still no new tab, fallback to direct navigation
     if (!newPage) {
-      await page.goto('https://kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto('https://kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2500);
       targetPage = page;
     } else {
       // Wait for new page to load
-      await newPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+      await newPage.waitForLoadState('domcontentloaded', { timeout: 0 }).catch(() => {});
       await newPage.waitForTimeout(1500);
     }
 
@@ -1211,7 +1210,7 @@ class KimiBridge {
       const currentUrl = page.url();
       if (session.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
         log.info(`URL mismatch: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
-        await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
         await page.waitForTimeout(1500);
       }
 
@@ -1525,7 +1524,7 @@ class KimiBridge {
     // Not logged in — navigate to kimi.com and bring to front
     log.info(`User not logged in, navigating to Kimi login page`);
     try {
-      await page.goto('https://kimi.com/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.goto('https://kimi.com/', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(1500);
       await page.bringToFront().catch(() => {});
     } catch (e) {
@@ -2448,7 +2447,22 @@ class KimiBridge {
 
           const contentEl = block.querySelector('.segment-code-content, pre, code');
           if (!contentEl) return;
-          const text = contentEl.innerText.trim();
+          let text = contentEl.innerText.trim();
+          // Fallback: textContent often returns full text even when innerText is truncated
+          // by virtual scrolling or lazy rendering in the DOM.
+          if (text.length < 200) {
+            const tc = (contentEl.textContent || '').trim();
+            if (tc.length > text.length) {
+              text = tc;
+            }
+          }
+          // Also try to get text from sibling or parent if still short
+          if (text.length < 200 && contentEl.parentElement) {
+            const parentTc = (contentEl.parentElement.textContent || '').trim();
+            if (parentTc.length > text.length && !parentTc.includes('Copy')) {
+              text = parentTc;
+            }
+          }
           if (!text || text.length < 5 || seen.has(text)) return;
           seen.add(text);
 
@@ -2536,6 +2550,65 @@ class KimiBridge {
     if (incompleteEnders.test(lastLine)) return false;
 
     // Should not end with backslash (line continuation)
+    if (lastLine.endsWith('\\')) return false;
+
+    return true;
+  }
+
+  /**
+   * Check if a bash code block looks complete.
+   * Prevents emitting truncated heredocs or unclosed quotes as actions.
+   */
+  _isBashCodeComplete(code) {
+    if (!code || code.length < 5) return false;
+
+    // Check for unclosed heredoc: cat << 'EOF' ... (no closing EOF line)
+    // Also handles heredocs inside bash -c "..." strings where \n is literal
+    const heredocMatches = code.match(/<<\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/g);
+    if (heredocMatches) {
+      for (const hm of heredocMatches) {
+        const m = hm.match(/<<\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/);
+        if (!m) continue;
+        const delimiter = m[1];
+        // Check if the delimiter appears on its own line at the end
+        const closeRe = new RegExp(`^${delimiter}\\s*$`, 'm');
+        if (!closeRe.test(code)) {
+          // Also check if the delimiter appears after a literal \n (common in bash -c strings)
+          const literalCloseRe = new RegExp(`\\\\n${delimiter}\\b`);
+          if (!literalCloseRe.test(code) && !code.includes(`\n${delimiter}`)) {
+            return false;
+          }
+        }
+      }
+    }
+
+    // Check for unclosed single/double quotes
+    let inSingle = false, inDouble = false, escape = false;
+    for (let i = 0; i < code.length; i++) {
+      const ch = code[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\') { escape = true; continue; }
+      if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+      if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    }
+    if (inSingle || inDouble) return false;
+
+    // Check for unclosed backticks
+    const backticks = (code.match(/`/g) || []).length;
+    if (backticks % 2 !== 0) return false;
+
+    // Check for unclosed $() or ()
+    let parenDepth = 0;
+    for (let i = 0; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === '(') parenDepth++;
+      else if (ch === ')') parenDepth--;
+    }
+    if (parenDepth !== 0) return false;
+
+    // Last line should not end with backslash (line continuation)
+    const lines = code.split('\n');
+    const lastLine = lines[lines.length - 1].trim();
     if (lastLine.endsWith('\\')) return false;
 
     return true;
@@ -2743,11 +2816,10 @@ class KimiBridge {
       const emittedActionCodes = new Set();
       let domActionsCount = 0;
 
-      // Phase 0: Wait for text to start changing (30s hard limit — if Kimi never starts, something is wrong)
+      // Phase 0: Wait for text to start changing — NO TIMEOUT. Waits forever until Kimi starts.
       let textHasChanged = false;
-      const changeDeadline = Date.now() + 30000;
       let pollCount = 0;
-      while (Date.now() < changeDeadline) {
+      while (true) {
         const { thinking, response } = await this._pollThinkingAndResponse(page);
         const combined = thinking + response;
         if (combined !== initialText && combined.length > 0) {
@@ -2759,10 +2831,6 @@ class KimiBridge {
           yield { type: 'waiting', message: 'Aguardando resposta do Kimi...' };
         }
         await new Promise(r => setTimeout(r, 500));
-      }
-
-      if (!textHasChanged) {
-        throw new Error('Kimi não iniciou resposta em 30s — possível erro de envio ou seletores desatualizados');
       }
 
       // Phase 1: Stream until truly complete — INFINITELY patient.
@@ -2822,6 +2890,9 @@ class KimiBridge {
           for (const block of codeBlocks) {
             // Skip incomplete code (still being streamed into the DOM)
             if (block.language === 'python' && !this._isPythonCodeComplete(block.code)) {
+              continue;
+            }
+            if (block.language === 'bash' && !this._isBashCodeComplete(block.code)) {
               continue;
             }
             const hash = crypto.createHash('sha256').update(block.code).digest('hex').slice(0, 16);
@@ -3078,7 +3149,7 @@ class KimiBridge {
 
       // Navigate to Kimi
       log.info('[anonymousConsult] Navigating to kimi.com...');
-      await page.goto('https://kimi.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto('https://kimi.com', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2000);
 
       // Dismiss cookie/terms modals if present
@@ -3092,7 +3163,7 @@ class KimiBridge {
 
       // Find input and send message
       const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await inputLocator.waitFor({ state: 'visible', timeout: 10000 });
+      await inputLocator.waitFor({ state: 'visible', timeout: 0 });
       await inputLocator.fill('');
       await page.waitForTimeout(300);
       // Use fill + event dispatch for large texts (contenteditable can be tricky with type())
@@ -3120,10 +3191,9 @@ class KimiBridge {
       let pollCount = 0;
       const pollInterval = 800;
 
-      // Wait for text to start
+      // Wait for text to start — NO TIMEOUT. Waits forever until Kimi starts.
       let textHasChanged = false;
-      const changeDeadline = Date.now() + 30000;
-      while (Date.now() < changeDeadline) {
+      while (true) {
         const poll = await this._pollThinkingAndResponse(page);
         const combined = poll.thinking + poll.response;
         if (combined !== initialText && combined.length > 0) {
@@ -3134,10 +3204,6 @@ class KimiBridge {
           log.info('[anonymousConsult] Waiting for Kimi to start...');
         }
         await new Promise(r => setTimeout(r, 500));
-      }
-
-      if (!textHasChanged) {
-        throw new Error('Kimi did not start responding within 30s');
       }
 
       // Stream until complete

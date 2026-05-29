@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Luna Kernel v4.0 — Installer
+# Luna Kernel v5.0 — Installer
 # NEXO DIGITAL S.L. — Private Use Only
 # ============================================================
 
@@ -11,10 +11,10 @@ INSTALL_DIR="${HOME}/.luna-kernel"
 NODE_MIN_VERSION=20
 
 echo ""
-echo "🌙 ╔════════════════════════════════════════════╗"
-echo "🌙 ║   Luna Kernel v4.0 Installer              ║"
-echo "🌙 ║   NEXO DIGITAL S.L. — Private Use Only   ║"
-echo "🌙 ╚════════════════════════════════════════════╝"
+echo "🌙 ╔══════════════════════════════════════════════════╗"
+echo "🌙 ║   Luna Kernel v5.0 Installer                    ║"
+echo "🌙 ║   NEXO DIGITAL S.L. — Private Use Only         ║"
+echo "🌙 ╚══════════════════════════════════════════════════╝"
 echo ""
 
 # Check Node.js version
@@ -87,7 +87,7 @@ echo "📝 Criando template de ambiente..."
 if [ ! -f ".env" ]; then
     cat > .env << 'ENVEOF'
 # ============================================================
-# Luna Kernel v4.0 — Environment Configuration
+# Luna Kernel v5.0 — Environment Configuration
 # NEXO DIGITAL S.L.
 # ============================================================
 
@@ -100,6 +100,9 @@ TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 # Internal API Token for NEXO Dashboard
 # Used for dashboardCreateTask, dashboardListTasks, etc.
 INTERNAL_API_TOKEN=your_dashboard_api_token_here
+
+# JWT Secret for web sessions
+JWT_SECRET=your_jwt_secret_here_min_32_chars
 
 # ── OPTIONAL (have defaults) ──
 
@@ -120,6 +123,9 @@ LUNA_COMPACT_TOKEN_THRESHOLD=120000
 
 # Debug Mode
 # LUNA_DEBUG=true
+
+# Web Server Port
+LUNA_CONFIG_PORT=3458
 ENVEOF
     echo "✅ .env template criado. Preencha com seus tokens!"
 else
@@ -128,24 +134,32 @@ fi
 
 # Done
 echo ""
-echo "🌙 ╔════════════════════════════════════════════╗"
-echo "🌙 ║   Luna Kernel v4.0 instalada!            ║"
-echo "🌙 ╚════════════════════════════════════════════╝"
+echo "🌙 ╔══════════════════════════════════════════════════╗"
+echo "🌙 ║   Luna Kernel v5.0 instalada!                  ║"
+echo "🌙 ╚══════════════════════════════════════════════════╝"
 echo ""
 echo "📋 Próximos passos:"
 echo ""
 echo "   1️⃣  cd ${INSTALL_DIR}"
-echo "   2️⃣  Abra o painel visual:"
-echo "       firefox config.html    # ou chrome, chromium"
 echo ""
-echo "   3️⃣  Ou edite direto:"
-echo "       nano .env              # cole seus tokens"
+echo "   2️⃣  Configure o .env:"
+echo "       nano .env"
 echo ""
-echo "   4️⃣  Inicie a Luna:"
+echo "   3️⃣  Inicie a Luna (escolha um canal):"
+echo ""
+echo "       🌐 WEB INTERFACE (recomendado):"
+echo "       node config-server.cjs"
+echo "       → Abra: http://localhost:3458"
+echo ""
+echo "       💬 TELEGRAM BOT:"
 echo "       node telegram-luna-adapter.cjs"
 echo ""
+echo "       💻 CLI (terminal):"
+echo "       node luna-cli.cjs"
+echo ""
 echo "   💡  Ou use PM2 (background):"
-echo "       pm2 start telegram-luna-adapter.cjs --name luna-kernel"
+echo "       pm2 start config-server.cjs --name luna-web"
+echo "       pm2 start telegram-luna-adapter.cjs --name luna-telegram"
 echo "       pm2 save"
 echo ""
 echo "🤖 Bot do Telegram: @lunanexobot"

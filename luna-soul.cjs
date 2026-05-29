@@ -26,6 +26,14 @@ const { LunaGit } = require('./luna-git.cjs');
 const { ToolGuard, validatePythonCode, checkDestructivePattern } = require('./luna-tool-guard.cjs');
 const { ResponseStreamParser, safeJsonParse, isBalancedBraces } = require('./response-stream-parser.cjs');
 const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cjs');
+const {
+  checkJsxBalanced,
+  checkFileTruncated,
+  checkAppImports,
+  runBuildCheck,
+  checkIndexHtml,
+  validateProject,
+} = require('./luna-code-validator.cjs');
 const readline = require('readline');
 
 const LUNA_DIR = path.join(os.homedir(), '.luna');
@@ -208,6 +216,7 @@ CRITICAL ARCHITECTURE — READ CAREFULLY
    │ Git ops            │ gitStatus, gitCommit, etc.                         │
    │ Dashboard task     │ dashboardCreateTask, dashboardListTasks            │
    │ Dashboard lead     │ dashboardCreateLead, dashboardListLeads            │
+   │ Dashboard idea     │ dashboardCreateIdea, dashboardListIdeas            │
    │ Dashboard finance  │ dashboardGetFinanceSummary                         │
    └────────────────────┴────────────────────────────────────────────────────┘
 
@@ -294,7 +303,17 @@ Cadastrando o lead no sistema.
 {"tool":"dashboardCreateLead","params":{"name":"João Silva","email":"joao@exemplo.com","phone":"+34 600 000 000"}}
 \`\`\`
 
+EXEMPLO — CRIAR IDEIA:
+[[response]]
+Criando a ideia no dashboard NEXO.
+[[/response]]
+
+\`\`\`json
+{"tool":"dashboardCreateIdea","params":{"title":"Nova funcionalidade para app","type":"brainstorm","description":"Adicionar modo dark ao dashboard","priority":"alta"}}
+\`\`\`
+
 → ESPERA o resultado do LUNA-MIRROR antes de responder ao usuário.
+→ NUNCA diga que não pode acessar o dashboard. Você TEM acesso e DEVE usar as tools dashboard*.
 
 ════════════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT — SEPARATE RESPONSE FROM ACTIONS
@@ -1118,8 +1137,18 @@ class ProjectHealthValidator {
     await this._checkJsxReactImport(projectPath);
     // 5. Detecta package.json sem node_modules
     await this._checkNodeModules(projectPath);
+    // 6. Detecta arquivos truncados
+    await this._checkTruncatedFiles(projectPath);
+    // 7. Detecta tags JSX desbalanceadas
+    await this._checkJsxBalanced(projectPath);
+    // 8. Detecta App.jsx sem imports
+    await this._checkAppImports(projectPath);
+    // 9. Detecta index.html sem título
+    await this._checkIndexHtml(projectPath);
+    // 10. Tenta build e reporta erros
+    await this._checkBuild(projectPath);
 
-    // 6. Validacao visual automatica para projetos web
+    // 11. Validacao visual automatica para projetos web
     const screenshot = await this._visualTestProject(projectPath);
 
     return { ok: this.fixes.length === 0, fixes: this.fixes, screenshot: screenshot?.screenshot || screenshot, errorText: screenshot?.errorText || null };
@@ -1252,6 +1281,60 @@ class ProjectHealthValidator {
       this.fixes.push('📦 npm install executado automaticamente');
     } catch (e) {
       this.fixes.push(`⚠️ Falha ao rodar npm install: ${e.message}`);
+    }
+  }
+
+  async _checkTruncatedFiles(projectPath) {
+    const files = this._findFiles(projectPath, ['.jsx', '.tsx', '.js', '.ts', '.css', '.html', '.json']);
+    for (const file of files) {
+      const content = fs.readFileSync(file, 'utf8');
+      const ext = path.extname(file);
+      const result = checkFileTruncated(content, ext);
+      if (result.truncated) {
+        for (const e of result.errors) {
+          this.fixes.push(`🚨 Arquivo truncado (${path.relative(projectPath, file)}): ${e}`);
+        }
+      }
+    }
+  }
+
+  async _checkJsxBalanced(projectPath) {
+    const files = this._findFiles(projectPath, ['.jsx', '.tsx']);
+    for (const file of files) {
+      const content = fs.readFileSync(file, 'utf8');
+      const result = checkJsxBalanced(content);
+      if (!result.balanced) {
+        for (const e of result.errors) {
+          this.fixes.push(`🚨 JSX desbalanceado (${path.relative(projectPath, file)}): ${e}`);
+        }
+      }
+    }
+  }
+
+  async _checkAppImports(projectPath) {
+    const result = checkAppImports(projectPath);
+    if (!result.ok) {
+      for (const e of result.errors) {
+        this.fixes.push(`🚨 ${e}`);
+      }
+    }
+  }
+
+  async _checkIndexHtml(projectPath) {
+    const result = checkIndexHtml(projectPath);
+    if (!result.ok) {
+      this.fixes.push(`🚨 ${result.error}`);
+    }
+  }
+
+  async _checkBuild(projectPath) {
+    const result = runBuildCheck(projectPath);
+    if (!result.ok) {
+      for (const e of result.errors) {
+        this.fixes.push(`🚨 BUILD ERROR: ${e}`);
+      }
+    } else {
+      this.fixes.push('✅ Build passou sem erros');
     }
   }
 
@@ -1394,6 +1477,7 @@ class LunaSoul extends EventEmitter {
     this.taskTimeoutMs = options.taskTimeoutMs || 5 * 60 * 1000;
     this.defaultMode = options.defaultMode || 'thinking';
     this.autoSwitchEnabled = options.autoSwitch !== false; // default true
+    this.autoConfirmDestructive = options.autoConfirmDestructive === true; // default false for safety
     this.lunaGit = null;
     this.toolGuard = null; // lazy init quando workspace é setado
     this.projectValidator = new ProjectHealthValidator();
@@ -1939,10 +2023,18 @@ class LunaSoul extends EventEmitter {
         // Append DOM action results if not already included
         if (domActionResults.length > 0) {
           for (const dar of domActionResults) {
-            const stdout = dar.result?.result?.stdout || dar.result?.result?.output || dar.result?.result?.text || JSON.stringify(dar.result?.result);
-            const stderr = dar.result?.result?.stderr || '';
+            const innerResult = dar.result?.result;
+            let stdout = innerResult?.stdout || innerResult?.output || innerResult?.text || '';
+            const stderr = innerResult?.stderr || '';
             const successMark = dar.result?.success ? '✅' : '❌';
-            outputText += `\n\n[LUNA-MIRROR] ${successMark} ${dar.tool} executado no PC local:\n--- stdout ---\n${stdout}`;
+            // If there's a friendly message (e.g., validation errors), include it prominently
+            const msg = innerResult?.message || innerResult?.friendlyMessage || '';
+            if (!stdout && !msg) {
+              stdout = JSON.stringify(innerResult);
+            }
+            outputText += `\n\n[LUNA-MIRROR] ${successMark} ${dar.tool} executado no PC local:`;
+            if (msg) outputText += `\n--- message ---\n${msg}`;
+            if (stdout) outputText += `\n--- stdout ---\n${stdout}`;
             if (stderr) outputText += `\n--- stderr ---\n${stderr}`;
             if (dar.kimiResult) outputText += `\n--- sandbox (referência) ---\n${dar.kimiResult.slice(0, 500)}${dar.kimiResult.length > 500 ? '...' : ''}`;
           }
@@ -2389,6 +2481,8 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
       case 'dashboardCreateTask':
       case 'dashboardListTasks':
       case 'dashboardCreateLead':
+      case 'dashboardCreateIdea':
+      case 'dashboardListIdeas':
       case 'dashboardListLeads':
       case 'dashboardGetFinanceSummary': {
         const out = result.stdout || '';
@@ -2487,6 +2581,52 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
       }
     }
 
+    // ── Truncation guard for shell commands ──
+    // If a shell command looks like it was cut mid-heredoc or mid-string,
+    // return an error so Kimi Web knows to retry with a different approach.
+    if (!result && tool === 'executeShell' && params.command) {
+      const cmd = params.command;
+      const truncErrors = [];
+      // Check for unclosed heredoc: cat << 'EOF' ... (no closing EOF line)
+      const heredocOpen = cmd.match(/<<\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\s*$/m);
+      if (heredocOpen) {
+        const delimiter = heredocOpen[1];
+        const closeRe = new RegExp(`^${delimiter}\\s*$`, 'm');
+        if (!closeRe.test(cmd)) {
+          truncErrors.push(`Heredoc não fechado (esperado ${delimiter} no final)`);
+        }
+      }
+      // Check for unclosed single/double quotes
+      let inSingle = false, inDouble = false, escape = false;
+      for (let i = 0; i < cmd.length; i++) {
+        const ch = cmd[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\') { escape = true; continue; }
+        if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+        if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+      }
+      if (inSingle) truncErrors.push('String com aspas simples não fechada');
+      if (inDouble) truncErrors.push('String com aspas duplas não fechada');
+      // Check for unclosed backticks
+      const backticks = (cmd.match(/`/g) || []).length;
+      if (backticks % 2 !== 0) truncErrors.push('Backtick não fechado');
+      // Check for unclosed $() or ()
+      let parenDepth = 0;
+      for (let i = 0; i < cmd.length; i++) {
+        const ch = cmd[i];
+        if (ch === '(') parenDepth++;
+        else if (ch === ')') parenDepth--;
+      }
+      if (parenDepth !== 0) truncErrors.push('Parênteses desbalanceados');
+
+      if (truncErrors.length > 0) {
+        result = {
+          success: false,
+          error: `Comando shell parece truncado. NÃO EXECUTADO. Problemas: ${truncErrors.join(', ')}. Por favor, reenvie usando writeFile ou node -e em vez de heredoc longos.`,
+        };
+      }
+    }
+
     // ── Execute ──
     if (!result) {
       try {
@@ -2533,6 +2673,8 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
               case 'dashboardListTasks': return lunaTools.dashboardListTasks(p);
               case 'dashboardCreateLead': return lunaTools.dashboardCreateLead(p);
               case 'dashboardListLeads': return lunaTools.dashboardListLeads(p);
+              case 'dashboardCreateIdea': return lunaTools.dashboardCreateIdea(p);
+              case 'dashboardListIdeas': return lunaTools.dashboardListIdeas(p);
               case 'dashboardGetFinanceSummary': return lunaTools.dashboardGetFinanceSummary(p);
               default: return { success: false, error: `Ferramenta desconhecida: ${tool}` };
             }
@@ -2541,6 +2683,37 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
             result = await guard.execute(tool, p, toolFn);
           } else {
             result = toolFn();
+          }
+
+          // ── IMMEDIATE FILE VALIDATION (fast feedback loop) ──
+          // Detecta erros de sintaxe/truncamento IMEDIATAMENTE após writeFile
+          // para que a Kimi Web corrija na próxima iteração
+          const FILE_WRITE_TOOLS = ['writeFile', 'appendFile', 'replaceInFile'];
+          if (FILE_WRITE_TOOLS.includes(tool) && result?.success) {
+            const writtenPath = p.path || p.filePath;
+            if (writtenPath && fs.existsSync(writtenPath)) {
+              const ext = path.extname(writtenPath);
+              const content = fs.readFileSync(writtenPath, 'utf8');
+              const validationErrors = [];
+
+              // 1. Truncation check
+              const trunc = checkFileTruncated(content, ext);
+              if (trunc.truncated) validationErrors.push(...trunc.errors);
+
+              // 2. JSX balance check
+              if (ext === '.jsx' || ext === '.tsx') {
+                const jsx = checkJsxBalanced(content);
+                if (!jsx.balanced) validationErrors.push(...jsx.errors);
+              }
+
+              if (validationErrors.length > 0) {
+                const errorText = `⚠️ VALIDAÇÃO IMEDIATA DO ARQUIVO (${path.basename(writtenPath)}):\n${validationErrors.map(e => `  - ${e}`).join('\n')}\n\nO arquivo foi escrito mas contém erros. Por favor, corrija e reescreva o arquivo.`;
+                result.validationErrors = validationErrors;
+                result.message = (result.message || '') + '\n\n' + errorText;
+                // Não marcamos como falha (success continua true) para não quebrar o fluxo,
+                // mas a Kimi Web vê os erros na mensagem e pode corrigir.
+              }
+            }
           }
 
           // ── Auto project health validation after file creation ──
@@ -3101,6 +3274,10 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
 
   // ── v3.3: Destructive operation confirmation gate ──
   async _confirmDestructive(message, command) {
+    if (this.autoConfirmDestructive) {
+      console.log(`[LunaSoul] Auto-confirmando operação destrutiva: ${message} | ${command.slice(0, 200)}`);
+      return true;
+    }
     return new Promise((resolve) => {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       rl.question(

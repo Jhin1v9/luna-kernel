@@ -190,6 +190,11 @@ const TOOL_SCHEMAS = {
     required: ['pattern'],
     types: { pattern: 'string', path: 'string', type: 'string' },
   },
+  validateProject: {
+    required: ['path'],
+    types: { path: 'string' },
+    pathMustBeAbsolute: true,
+  },
 };
 
 function validateToolCall(toolName, params) {
@@ -238,8 +243,10 @@ function validateToolCall(toolName, params) {
 }
 
 // ── 4b. Python Sandbox (AST-light import deny-list) ──
+// v3.4: os/pathlib/sys are allowed — ipython runs on the user's REAL PC,
+// and the prompt explicitly tells Kimi Web that os/pathlib are fine.
 const PYTHON_FORBIDDEN_IMPORTS = [
-  'os', 'subprocess', 'shutil', 'socket', 'multiprocessing',
+  'subprocess', 'shutil', 'socket', 'multiprocessing',
   'pty', 'resource', 'ctypes', 'ctypes.util',
 ];
 const PYTHON_DANGEROUS_BUILTINS = [

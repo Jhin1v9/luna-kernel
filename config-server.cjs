@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Luna Kernel Config Server
- * Serves config.html + REST API for real filesystem read/write
- * No external dependencies — uses Node.js built-in http + fs
+ * Luna Kernel Config + Chat Server
+ * Serves static files + REST API + SSE streaming
+ * Integrates Luna Soul for AI processing
  */
 
 const http = require('http');
@@ -10,13 +10,99 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const PORT = process.env.LUNA_CONFIG_PORT || 3457;
+// Load .env manually (no dotenv dependency) — MUST be before any luna-tools require
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+    const eq = line.indexOf('=');
+    if (eq > 0 && !line.startsWith('#')) {
+      const key = line.slice(0, eq).trim();
+      const val = line.slice(eq + 1).trim();
+      if (key && process.env[key] === undefined) process.env[key] = val;
+    }
+  });
+}
+
+const PORT = process.env.LUNA_CONFIG_PORT || 3458;
 const LUNA_DIR = path.dirname(__filename);
 const ENV_PATH = path.join(LUNA_DIR, '.env');
 const SOUL_PATH = path.join(LUNA_DIR, 'luna-soul.cjs');
 
 // ============================================================
-// CORS + JSON helpers
+// Luna Soul lazy initialization
+// ============================================================
+let lunaSoul = null;
+let lunaReady = false;
+
+async function getLunaSoul() {
+  if (lunaSoul && lunaReady) return lunaSoul;
+  
+  try {
+    const { LunaSoul } = require('./luna-soul.cjs');
+    lunaSoul = new LunaSoul({});
+    await lunaSoul.init();
+    lunaReady = true;
+    console.log('🧠 Luna Soul inicializado para web chat');
+    return lunaSoul;
+  } catch (e) {
+    console.error('❌ Erro ao inicializar Luna Soul:', e.message);
+    throw e;
+  }
+}
+
+// ============================================================
+// Web Chat Sessions
+// ============================================================
+const webSessions = new Map(); // sessionId -> { id, title, messages, createdAt, updatedAt }
+const activeStreams = new Map(); // sessionId -> { controller, cancelled }
+
+function createWebSession(title = 'Nova conversa') {
+  const id = 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  const session = {
+    id,
+    title,
+    messages: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  webSessions.set(id, session);
+  return session;
+}
+
+function getWebSession(id) {
+  return webSessions.get(id);
+}
+
+function deleteWebSession(id) {
+  // Cancel any active stream
+  const stream = activeStreams.get(id);
+  if (stream) {
+    stream.cancelled = true;
+    activeStreams.delete(id);
+  }
+  return webSessions.delete(id);
+}
+
+function renameWebSession(id, title) {
+  const session = webSessions.get(id);
+  if (session) {
+    session.title = title;
+    session.updatedAt = new Date().toISOString();
+    return true;
+  }
+  return false;
+}
+
+function addMessageToSession(sessionId, message) {
+  const session = webSessions.get(sessionId);
+  if (session) {
+    session.messages.push(message);
+    session.updatedAt = new Date().toISOString();
+  }
+}
+
+// ============================================================
+// CORS + JSON + SSE helpers
 // ============================================================
 function sendJSON(res, status, data) {
   res.writeHead(status, {
@@ -39,6 +125,13 @@ function parseBody(req, cb) {
     try { cb(JSON.parse(body)); }
     catch (e) { cb(null); }
   });
+}
+
+function sendSSE(res, event, data) {
+  // Send as generic 'message' event so EventSource.onmessage captures it
+  // The event type is included in the JSON data
+  res.write(`event: message\n`);
+  res.write(`data: ${JSON.stringify({ ...data, _eventType: event })}\n\n`);
 }
 
 // ============================================================
@@ -94,7 +187,6 @@ function readSystemPrompt() {
   if (match) {
     return { found: true, content: match[1] };
   }
-  // Fallback: try broader match
   const match2 = content.match(/function buildSystemPrompt\([\s\S]*?return `([\s\S]*?)`;\s*\}\s*const/);
   if (match2) {
     return { found: true, content: match2[1] };
@@ -106,7 +198,6 @@ function writeSystemPrompt(newPrompt) {
   if (!fs.existsSync(SOUL_PATH)) return false;
   let content = fs.readFileSync(SOUL_PATH, 'utf-8');
 
-  // Strategy 1: match the known pattern
   const pattern = /(function buildSystemPrompt\(opts = \{\}\) \{[\s\S]*?return `)[\s\S]*?(`;\s*\}\s*\/\/\s*==+\s*\/\/\s*JSON PARSER)/;
   if (pattern.test(content)) {
     content = content.replace(pattern, '$1' + newPrompt + '$2');
@@ -114,7 +205,6 @@ function writeSystemPrompt(newPrompt) {
     return true;
   }
 
-  // Strategy 2: broader match
   const pattern2 = /(function buildSystemPrompt\([\s\S]*?return `)[\s\S]*?(`;\s*\}\s*const)/;
   if (pattern2.test(content)) {
     content = content.replace(pattern2, '$1' + newPrompt + '$2');
@@ -126,17 +216,7 @@ function writeSystemPrompt(newPrompt) {
 }
 
 // ============================================================
-// Default prompt (from buildSystemPrompt source)
-// ============================================================
-function getDefaultPrompt() {
-  // Read the original from luna-soul.cjs backup or from the function itself
-  const result = readSystemPrompt();
-  if (result.found) return result.content;
-  return '';
-}
-
-// ============================================================
-// Test Telegram token
+// Tests
 // ============================================================
 async function testTelegram(token) {
   try {
@@ -170,9 +250,6 @@ async function testTelegram(token) {
   }
 }
 
-// ============================================================
-// Test Node.js
-// ============================================================
 function testNode() {
   try {
     const version = execSync('node -v', { encoding: 'utf-8', timeout: 5000 }).trim();
@@ -188,9 +265,6 @@ function testNode() {
   }
 }
 
-// ============================================================
-// Test Chrome
-// ============================================================
 function testChrome() {
   const commands = ['google-chrome', 'chromium-browser', 'chromium', 'google-chrome-stable'];
   for (const cmd of commands) {
@@ -229,7 +303,220 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API: GET /api/config
+  // ============================================================
+  // CHAT API
+  // ============================================================
+
+  // POST /api/chat — send message
+  if (pathname === '/api/chat' && req.method === 'POST') {
+    parseBody(req, async (body) => {
+      if (!body) return sendError(res, 400, 'JSON inválido');
+      const { message, sessionId, mode = 'thinking' } = body;
+      if (!message) return sendError(res, 400, 'message obrigatório');
+
+      let session = sessionId ? getWebSession(sessionId) : null;
+      if (!session) {
+        session = createWebSession(message.slice(0, 40));
+      }
+
+      // Add user message
+      addMessageToSession(session.id, {
+        id: 'msg-' + Date.now(),
+        role: 'user',
+        type: 'text',
+        content: message,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Mark stream as active
+      activeStreams.set(session.id, { cancelled: false });
+
+      sendJSON(res, 200, { ok: true, sessionId: session.id, status: 'processing' });
+
+      // Process in background (don't await) — let Luna Soul + Kimi Web AI handle everything
+      try {
+        const luna = await getLunaSoul();
+        const stream = luna.processMessageStream(message, {
+          sessionId: session.id,
+          userId: 'web-' + session.id,
+          mode: mode === 'instant' ? 'instant' : 'thinking',
+        });
+
+        for await (const ev of stream) {
+          const streamMeta = activeStreams.get(session.id);
+          if (!streamMeta || streamMeta.cancelled) break;
+
+          // Store message events
+          if (['response_delta', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta'].includes(ev.type)) {
+            addMessageToSession(session.id, {
+              id: 'ev-' + Date.now(),
+              role: 'assistant',
+              type: ev.type,
+              content: ev.text || ev.fullResponse || '',
+              tool: ev.tool,
+              params: ev.params,
+              result: ev.result,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (e) {
+        console.error('[WEB] Erro no processamento:', e.message);
+        addMessageToSession(session.id, {
+          id: 'err-' + Date.now(),
+          role: 'assistant',
+          type: 'error',
+          content: e.message,
+          timestamp: new Date().toISOString(),
+        });
+      } finally {
+        activeStreams.delete(session.id);
+      }
+    });
+    return;
+  }
+
+  // GET /api/chat/stream — SSE streaming
+  if (pathname === '/api/chat/stream' && req.method === 'GET') {
+    const sessionId = url.searchParams.get('sessionId');
+    if (!sessionId) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('sessionId obrigatório');
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    // Send connection confirmation
+    sendSSE(res, 'connected', { type: 'connected', sessionId });
+
+    // Keep connection alive
+    const keepAlive = setInterval(() => {
+      res.write(':keepalive\n\n');
+    }, 15000);
+
+    // Watch for session messages and stream them
+    const session = getWebSession(sessionId);
+    let lastMsgIndex = 0; // Start from beginning to send historical messages
+
+    const checkInterval = setInterval(() => {
+      const currentSession = getWebSession(sessionId);
+      if (!currentSession) {
+        sendSSE(res, 'error', { type: 'error', message: 'Sessão não encontrada', sessionId });
+        clearInterval(checkInterval);
+        clearInterval(keepAlive);
+        res.end();
+        return;
+      }
+
+      // Send new messages as SSE events (including historical ones on first connect)
+      const newMessages = currentSession.messages.slice(lastMsgIndex);
+      for (const msg of newMessages) {
+        if (msg.role === 'assistant') {
+          // Convert stored message back to SSE event format
+          const eventData = {
+            type: msg.type,
+            sessionId,
+            timestamp: msg.timestamp,
+          };
+          if (msg.content) eventData.text = msg.content;
+          if (msg.content) eventData.fullResponse = msg.content;
+          if (msg.tool) eventData.tool = msg.tool;
+          if (msg.params) eventData.params = msg.params;
+          if (msg.result) eventData.result = msg.result;
+          if (msg.type === 'error') eventData.error = msg.content;
+
+          sendSSE(res, msg.type, eventData);
+        }
+      }
+      lastMsgIndex = currentSession.messages.length;
+    }, 100);
+
+    req.on('close', () => {
+      clearInterval(checkInterval);
+      clearInterval(keepAlive);
+    });
+
+    return;
+  }
+
+  // GET /api/chat/sessions
+  if (pathname === '/api/chat/sessions' && req.method === 'GET') {
+    const sessions = Array.from(webSessions.values())
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      .map(s => ({
+        id: s.id,
+        title: s.title,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        messageCount: s.messages.length,
+      }));
+    sendJSON(res, 200, { ok: true, sessions });
+    return;
+  }
+
+  // POST /api/chat/session — create/rename/delete
+  if (pathname === '/api/chat/session' && req.method === 'POST') {
+    parseBody(req, (body) => {
+      if (!body) return sendError(res, 400, 'JSON inválido');
+      const { action, sessionId, title } = body;
+
+      switch (action) {
+        case 'create': {
+          const session = createWebSession(title || 'Nova conversa');
+          sendJSON(res, 200, { ok: true, session: { id: session.id, title: session.title } });
+          break;
+        }
+        case 'rename': {
+          if (!sessionId || !title) return sendError(res, 400, 'sessionId e title obrigatórios');
+          if (renameWebSession(sessionId, title)) {
+            sendJSON(res, 200, { ok: true });
+          } else {
+            sendError(res, 404, 'Sessão não encontrada');
+          }
+          break;
+        }
+        case 'delete': {
+          if (!sessionId) return sendError(res, 400, 'sessionId obrigatório');
+          if (deleteWebSession(sessionId)) {
+            sendJSON(res, 200, { ok: true });
+          } else {
+            sendError(res, 404, 'Sessão não encontrada');
+          }
+          break;
+        }
+        default:
+          sendError(res, 400, 'Ação inválida. Use: create, rename, delete');
+      }
+    });
+    return;
+  }
+
+  // POST /api/chat/cancel
+  if (pathname === '/api/chat/cancel' && req.method === 'POST') {
+    parseBody(req, (body) => {
+      if (!body || !body.sessionId) return sendError(res, 400, 'sessionId obrigatório');
+      const stream = activeStreams.get(body.sessionId);
+      if (stream) {
+        stream.cancelled = true;
+        activeStreams.delete(body.sessionId);
+        sendJSON(res, 200, { ok: true, message: 'Stream cancelado' });
+      } else {
+        sendJSON(res, 200, { ok: true, message: 'Nenhum stream ativo' });
+      }
+    });
+    return;
+  }
+
+  // ============================================================
+  // CONFIG API (existente)
+  // ============================================================
+
   if (pathname === '/api/config' && req.method === 'GET') {
     const env = readEnv();
     const promptResult = readSystemPrompt();
@@ -243,42 +530,25 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API: POST /api/config
   if (pathname === '/api/config' && req.method === 'POST') {
     parseBody(req, (body) => {
       if (!body) return sendError(res, 400, 'JSON inválido');
-
       const results = [];
-
-      // Save env vars
       if (body.env) {
-        try {
-          writeEnv(body.env);
-          results.push('env');
-        } catch (e) {
-          return sendError(res, 500, `Erro ao salvar .env: ${e.message}`);
-        }
+        try { writeEnv(body.env); results.push('env'); }
+        catch (e) { return sendError(res, 500, `Erro ao salvar .env: ${e.message}`); }
       }
-
-      // Save system prompt
       if (body.systemPrompt !== undefined) {
         try {
-          if (writeSystemPrompt(body.systemPrompt)) {
-            results.push('systemPrompt');
-          } else {
-            return sendError(res, 500, 'Não foi possível atualizar o system prompt no luna-soul.cjs');
-          }
-        } catch (e) {
-          return sendError(res, 500, `Erro ao salvar system prompt: ${e.message}`);
-        }
+          if (writeSystemPrompt(body.systemPrompt)) results.push('systemPrompt');
+          else return sendError(res, 500, 'Não foi possível atualizar o system prompt');
+        } catch (e) { return sendError(res, 500, `Erro ao salvar system prompt: ${e.message}`); }
       }
-
       sendJSON(res, 200, { ok: true, saved: results });
     });
     return;
   }
 
-  // API: POST /api/test/telegram
   if (pathname === '/api/test/telegram' && req.method === 'POST') {
     parseBody(req, async (body) => {
       if (!body || !body.token) return sendError(res, 400, 'Token obrigatório');
@@ -288,23 +558,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API: GET /api/test/node
   if (pathname === '/api/test/node' && req.method === 'GET') {
     sendJSON(res, 200, testNode());
     return;
   }
 
-  // API: GET /api/test/chrome
   if (pathname === '/api/test/chrome' && req.method === 'GET') {
     sendJSON(res, 200, testChrome());
     return;
   }
 
-  // API: POST /api/restart
   if (pathname === '/api/restart' && req.method === 'POST') {
     parseBody(req, (body) => {
       try {
-        // Try PM2 first, then fall back to process kill
         let output = '';
         try {
           output = execSync('pm2 restart luna-kernel 2>&1', { encoding: 'utf-8', timeout: 10000 });
@@ -319,21 +585,29 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Static files
-  let filePath = pathname === '/' ? '/config.html' : pathname;
-  filePath = path.join(LUNA_DIR, filePath);
+  // ============================================================
+  // Static files — serve built luna-web dist/
+  // ============================================================
+  let filePath = pathname === '/' ? '/index.html' : pathname;
+  
+  // First try luna-web/dist/ (built frontend)
+  let distPath = path.join(LUNA_DIR, 'luna-web', 'dist', filePath);
+  if (!fs.existsSync(distPath)) {
+    // Fallback to config.html (legacy)
+    distPath = path.join(LUNA_DIR, filePath === '/index.html' ? 'config.html' : filePath);
+  }
 
-  // Security: don't escape luna dir
-  if (!filePath.startsWith(LUNA_DIR)) {
+  // Security
+  if (!distPath.startsWith(LUNA_DIR)) {
     return sendError(res, 403, 'Forbidden');
   }
 
-  fs.readFile(filePath, (err, data) => {
+  fs.readFile(distPath, (err, data) => {
     if (err) {
       if (err.code === 'ENOENT') return sendError(res, 404, 'Not found');
       return sendError(res, 500, err.message);
     }
-    const ext = path.extname(filePath);
+    const ext = path.extname(distPath);
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Access-Control-Allow-Origin': '*',
@@ -343,13 +617,17 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`🌙 Luna Config Server rodando em http://localhost:${PORT}`);
+  console.log(`🌙 Luna Config + Chat Server rodando em http://localhost:${PORT}`);
   console.log(`   .env: ${ENV_PATH}`);
   console.log(`   soul: ${SOUL_PATH}`);
   console.log('');
-  console.log('   Abra no navegador:');
-  console.log(`   http://localhost:${PORT}`);
+  console.log('   Endpoints:');
+  console.log(`   - Chat:    POST /api/chat | GET /api/chat/stream (SSE)`);
+  console.log(`   - Sessions: GET /api/chat/sessions | POST /api/chat/session`);
+  console.log(`   - Config:  GET/POST /api/config`);
+  console.log(`   - Tests:   GET /api/test/* | POST /api/restart`);
   console.log('');
-  console.log('   Ou via terminal:');
-  console.log(`   curl http://localhost:${PORT}/api/config`);
+  console.log('   Frontend:');
+  console.log(`   - Serves luna-web/dist/ (fallback: config.html)`);
+  console.log('');
 });

@@ -1,19 +1,28 @@
 {
-  "name": "nexo-agents",
-  "version": "1.0.0",
-  "description": "Agentes de automação do NEXO Dashboard",
+  "name": "luna-kernel",
+  "version": "5.0.0",
+  "description": "Luna Kernel v5.0 — AI Agent with Web Interface, Telegram Bot, and Kimi Bridge",
+  "main": "config-server.cjs",
   "scripts": {
-    "agent": "node nexo-agent-brain.js",
-    "monitor": "node auto-monitor.js",
-    "whatsapp": "node whatsapp-agent.js"
+    "start": "node config-server.cjs",
+    "server": "node config-server.cjs",
+    "telegram": "node telegram-luna-adapter.cjs",
+    "cli": "node luna-cli.cjs"
   },
+  "keywords": [
+    "ai-agent",
+    "automation",
+    "telegram-bot",
+    "kimi-ai",
+    "playwright"
+  ],
+  "author": "NEXO DIGITAL S.L.",
+  "private": true,
   "dependencies": {
-    "@inkjs/ui": "^2.0.0",
     "axios": "^1.16.0",
-    "ink": "^7.0.4",
-    "node-cron": "^3.0.3",
-    "playwright": "^1.59.1",
-    "react": "^19.2.6",
-    "whatsapp-web.js": "^1.34.7"
+    "playwright": "^1.59.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
