@@ -27,6 +27,11 @@ const PORT = process.env.LUNA_CONFIG_PORT || 3458;
 const LUNA_DIR = path.dirname(__filename);
 const ENV_PATH = path.join(LUNA_DIR, '.env');
 const SOUL_PATH = path.join(LUNA_DIR, 'luna-soul.cjs');
+const RUNTIME_PATH = path.join(LUNA_DIR, '.luna-runtime.json');
+
+// Write runtime config so frontend dev server can discover our port
+fs.writeFileSync(RUNTIME_PATH, JSON.stringify({ apiPort: PORT, apiUrl: `http://localhost:${PORT}` }));
+
 
 // ============================================================
 // Luna Soul lazy initialization
