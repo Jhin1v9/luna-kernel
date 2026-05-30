@@ -498,17 +498,12 @@ class KimiBridge {
 
     const existing = this.userSessions.get(userId);
     if (existing && existing.page && !existing.page.isClosed()) {
-      // Health-check: verify the page still responds via CDP
-      try {
-        await existing.page.evaluate(() => true);
-        existing.lastActivity = Date.now();
-        return existing.page;
-      } catch (e) {
-        log.warn(`Stale page for user ${hashUserId(userId)}, recreating: ${e.message}`);
-        try { await existing.page.close(); } catch {}
-        this.userSessions.delete(userId);
-        this.semaphore.current = Math.max(0, this.semaphore.current - 1);
-      }
+      // v3.8-fix: Removed aggressive evaluate() health-check.
+      // The evaluate() call fails when the page is still loading/navigating,
+      // causing the bridge to close a perfectly good logged-in page and
+      // create a new unlogged one. isClosed() is sufficient.
+      existing.lastActivity = Date.now();
+      return existing.page;
     }
 
     // Acquire semaphore slot (now effectively unlimited)
