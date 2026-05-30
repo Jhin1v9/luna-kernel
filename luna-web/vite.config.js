@@ -42,7 +42,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
-    allowedHosts: ['.trycloudflare.com', '.loca.lt', 'localhost', '127.0.0.1'],
+    allowedHosts: ['.trycloudflare.com', '.loca.lt', '.duckdns.org', 'localhost', '127.0.0.1'],
     proxy: {
       '/api': {
         target: BACKEND_URL,

@@ -74,44 +74,44 @@
   }
 }}/>
 
-<div class="app-container">
-  <Sidebar
-    sessions={$sessions}
-    currentId={$currentSessionId}
-    onSelect={(id) => {
-      const sess = $sessions.find(s => s.id === id);
-      if (sess?.mode) currentMode.set(sess.mode);
-      currentSessionId.set(id);
-    }}
-    onNew={handleNewSession}
-    onRename={handleRename}
-    onDelete={handleDelete}
-    onOpenConfig={() => configOpen = true}
-    bind:mobileOpen={mobileSidebarOpen}
-  />
+{#if $user}
+  <div class="app-container">
+    <Sidebar
+      sessions={$sessions}
+      currentId={$currentSessionId}
+      onSelect={(id) => {
+        const sess = $sessions.find(s => s.id === id);
+        if (sess?.mode) currentMode.set(sess.mode);
+        currentSessionId.set(id);
+      }}
+      onNew={handleNewSession}
+      onRename={handleRename}
+      onDelete={handleDelete}
+      onOpenConfig={() => configOpen = true}
+      bind:mobileOpen={mobileSidebarOpen}
+    />
 
-  {#if $user}
     <main class="main-content">
       <ChatArea
         sessionId={$currentSessionId}
       />
     </main>
-  {:else}
-    <LoginPage />
-  {/if}
 
-  <ConfigDrawer
-    open={configOpen}
-    config={$lunaConfig}
-    onSave={handleSaveConfig}
-    onClose={() => configOpen = false}
+    <ConfigDrawer
+      open={configOpen}
+      config={$lunaConfig}
+      onSave={handleSaveConfig}
+      onClose={() => configOpen = false}
+    />
+  </div>
+
+  <StatusBar
+    status={$connectionStatus}
+    onOpenConfig={() => configOpen = true}
   />
-</div>
-
-<StatusBar
-  status={$connectionStatus}
-  onOpenConfig={() => configOpen = true}
-/>
+{:else}
+  <LoginPage />
+{/if}
 
 <style>
   .app-container {
