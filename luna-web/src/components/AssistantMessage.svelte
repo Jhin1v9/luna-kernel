@@ -1,10 +1,20 @@
 <script>
   import { onMount, tick } from 'svelte';
   import { formatTime } from '../utils.js';
+  import LunaAvatar from './LunaAvatar.svelte';
 
   export let content = '';
   export let timestamp = '';
   export let onFeedback = () => {};
+  export let isStreaming = false;
+
+  $: avatarState = isStreaming ? 'thinking' : 'idle';
+
+  // Visual personality detection
+  $: hasCode = content.includes('```') || /function|class|const|let|var|import|export/.test(content);
+  $: hasSearch = /search|pesquis|buscar|encontrar|resultados?/i.test(content);
+  $: hasAction = /pronto|feito|completado|done|finished|success/i.test(content) && (hasCode || content.length > 200);
+  $: personalityClass = hasCode ? 'has-code' : hasSearch ? 'has-search' : hasAction ? 'has-action' : '';
 
   let contentEl;
   let copiedCode = null;
@@ -142,13 +152,13 @@
   }
 </script>
 
-<div class="assistant-message-wrapper">
+<div class="assistant-message-wrapper {personalityClass}">
   <div class="assistant-message">
     <div class="message-header">
-      <span class="avatar">🌙</span>
+      <LunaAvatar state={avatarState} size={32} />
       <span class="name">Luna</span>
     </div>
-    <div class="message-body" bind:this={contentEl} on:click={handleCopy}>
+    <div class="message-body" bind:this={contentEl} on:click={handleCopy} on:keydown={(e) => e.key === 'Enter' && handleCopy(e)} role="button" tabindex="0" aria-label="Clique para copiar codigo">
       {@html renderMarkdown(content)}
     </div>
     <div class="message-footer">
@@ -167,6 +177,8 @@
         </button>
       </div>
     </div>
+    <!-- Luna signature -->
+    <div class="luna-signature" aria-hidden="true">🌙</div>
   </div>
 </div>
 
@@ -180,6 +192,7 @@
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
   .assistant-message {
+    position: relative;
     background: var(--luna-surface);
     border-radius: 12px;
     border-top-left-radius: 4px;
@@ -188,19 +201,43 @@
     font-size: 15px;
     line-height: 1.6;
   }
+  .assistant-message::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--luna-accent), transparent, var(--luna-accent));
+    background-size: 200% 100%;
+    animation: gradientRotate 4s linear infinite;
+    z-index: -1;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .assistant-message::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    background: linear-gradient(180deg, var(--luna-accent-glow), transparent 60%);
+    z-index: -2;
+    opacity: 0.3;
+    pointer-events: none;
+    filter: blur(8px);
+  }
+  @keyframes gradientRotate {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+  }
   .message-header {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 10px;
   }
-  .avatar {
-    font-size: 18px;
-  }
   .name {
     font-weight: 600;
     font-size: 14px;
-    color: var(--luna-primary);
+    color: var(--luna-accent);
   }
   .message-body :global(.md-p) {
     margin-bottom: 0.75rem;
@@ -238,7 +275,7 @@
     margin-bottom: 0.25rem;
   }
   .message-body :global(.md-blockquote) {
-    border-left: 3px solid var(--luna-primary);
+    border-left: 3px solid var(--luna-accent);
     padding-left: 1rem;
     margin: 0.75rem 0;
     color: var(--luna-text-secondary);
@@ -365,6 +402,47 @@
     opacity: 1;
     background: rgba(255,255,255,0.06);
   }
+  .luna-signature {
+    position: absolute;
+    bottom: 6px;
+    right: 10px;
+    font-size: 10px;
+    opacity: 0.15;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  .assistant-message:hover .luna-signature {
+    opacity: 0.35;
+  }
+
+  /* Visual personality effects */
+  .assistant-message-wrapper.has-code .assistant-message::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(var(--luna-accent-rgb, 168, 85, 247), 0.02) 2px,
+      rgba(var(--luna-accent-rgb, 168, 85, 247), 0.02) 4px
+    );
+    pointer-events: none;
+    z-index: 0;
+  }
+  .assistant-message-wrapper.has-search .assistant-message {
+    background: linear-gradient(135deg, var(--luna-surface) 0%, rgba(var(--luna-accent-rgb, 168, 85, 247), 0.03) 100%);
+  }
+  .assistant-message-wrapper.has-action .assistant-message {
+    animation: successPulse 1s ease-out;
+  }
+  @keyframes successPulse {
+    0% { box-shadow: 0 0 0 0 var(--luna-accent-glow); }
+    50% { box-shadow: 0 0 20px 4px var(--luna-accent-glow); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
   @keyframes fadeInUp {
     from { opacity: 0; transform: translateY(20px); }
     to { opacity: 1; transform: translateY(0); }

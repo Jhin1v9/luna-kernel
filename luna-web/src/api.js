@@ -82,11 +82,29 @@ export class SSEManager {
   }
 }
 
-export async function sendMessage(message, sessionId, mode = 'thinking') {
+export async function sendMessage(message, sessionId, mode = 'thinking', files = []) {
+  let filePayload = [];
+  if (files && files.length > 0) {
+    filePayload = await Promise.all(
+      files.map(async (file) => {
+        const dataUrl = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.readAsDataURL(file);
+        });
+        return {
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          data: dataUrl,
+        };
+      })
+    );
+  }
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, sessionId, mode })
+    body: JSON.stringify({ message, sessionId, mode, files: filePayload })
   });
   return res.json();
 }
@@ -168,4 +186,44 @@ export async function fetchMe() {
   } catch {
     return null;
   }
+}
+
+// ============================================================
+// Plan Mode API
+// ============================================================
+
+export async function startPlanMode(message, sessionId) {
+  const res = await fetch('/api/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, sessionId })
+  });
+  return res.json();
+}
+
+export async function approvePlan(sessionId) {
+  const res = await fetch('/api/plan/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId })
+  });
+  return res.json();
+}
+
+export async function rejectPlan(sessionId) {
+  const res = await fetch('/api/plan/reject', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId })
+  });
+  return res.json();
+}
+
+export async function submitRevision(sessionId, revisedPlan) {
+  const res = await fetch('/api/plan/revise', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, revisedPlan })
+  });
+  return res.json();
 }

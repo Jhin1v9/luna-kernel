@@ -34,7 +34,7 @@ function discoverBackendPort() {
   return fallbackPorts[0];
 }
 
-const BACKEND_PORT = process.env.LUNA_CONFIG_PORT || 3456;
+const BACKEND_PORT = process.env.LUNA_CONFIG_PORT || 3458;
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
 
 export default defineConfig({
@@ -55,6 +55,10 @@ export default defineConfig({
               res.writeHead(502, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Backend unavailable', port: BACKEND_PORT }));
             }
+          });
+          // Disable SSE buffering so events arrive in real time
+          proxy.on('proxyRes', (proxyRes, req, res) => {
+            proxyRes.headers['x-accel-buffering'] = 'no';
           });
         }
       }

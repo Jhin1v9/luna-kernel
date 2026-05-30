@@ -4,20 +4,37 @@
   export let content = '';
   export let timestamp = '';
   export let files = [];
+
+  $: imageFiles = (files || []).filter(f => f.type?.startsWith('image/'));
+  $: otherFiles = (files || []).filter(f => !f.type?.startsWith('image/'));
 </script>
 
 <div class="user-message-wrapper">
   <div class="user-message">
     <div class="message-content">{content}</div>
-    {#if files && files.length > 0}
+
+    {#if imageFiles.length > 0}
+      <div class="image-attachments">
+        {#each imageFiles as file}
+          <div class="image-thumb">
+            <img src={file.data} alt={file.name || 'Imagem anexada'} loading="lazy" />
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#if otherFiles.length > 0}
       <div class="file-attachments">
-        {#each files as file}
+        {#each otherFiles as file}
           <div class="file-chip">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M13.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9.5L13.5 2z"/>
               <polyline points="13 2 13 9 20 9"/>
             </svg>
             <span class="file-name">{file.name || 'Arquivo'}</span>
+            {#if file.size}
+              <span class="file-size">({(file.size / 1024).toFixed(1)} KB)</span>
+            {/if}
           </div>
         {/each}
       </div>
@@ -34,7 +51,7 @@
     flex-direction: column;
     align-items: flex-end;
     margin-left: auto;
-    max-width: 80%;
+    max-width: min(80%, 680px);
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
   .user-message {
@@ -46,10 +63,34 @@
     font-size: 15px;
     line-height: 1.6;
     word-wrap: break-word;
+    min-width: 0;
   }
   .message-content {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .image-attachments {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .image-thumb {
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(0,0,0,0.3);
+    aspect-ratio: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .image-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
   }
   .file-attachments {
     display: flex;
@@ -68,11 +109,17 @@
     border-radius: 6px;
     font-size: 12px;
     color: var(--luna-text-secondary);
+    max-width: 100%;
   }
   .file-name {
     max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-size {
+    opacity: 0.7;
+    font-size: 11px;
     white-space: nowrap;
   }
   .message-time {
@@ -85,5 +132,20 @@
   @keyframes fadeInUp {
     from { opacity: 0; transform: translateY(20px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Mobile */
+  @media (max-width: 640px) {
+    .user-message-wrapper {
+      max-width: 92%;
+    }
+    .user-message {
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+    .image-attachments {
+      grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+      gap: 6px;
+    }
   }
 </style>

@@ -1,15 +1,33 @@
 <script>
+  import { planModeState } from '../stores.js';
+  import { Search, FileSearch, ClipboardList, CheckCircle, XCircle } from 'lucide-svelte';
+
   export let status = 'connected';
   export let onOpenConfig = () => {};
 
   $: statusColor = status === 'connected' ? '#22c55e' : status === 'error' ? '#ef4444' : '#eab308';
   $: statusText = status === 'connected' ? 'Conectado' : status === 'error' ? 'Erro' : 'Desconectado';
+
+  $: planStatus = $planModeState.active ? $planModeState.status : null;
+  $: planStatusConfig = {
+    investigating: { text: 'Investigando...', icon: FileSearch, color: '#ffd700' },
+    awaiting_approval: { text: 'Aguardando aprovação', icon: ClipboardList, color: '#ffd700' },
+    approved: { text: 'Plano aprovado — executando', icon: CheckCircle, color: '#4ade80' },
+    rejected: { text: 'Plano rejeitado', icon: XCircle, color: '#fca5a5' },
+  }[planStatus] || null;
 </script>
 
 <div class="status-bar" role="complementary" aria-label="Barra de status">
   <div class="status-left">
     <span class="status-dot" style="background-color: {statusColor}"></span>
     <span class="status-text">{statusText}</span>
+    {#if planStatusConfig}
+      <span class="separator">|</span>
+      <span class="plan-indicator" style="color: {planStatusConfig.color}">
+        <svelte:component this={planStatusConfig.icon} size={12} />
+        <span>{planStatusConfig.text}</span>
+      </span>
+    {/if}
   </div>
   <div class="status-center">
     <span class="version">Luna Kernel v5.0</span>
@@ -46,6 +64,14 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+  .plan-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 500;
+    font-size: 11px;
+    animation: pulse 2s infinite;
   }
   .status-dot {
     width: 7px;

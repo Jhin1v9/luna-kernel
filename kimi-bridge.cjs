@@ -60,6 +60,8 @@ const MAX_TEXT_TYPE_LENGTH = parseInt(process.env.KIMI_MAX_TYPE_LENGTH, 10) || 5
 const LOG_MAX_SIZE_MB = parseInt(process.env.KIMI_LOG_MAX_MB, 10) || 10;
 const ARTIFACTS_DIR = path.join(__dirname, '..', 'ARTIFACTS');
 const SESSION_STORE_PATH = path.join(ARTIFACTS_DIR, 'kimi-sessions.json');
+const COOKIES_BACKUP_PATH = path.join(__dirname, 'kimi-cookies.json');
+const COOKIES_MANUAL_PATH = path.join(__dirname, 'kimi-cookies.manual.json');
 
 function makeCdpUrl(port) { return `http://127.0.0.1:${port}`; }
 function getPortFromUrl(url) {
@@ -215,17 +217,19 @@ class KimiBridge {
   constructor(options = {}) {
     this.cdpUrl = options.cdpUrl || null; // discovered dynamically
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
-    this.maxPages = options.maxPages ?? MAX_CONCURRENT_PAGES;
+    this.maxPages = options.maxPages ?? 999;
     this.idleTimeout = options.idleTimeout ?? IDLE_TIMEOUT_MS;
     this.debug = options.debug || false;
 
     this.browser = null;
-    this.context = null;
-    this.userSessions = new Map(); // userId -> { page, chatUrl, lastActivity, processing, mode }
-    this.semaphore = new Semaphore(this.maxPages);
+    this.defaultContext = null; // Original Chrome context with login cookies
+    this.userContexts = new Map(); // userId -> BrowserContext
+    this.userSessions = new Map(); // userId -> { page, chatUrl, lastActivity, processing, mode, context }
+    this.semaphore = new Semaphore(999); // Effectively unlimited
     this.store = new KimiSessionStore(SESSION_STORE_PATH);
     this.lastRequestTime = new Map(); // userId -> timestamp (rate limiting)
     this.idleTimer = null;
+    this.cookieBackupTimer = null;
 
     // Initialize turndown if available
     this.turndown = null;
@@ -340,19 +344,23 @@ class KimiBridge {
       throw new Error('No browser contexts found via CDP. Is Chrome running with --remote-debugging-port?');
     }
 
-    this.context = contexts[0];
-    log.success(`Connected! Using context[0] with ${this.context.pages().length} existing page(s)`);
+    this.defaultContext = contexts[0];
+    log.success(`Connected! Using default context with ${this.defaultContext.pages().length} existing page(s)`);
 
     // Register crash/disconnect listeners
     this.browser.on('disconnected', () => {
       log.warn('Browser disconnected via CDP');
       this.browser = null;
-      this.context = null;
+      this.defaultContext = null;
+      this.userContexts.clear();
       this._resetCdpUrl();
     });
 
     // Start idle cleanup timer
     this._startIdleCleanup();
+
+    // Start cookie backup timer (save every 5 minutes)
+    this._startCookieBackup();
 
     return this;
   }
@@ -369,22 +377,22 @@ class KimiBridge {
       this.idleTimer = null;
     }
 
-    for (const [userId, session] of this.userSessions) {
+    // Close all user contexts (which also closes their pages)
+    for (const [userId, ctx] of this.userContexts) {
       try {
-        if (session.page && !session.page.isClosed()) {
-          // Remove listeners before closing
-          session.page.removeAllListeners('crash');
+        if (ctx && typeof ctx.close === 'function') {
           await Promise.race([
-            session.page.close(),
+            ctx.close(),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
           ]);
-          log.info(`Closed page for user ${hashUserId(userId)}`);
+          log.info(`Closed context for user ${hashUserId(userId)}`);
         }
       } catch (e) {
-        log.warn(`Error closing page for ${hashUserId(userId)}: ${e.message}`);
+        log.warn(`Error closing context for ${hashUserId(userId)}: ${e.message}`);
       }
       this.semaphore.release();
     }
+    this.userContexts.clear();
     this.userSessions.clear();
 
     if (this.browser) {
@@ -402,7 +410,7 @@ class KimiBridge {
         log.warn(`Browser disconnect error: ${e.message}`);
       }
       this.browser = null;
-      this.context = null;
+      this.defaultContext = null;
     }
 
     log.success('KimiBridge disconnected');
@@ -412,10 +420,45 @@ class KimiBridge {
    * Ensure connected to CDP with auto-reconnect on disconnect
    */
   async _ensureConnected() {
-    if (!this.browser || !this.context) {
+    if (!this.browser || !this.defaultContext) {
       log.info('Reconnecting to Chrome...');
       await this.connect();
     }
+  }
+
+  /**
+   * Get or create an isolated BrowserContext for a user.
+   * Copies cookies from the default context so the user is already logged in.
+   */
+  async _getOrCreateUserContext(userId) {
+    await this._ensureConnected();
+
+    const existing = this.userContexts.get(userId);
+    if (existing) {
+      return existing;
+    }
+
+    log.info(`Creating isolated context for user ${hashUserId(userId)}`);
+
+    // Create new incognito context
+    const ctx = await this.browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      locale: 'pt-BR',
+    });
+
+    // Copy cookies from default context so user is already logged in
+    try {
+      const cookies = await this.defaultContext.cookies();
+      if (cookies && cookies.length > 0) {
+        await ctx.addCookies(cookies);
+        log.info(`Copied ${cookies.length} cookies to context for user ${hashUserId(userId)}`);
+      }
+    } catch (e) {
+      log.warn(`Failed to copy cookies for ${hashUserId(userId)}: ${e.message}`);
+    }
+
+    this.userContexts.set(userId, ctx);
+    return ctx;
   }
 
   /**
@@ -452,9 +495,12 @@ class KimiBridge {
       }
     }
 
-    // Acquire semaphore slot
-    log.info(`Acquiring semaphore slot for user ${hashUserId(userId)} (${this.semaphore.current}/${this.maxPages})`);
+    // Acquire semaphore slot (now effectively unlimited)
+    log.info(`Acquiring slot for user ${hashUserId(userId)} (${this.semaphore.current}/${this.maxPages})`);
     await this.semaphore.acquire();
+
+    // Get or create isolated context for this user
+    const userCtx = await this._getOrCreateUserContext(userId);
 
     // Restore previous chat URL from store if available
     const stored = this.store.getUser(userId);
@@ -463,7 +509,8 @@ class KimiBridge {
     let page = null;
     try {
       log.info(`Creating new page for user ${hashUserId(userId)}`);
-      page = await this.context.newPage();
+      page = await userCtx.newPage();
+      page._lunaUserId = userId; // for cookie re-sync in _verifySession
 
       // Register crash listener
       page.on('crash', () => {
@@ -497,6 +544,7 @@ class KimiBridge {
 
     const session = {
       page,
+      context: userCtx,
       chatUrl: page.url(),
       lastActivity: Date.now(),
       processing: false,
@@ -508,6 +556,202 @@ class KimiBridge {
 
     log.success(`Page ready for user ${hashUserId(userId)}: ${session.chatUrl}`);
     return page;
+  }
+
+  /**
+   * Auto-login fallback: opens login modal, clicks "Continue with Google",
+   * and selects the nexodigital account. Used when cookie re-sync fails.
+   * v3.8-fix: Handles both modal-already-visible and needs-to-click-sidebar cases.
+   */
+  async _autoLogin(page) {
+    log.info('[_autoLogin] Attempting automatic Google sign-in...');
+    try {
+      const context = page.context();
+
+      // Phase 1: Ensure login modal is visible
+      let hasModal = await page.evaluate(() =>
+        document.body.innerText.includes('Continue with Google')
+      ).catch(() => false);
+
+      if (!hasModal) {
+        log.info('[_autoLogin] Login modal not visible — clicking sidebar Log In button...');
+        // The "Log In" button in the sidebar is inside .user-info div (discovered via e2e test)
+        // We use page.evaluate to find and click it, as Playwright locators don't reliably
+        // target this SPA element.
+        const clickedSidebar = await page.evaluate(() => {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          let node;
+          while (node = walker.nextNode()) {
+            if (node.textContent.trim() === 'Log In') {
+              // Walk up to find clickable parent (.user-info or similar)
+              let el = node.parentElement;
+              for (let i = 0; i < 5 && el; i++) {
+                if (el.classList?.contains('user-info') ||
+                    el.classList?.contains('user-info-container') ||
+                    el.onclick ||
+                    window.getComputedStyle(el).cursor === 'pointer') {
+                  el.click();
+                  return true;
+                }
+                el = el.parentElement;
+              }
+              // Fallback: click the text node parent
+              node.parentElement.click();
+              return true;
+            }
+          }
+          return false;
+        });
+
+        if (!clickedSidebar) {
+          // Coordinate fallback: bottom-left sidebar area where Log In lives
+          await page.mouse.click(97, 585);
+          log.info('[_autoLogin] Clicked sidebar Log In via coordinates fallback');
+        } else {
+          log.info('[_autoLogin] Clicked sidebar Log In button');
+        }
+
+        // Wait for modal to appear
+        let modalAttempts = 0;
+        while (modalAttempts < 15) {
+          hasModal = await page.evaluate(() =>
+            document.body.innerText.includes('Continue with Google')
+          ).catch(() => false);
+          if (hasModal) break;
+          await page.waitForTimeout(400);
+          modalAttempts++;
+        }
+
+        if (!hasModal) {
+          log.warn('[_autoLogin] Login modal did not appear after clicking sidebar');
+          return false;
+        }
+        log.info('[_autoLogin] Login modal is now visible');
+      }
+
+      // Phase 2: Click "Continue with Google" inside the modal
+      // The button is centered in the modal; coordinates ~640,260 on 1280x800
+      // We first try Playwright locator, then coordinates fallback.
+      const googleBtn = page.locator('button, [role="button"], div[role="button"]')
+        .filter({ hasText: /Continue with Google|Google/i })
+        .first();
+      let clicked = false;
+      if (await googleBtn.count() > 0) {
+        await googleBtn.click({ timeout: 5000 });
+        clicked = true;
+        log.info('[_autoLogin] Clicked "Continue with Google" via locator');
+      } else {
+        await page.mouse.click(640, 260);
+        clicked = true;
+        log.info('[_autoLogin] Clicked "Continue with Google" via coordinates fallback');
+      }
+      if (!clicked) {
+        log.warn('[_autoLogin] Could not find Google sign-in button');
+        return false;
+      }
+
+      // Phase 3: Wait for Google account chooser popup/tab
+      await page.waitForTimeout(3000);
+      let googlePage = null;
+      let attempts = 0;
+      while (attempts < 15) {
+        const pages = context.pages();
+        googlePage = pages.find(p => p.url().includes('accounts.google.com'));
+        if (googlePage) break;
+        await page.waitForTimeout(500);
+        attempts++;
+      }
+      if (!googlePage) {
+        log.warn('[_autoLogin] Google account chooser did not appear');
+        return false;
+      }
+      log.info('[_autoLogin] Google account chooser detected');
+
+      // Phase 4: Select available Google account
+      // Priority: 1) nexodigital, 2) Abner Gabriel, 3) first available account
+      let selectedAccount = null;
+      
+      // Try nexodigital first
+      const nexodigitalBtn = googlePage.locator('div[role="button"], div[role="link"], [data-email]')
+        .filter({ hasText: /nexodigital\.sys@gmail\.com|nexodigital/i })
+        .first();
+      if (await nexodigitalBtn.count() > 0) {
+        await nexodigitalBtn.click({ timeout: 10000 });
+        selectedAccount = 'nexodigital';
+      } else {
+        const altNexo = googlePage.getByText('nexodigital', { exact: false }).first();
+        if (await altNexo.count() > 0) {
+          await altNexo.click();
+          selectedAccount = 'nexodigital';
+        }
+      }
+      
+      // Fallback: try Abner Gabriel
+      if (!selectedAccount) {
+        const abnerBtn = googlePage.locator('div[role="button"], div[role="link"], [data-email]')
+          .filter({ hasText: /Abner Gabriel|nninguem17@gmail\.com/i })
+          .first();
+        if (await abnerBtn.count() > 0) {
+          await abnerBtn.click({ timeout: 10000 });
+          selectedAccount = 'Abner Gabriel';
+        } else {
+          const altAbner = googlePage.getByText('Abner Gabriel', { exact: false }).first();
+          if (await altAbner.count() > 0) {
+            await altAbner.click();
+            selectedAccount = 'Abner Gabriel';
+          }
+        }
+      }
+      
+      // Fallback: select first account on the page (anything with an @ email)
+      if (!selectedAccount) {
+        const firstAccount = googlePage.locator('div[role="button"], div[role="link"]')
+          .filter({ hasText: /@/ })
+          .first();
+        if (await firstAccount.count() > 0) {
+          const accountText = await firstAccount.textContent();
+          await firstAccount.click({ timeout: 10000 });
+          selectedAccount = accountText?.trim().split('\n')[0] || 'first-available';
+        }
+      }
+      
+      if (!selectedAccount) {
+        log.warn('[_autoLogin] Could not find any Google account on chooser');
+        return false;
+      }
+      log.info(`[_autoLogin] Selected account: ${selectedAccount}`);
+
+      // Phase 5: Wait for redirect back to Kimi and verify login
+      await page.waitForTimeout(6000);
+      const isLoggedIn = await page.evaluate(() => {
+        const hasLoginForm = !!(
+          document.querySelector('form[action*="login"], form[action*="auth"]') ||
+          document.querySelector('input[type="password"]')
+        );
+        const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container, .segment-assistant-actions'));
+        return !hasLoginForm && hasAppContent;
+      }).catch(() => false);
+
+      if (isLoggedIn) {
+        log.success('[_autoLogin] Automatic login successful!');
+        try {
+          const cookies = await context.cookies();
+          if (cookies && cookies.length > 0) {
+            const backupPath = path.join(ARTIFACTS_DIR, 'kimi-cookies-backup.json');
+            fs.writeFileSync(backupPath, JSON.stringify(cookies, null, 2));
+            log.info(`[_autoLogin] Backed up ${cookies.length} cookies to ${backupPath}`);
+          }
+        } catch (e) {
+          log.warn(`[_autoLogin] Cookie backup after login failed: ${e.message}`);
+        }
+        return true;
+      }
+      log.warn('[_autoLogin] Login did not complete successfully');
+      return false;
+    } catch (e) {
+      log.warn(`[_autoLogin] Error during auto-login: ${e.message}`);
+      return false;
+    }
   }
 
   /**
@@ -530,7 +774,101 @@ class KimiBridge {
     }).catch(() => false);
 
     if (!isLoggedIn) {
-      throw new Error('Kimi session expired — please log in again in Chrome');
+      // Attempt cookie restoration before giving up
+      let restored = false;
+      try {
+        const userId = page._lunaUserId;
+        const ctx = userId ? this.userContexts.get(userId) : null;
+
+        // Step 1: Try loading from MASTER cookies file (permanent save after manual login)
+        if (!restored && ctx) {
+          const masterPath = path.join(__dirname, 'cookies', 'kimi-master-cookies.json');
+          if (fs.existsSync(masterPath)) {
+            try {
+              const masterData = JSON.parse(fs.readFileSync(masterPath, 'utf8'));
+              const masterCookies = masterData.cookies || [];
+              if (masterCookies.length > 0) {
+                await ctx.addCookies(masterCookies);
+                log.info(`Loaded ${masterCookies.length} cookies from MASTER backup for user ${hashUserId(userId)}`);
+                await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+                await page.waitForTimeout(2000);
+                const retry = await page.evaluate(() => {
+                  const hasLoginForm = !!(
+                    document.querySelector('form[action*="login"], form[action*="auth"]') ||
+                    document.querySelector('input[type="password"]')
+                  );
+                  const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container, .segment-assistant-actions'));
+                  return !hasLoginForm && hasAppContent;
+                }).catch(() => false);
+                if (retry) {
+                  log.success(`MASTER cookies restored session for user ${hashUserId(userId)}`);
+                  restored = true;
+                }
+              }
+            } catch (e) {
+              log.warn(`MASTER cookie load failed: ${e.message}`);
+            }
+          }
+        }
+
+        // Step 2: Try re-sync from default context
+        if (!restored && userId && this.defaultContext && ctx) {
+          const cookies = await this.defaultContext.cookies();
+          if (cookies && cookies.length > 0) {
+            await ctx.addCookies(cookies);
+            log.info(`Re-synced ${cookies.length} cookies from default context for user ${hashUserId(userId)}`);
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            const retry = await page.evaluate(() => {
+              const hasLoginForm = !!(
+                document.querySelector('form[action*="login"], form[action*="auth"]') ||
+                document.querySelector('input[type="password"]')
+              );
+              const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container, .segment-assistant-actions'));
+              return !hasLoginForm && hasAppContent;
+            }).catch(() => false);
+            if (retry) {
+              log.success(`Cookie re-sync restored session for user ${hashUserId(userId)}`);
+              restored = true;
+            }
+          }
+        }
+
+        // Step 3: Try loading from persistent backup file
+        if (!restored && ctx) {
+          const loaded = await this._loadCookiesFromFile(ctx);
+          if (loaded) {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            const retry = await page.evaluate(() => {
+              const hasLoginForm = !!(
+                document.querySelector('form[action*="login"], form[action*="auth"]') ||
+                document.querySelector('input[type="password"]')
+              );
+              const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container, .segment-assistant-actions'));
+              return !hasLoginForm && hasAppContent;
+            }).catch(() => false);
+            if (retry) {
+              log.success(`Cookie backup restored session for user ${hashUserId(userId)}`);
+              restored = true;
+            }
+          }
+        }
+      } catch (e) {
+        log.warn(`Cookie re-sync failed: ${e.message}`);
+      }
+
+      if (!restored) {
+        // Step 4: Attempt automatic Google login as last resort
+        log.warn(`Session expired for user ${hashUserId(page._lunaUserId)} — attempting auto-login...`);
+        const autoLoginOk = await this._autoLogin(page);
+        if (autoLoginOk) {
+          log.success(`Auto-login restored session for user ${hashUserId(page._lunaUserId)}`);
+          return true;
+        }
+        throw new Error('KIMI_LOGIN_REQUIRED');
+      }
+      return true;
     }
     return true;
   }
@@ -958,11 +1296,13 @@ class KimiBridge {
 
     // v3.5-fix: Robust tab capture with extended timeout + smart fallback.
     // Kimi Web frequently takes 8-12s to open a new tab for new chats.
+    // Use the user's isolated context instead of shared context
+    const userCtx = session.context || this.userContexts.get(userId);
     let newPage = null;
     try {
       // Step 1: Try capturing new tab with extended timeout (15s)
       [newPage] = await Promise.all([
-        this.context.waitForEvent('page', { timeout: 0 }),
+        userCtx.waitForEvent('page', { timeout: 0 }),
         page.click('.sidebar-new-chat, .new-chat-btn, [class*="new-chat"]').catch(() => {
           // Fallback: try JS click if Playwright click fails
           return page.evaluate(() => {
@@ -979,7 +1319,7 @@ class KimiBridge {
     // Step 2: Smart fallback — scan existing pages for new chat tabs
     if (!newPage) {
       await new Promise(r => setTimeout(r, 3000)); // Give Kimi time to open tab
-      const allPages = this.context.pages();
+      const allPages = userCtx.pages();
       log.info(`Scanning ${allPages.length} pages for new chat tab...`);
       for (const p of allPages) {
         try {
@@ -1016,7 +1356,7 @@ class KimiBridge {
       // Wait up to 10s for a valid chat tab to appear
       const deadline = Date.now() + 10000;
       while (Date.now() < deadline) {
-        const allPages = this.context.pages();
+        const allPages = userCtx.pages();
         for (const p of allPages) {
           try {
             const url = p.url();
@@ -1042,6 +1382,22 @@ class KimiBridge {
     const chatIdNew = newUrl.includes('/chat/') ? newUrl.split('/chat/')[1].split('?')[0] : null;
     if (chatIdOld && chatIdNew && chatIdOld === chatIdNew) {
       log.warn(`Still on same chat ID after newChat ( ${chatIdOld} ). URL did not change properly.`);
+    }
+
+    // Step 6: Mark chat with user identifier
+    try {
+      await targetPage.evaluate((uid) => {
+        // Try to set chat title to include user identifier
+        const titleEl = document.querySelector('[class*="chat-title"], [class*="title"], h1, .chat-header-title');
+        if (titleEl && !titleEl.textContent.includes(uid)) {
+          titleEl.textContent = `[${uid}] ${titleEl.textContent}`;
+        }
+        // Also store in dataset for easy retrieval
+        document.body.dataset.lunaUserId = uid;
+      }, hashUserId(userId));
+      log.info(`Marked chat with user identifier: ${hashUserId(userId)}`);
+    } catch (e) {
+      log.warn(`Failed to mark chat with user ID: ${e.message}`);
     }
 
     // Update session to use the new page
@@ -1838,6 +2194,59 @@ class KimiBridge {
   }
 
   /**
+   * Save cookies from default context to persistent JSON file
+   */
+  async _saveCookiesToFile() {
+    if (!this.defaultContext) return;
+    try {
+      const cookies = await this.defaultContext.cookies();
+      if (cookies && cookies.length > 0) {
+        fs.writeFileSync(COOKIES_BACKUP_PATH, JSON.stringify(cookies, null, 2), 'utf8');
+        log.info(`[Cookies] Saved ${cookies.length} cookies to backup file`);
+      }
+    } catch (e) {
+      log.warn(`[Cookies] Failed to save: ${e.message}`);
+    }
+  }
+
+  /**
+   * Load cookies from persistent JSON file into a context
+   */
+  async _loadCookiesFromFile(targetCtx) {
+    const sources = [
+      { path: COOKIES_BACKUP_PATH, name: 'auto-backup' },
+      { path: COOKIES_MANUAL_PATH, name: 'manual' },
+    ];
+    for (const src of sources) {
+      try {
+        if (!fs.existsSync(src.path)) continue;
+        const raw = fs.readFileSync(src.path, 'utf8');
+        const cookies = JSON.parse(raw);
+        if (Array.isArray(cookies) && cookies.length > 0) {
+          await targetCtx.addCookies(cookies);
+          log.info(`[Cookies] Restored ${cookies.length} cookies from ${src.name}`);
+          return true;
+        }
+      } catch (e) {
+        log.warn(`[Cookies] Failed to load from ${src.name}: ${e.message}`);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Start periodic cookie backup timer
+   */
+  _startCookieBackup() {
+    if (this.cookieBackupTimer) clearInterval(this.cookieBackupTimer);
+    this.cookieBackupTimer = setInterval(() => {
+      this._saveCookiesToFile().catch(() => {});
+    }, 5 * 60 * 1000); // every 5 minutes
+    // Also save immediately on start
+    this._saveCookiesToFile().catch(() => {});
+  }
+
+  /**
    * Start idle cleanup timer — closes inactive pages
    */
   _startIdleCleanup() {
@@ -1858,6 +2267,13 @@ class KimiBridge {
           }
           this.userSessions.delete(userId);
           this.semaphore.release();
+          // Also close the isolated BrowserContext to prevent memory leaks
+          const ctx = this.userContexts.get(userId);
+          if (ctx && typeof ctx.close === 'function') {
+            ctx.close().catch(e => log.warn(`Idle context close error: ${e.message}`));
+            this.userContexts.delete(userId);
+            log.info(`Idle cleanup: closed context for user ${hashUserId(userId)}`);
+          }
         }
       }
     }, 60000); // Check every minute
@@ -2089,10 +2505,19 @@ class KimiBridge {
             response,
             source: 'intercept',
             hasData: thinking.length > 0 || response.length > 0,
+            active: s.active,
+            contentLen: s.content?.length || 0,
+            reasoningLen: s.reasoning?.length || 0,
           };
         }
         return null;
       });
+      // DEBUG: Log interceptor state even when empty
+      if (intercepted) {
+        log.info(`[_poll] interceptor: active=${intercepted.active}, hasData=${intercepted.hasData}, contentItems=${intercepted.contentLen}, reasoningItems=${intercepted.reasoningLen}, responseLen=${intercepted.response?.length || 0}`);
+      } else {
+        log.info(`[_poll] interceptor: NOT FOUND (window.__lunaStream missing or inactive)`);
+      }
       // CRITICAL: When interceptor is active, trust it EXCLUSIVELY.
       // Do NOT fallback to DOM scraping because the DOM may render
       // thinking text in containers that look like response containers.
@@ -2149,9 +2574,10 @@ class KimiBridge {
 
       if (structureBased) {
         const { canSteer, isGenerating } = await this._detectUiState(page);
-        this._log(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}`);
+        log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}`);
         return { ...structureBased, canSteer, isGenerating };
       }
+      log.info(`[_poll] dom-structure: NOT FOUND`);
 
       // Layer 2–4: DOM-based extraction (fallback heuristics)
       const domResult = await page.evaluate(() => {
@@ -3078,12 +3504,15 @@ class KimiBridge {
         // Yield response deltas
         if (poll.response && poll.response !== lastResponse) {
           const delta = poll.response.slice(lastResponse.length);
+          log.info(`[stream] response changed: last=${lastResponse.length} -> new=${poll.response.length}, delta=${delta?.length || 0}`);
           if (delta) {
             yield { type: 'response_delta', text: delta };
           } else if (poll.response.length < lastResponse.length) {
             yield { type: 'response_delta', text: poll.response };
           }
           lastResponse = poll.response;
+        } else {
+          log.info(`[stream] response unchanged: len=${poll.response?.length || 0}`);
         }
 
         // Yield steer availability
@@ -3340,9 +3769,7 @@ class KimiBridge {
    * and technical decisions without interfering with the user's session.
    */
   async anonymousConsult(prompt, options = {}) {
-    if (!this.browser) {
-      throw new Error('Bridge not connected — call connect() first');
-    }
+    await this._ensureConnected();
 
     const mode = options.mode || 'thinking';
     log.info(`[anonymousConsult] Starting anonymous Kimi consultation (mode=${mode})`);

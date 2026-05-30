@@ -1,15 +1,35 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
-  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user } from './stores.js';
+  import { onMount } from 'svelte';
+  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS } from './stores.js';
+
+  // Update CSS theme variables when mode changes
+  $: {
+    const root = document.documentElement;
+    if ($planModeState.active) {
+      root.style.setProperty('--luna-accent', PLAN_MODE_COLORS.primary);
+      root.style.setProperty('--luna-accent-glow', PLAN_MODE_COLORS.glow);
+      root.style.setProperty('--luna-accent-border', PLAN_MODE_COLORS.border);
+      document.body.classList.add('plan-mode-active');
+    } else {
+      const theme = MODE_COLORS[$currentMode] || MODE_COLORS.thinking;
+      root.style.setProperty('--luna-accent', theme.primary);
+      root.style.setProperty('--luna-accent-glow', theme.glow);
+      root.style.setProperty('--luna-accent-border', theme.border);
+      document.body.classList.remove('plan-mode-active');
+    }
+  }
   import { fetchSessions, fetchConfig, sessionAction, SSEManager, fetchMe } from './api.js';
   import Sidebar from './components/Sidebar.svelte';
   import ChatArea from './components/ChatArea.svelte';
   import LoginPage from './components/LoginPage.svelte';
   import ConfigDrawer from './components/ConfigDrawer.svelte';
   import StatusBar from './components/StatusBar.svelte';
+  import ParticleBackground from './components/ParticleBackground.svelte';
+  import WelcomeScreen from './components/WelcomeScreen.svelte';
 
   let configOpen = false;
   let mobileSidebarOpen = false;
+  let authChecked = false;
 
   async function handleNewSession() {
     const res = await sessionAction('create', null, 'Nova Sessão');
@@ -50,13 +70,17 @@
     } catch (e) {
       console.error('Auth check error:', e);
     }
+    authChecked = true;
 
     try {
       const res = await fetchSessions();
       if (res.ok && res.sessions) {
         sessions.set(res.sessions);
-        if (res.sessions.length > 0 && !$currentSessionId) {
-          currentSessionId.set(res.sessions[0].id);
+        // v5.1-fix: Do NOT auto-select first session — respect stored currentSessionId
+        // If stored session no longer exists, clear it so WelcomeScreen shows
+        const storedId = $currentSessionId;
+        if (storedId && !res.sessions.find(s => s.id === storedId)) {
+          currentSessionId.set(null);
         }
       }
       const cfg = await fetchConfig();
@@ -75,6 +99,7 @@
 }}/>
 
 {#if $user}
+  <ParticleBackground />
   <div class="app-container">
     <Sidebar
       sessions={$sessions}
@@ -92,9 +117,21 @@
     />
 
     <main class="main-content">
-      <ChatArea
-        sessionId={$currentSessionId}
-      />
+      {#if $currentSessionId}
+        <ChatArea
+          sessionId={$currentSessionId}
+        />
+      {:else}
+        <WelcomeScreen
+          sessions={$sessions}
+          onNewSession={handleNewSession}
+          onSelectSession={(id) => {
+            const sess = $sessions.find(s => s.id === id);
+            if (sess?.mode) currentMode.set(sess.mode);
+            currentSessionId.set(id);
+          }}
+        />
+      {/if}
     </main>
 
     <ConfigDrawer
@@ -109,8 +146,14 @@
     status={$connectionStatus}
     onOpenConfig={() => configOpen = true}
   />
-{:else}
+{:else if authChecked}
   <LoginPage />
+{:else}
+  <!-- Auth checking loader -->
+  <div class="auth-loader">
+    <div class="auth-loader-icon">🌙</div>
+    <div class="auth-loader-text">Conectando...</div>
+  </div>
 {/if}
 
 <style>
@@ -118,7 +161,7 @@
     display: flex;
     height: 100vh;
     height: 100dvh;
-    background: var(--luna-bg);
+    background: transparent;
     overflow: hidden;
   }
   .main-content {
@@ -127,6 +170,35 @@
     flex-direction: column;
     overflow: hidden;
     min-width: 0;
+  }
+  @media (max-width: 768px) {
+    .main-content {
+      padding-top: 52px; /* espaço pro hamburger button */
+    }
+  }
+  .auth-loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    height: 100dvh;
+    background: var(--luna-bg);
+    color: var(--luna-text);
+    gap: 16px;
+  }
+  .auth-loader-icon {
+    font-size: 48px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .auth-loader-text {
+    font-size: 14px;
+    color: var(--luna-text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.6; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.1); }
   }
   @media (max-width: 768px) {
     .app-container {

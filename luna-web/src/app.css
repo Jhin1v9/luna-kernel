@@ -13,6 +13,11 @@
   --luna-primary-hover: #ff6b6b;
   --luna-gold: #ffd700;
 
+  /* Dynamic theme vars — updated by mode */
+  --luna-accent: #a855f7;
+  --luna-accent-glow: rgba(168,85,247,0.3);
+  --luna-accent-border: rgba(168,85,247,0.15);
+
   --tool-writeFile: #3b82f6;
   --tool-readFile: #22c55e;
   --tool-executeShell: #a855f7;
@@ -41,9 +46,16 @@ body {
   font-size: 15px;
   line-height: 1.6;
   color: var(--luna-text);
-  background-color: var(--luna-bg);
+  background-color: transparent;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Remove ugly focus outline on all inputs */
+input:focus, textarea:focus, button:focus, select:focus {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--luna-accent) !important;
 }
 
 /* Scrollbar */
@@ -67,14 +79,14 @@ body {
 
 /* Selection */
 ::selection {
-  background: rgba(233, 69, 96, 0.3);
+  background: var(--luna-accent-border);
   color: var(--luna-text);
 }
 
 /* Focus rings */
 :focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--luna-primary);
+  box-shadow: 0 0 0 2px var(--luna-accent);
 }
 
 /* Reduced motion */
@@ -86,6 +98,38 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Plan Mode Theme Overrides */
+body.plan-mode-active {
+  --luna-accent: #c9a227;
+  --luna-accent-glow: rgba(201,162,39,0.3);
+  --luna-accent-border: rgba(201,162,39,0.15);
+}
+
+body.plan-mode-active .chat-header {
+  background: linear-gradient(90deg, #0f0f1a 0%, #1a1a2e 100%);
+  border-bottom-color: rgba(201,162,39,0.2);
+}
+
+body.plan-mode-active .chat-input-container {
+  background: #0d0d1a;
+  border-top-color: rgba(201,162,39,0.2);
+}
+
+body.plan-mode-active .status-bar {
+  background: linear-gradient(90deg, #12121f 0%, #1a1a2e 50%, #12121f 100%);
+  border-top-color: rgba(201,162,39,0.3);
+}
+
+/* Animação de transição para plan mode */
+.chat-area, .chat-header, .chat-input-container, .status-bar {
+  transition: background 0.4s ease, border-color 0.4s ease;
+}
+
+@keyframes pulseGold {
+  0%, 100% { box-shadow: 0 0 40px rgba(255,215,0,0.1); }
+  50% { box-shadow: 0 0 60px rgba(255,215,0,0.2); }
 }
 
 /* Code blocks */
@@ -162,14 +206,14 @@ code {
 }
 
 .markdown-content blockquote {
-  border-left: 3px solid var(--luna-primary);
+  border-left: 3px solid var(--luna-accent);
   padding-left: 1rem;
   margin: 1rem 0;
   color: var(--luna-text-secondary);
 }
 
 .markdown-content a {
-  color: var(--luna-primary);
+  color: var(--luna-accent);
   text-decoration: none;
 }
 

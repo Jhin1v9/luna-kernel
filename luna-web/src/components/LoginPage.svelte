@@ -203,30 +203,40 @@
 </div>
 
 <style>
+  /* ═══════════════════════════════════════════════════════════
+     MOBILE-FIRST RESPONSIVE LOGIN
+     Breakpoints: 360 | 480 | 640 | 768 | 1024 | 1280
+     ═══════════════════════════════════════════════════════════ */
+
   .login-page {
     position: fixed;
     inset: 0;
     display: flex;
+    flex-direction: column;
     z-index: 1;
     background: #08080c;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
   }
 
-  /* ── Left side: Mascot ── */
+  /* ── Left side: Mascot (compacto em mobile) ── */
   .mascot-side {
-    flex: 1.2;
+    flex: none;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     position: relative;
-    padding: 40px;
+    padding: 16px 12px 8px;
+    min-height: auto;
+    gap: 8px;
   }
 
   .mascot-container {
     position: relative;
-    width: 200px;
-    height: 200px;
+    width: clamp(72px, 22vw, 140px);
+    height: clamp(72px, 22vw, 140px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -234,15 +244,15 @@
 
   .mascot-glow {
     position: absolute;
-    width: 180px;
-    height: 180px;
+    width: 90%;
+    height: 90%;
     border-radius: 50%;
     background: radial-gradient(circle, rgba(233,69,96,0.15) 0%, transparent 70%);
     animation: glowPulse 3s ease-in-out infinite;
   }
 
   .mascot-orb {
-    font-size: 100px;
+    font-size: clamp(44px, 14vw, 90px);
     position: relative;
     z-index: 2;
     animation: float 4s ease-in-out infinite, rotateSlow 20s linear infinite;
@@ -270,13 +280,13 @@
     left: 50%;
     transform: translate(-50%, -50%);
     display: flex;
-    gap: 20px;
+    gap: clamp(8px, 3vw, 20px);
     z-index: 3;
   }
 
   .eye {
-    width: 12px;
-    height: 12px;
+    width: clamp(6px, 2vw, 12px);
+    height: clamp(6px, 2vw, 12px);
     background: #fff;
     border-radius: 50%;
     box-shadow: 0 0 8px rgba(255,255,255,0.6);
@@ -305,12 +315,12 @@
   }
 
   .mascot-bubble {
-    margin-top: 24px;
+    margin-top: 8px;
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 16px;
-    padding: 14px 20px;
-    max-width: 280px;
+    border-radius: 14px;
+    padding: 10px 16px;
+    max-width: min(280px, 85vw);
     position: relative;
     backdrop-filter: blur(8px);
     animation: fadeInUp 0.5s ease;
@@ -330,22 +340,23 @@
 
   .bubble-text {
     color: #94a3b8;
-    font-size: 13px;
+    font-size: clamp(11px, 3.2vw, 13px);
     text-align: center;
     margin: 0;
     font-family: 'Inter', sans-serif;
-    min-height: 20px;
+    min-height: 18px;
     transition: opacity 0.3s;
+    line-height: 1.4;
   }
 
   .branding {
-    margin-top: 40px;
+    margin-top: 8px;
     text-align: center;
   }
 
   .brand-title {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 48px;
+    font-size: clamp(28px, 9vw, 48px);
     font-weight: 700;
     background: linear-gradient(135deg, #a78bfa, #22d3ee, #34d399);
     -webkit-background-clip: text;
@@ -357,9 +368,10 @@
 
   .brand-subtitle {
     color: #64748b;
-    font-size: 14px;
-    margin-top: 8px;
+    font-size: clamp(11px, 3vw, 14px);
+    margin-top: 4px;
     font-family: 'JetBrains Mono', monospace;
+    word-break: break-word;
   }
 
   .cursor {
@@ -373,8 +385,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 40px;
-    min-width: 400px;
+    padding: 12px 16px 24px;
+    min-width: auto;
   }
 
   .login-card {
@@ -385,7 +397,7 @@
     -webkit-backdrop-filter: blur(16px);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 20px;
-    padding: 40px 36px;
+    padding: clamp(20px, 5vw, 40px) clamp(16px, 4vw, 36px);
     position: relative;
     overflow: hidden;
     opacity: 0;
@@ -415,19 +427,19 @@
 
   .card-header {
     text-align: center;
-    margin-bottom: 32px;
+    margin-bottom: clamp(20px, 5vw, 32px);
   }
 
   .logo-icon {
-    font-size: 40px;
-    margin-bottom: 12px;
+    font-size: clamp(28px, 8vw, 40px);
+    margin-bottom: 8px;
     animation: rotateSlow 15s linear infinite;
     display: inline-block;
   }
 
   .card-title {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 24px;
+    font-size: clamp(18px, 5.5vw, 24px);
     font-weight: 700;
     color: #e2e8f0;
     margin: 0 0 6px 0;
@@ -435,7 +447,7 @@
 
   .card-desc {
     color: #64748b;
-    font-size: 14px;
+    font-size: clamp(12px, 3.5vw, 14px);
     margin: 0;
   }
 
@@ -445,21 +457,21 @@
     color: #fca5a5;
     padding: 10px 14px;
     border-radius: 10px;
-    font-size: 13px;
-    margin-bottom: 20px;
+    font-size: clamp(12px, 3.5vw, 13px);
+    margin-bottom: 16px;
     text-align: center;
   }
 
   .form-group {
-    margin-bottom: 20px;
+    margin-bottom: clamp(12px, 3.5vw, 20px);
   }
 
   .form-group label {
     display: block;
     color: #94a3b8;
-    font-size: 13px;
+    font-size: clamp(11px, 3vw, 13px);
     font-weight: 500;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
@@ -470,7 +482,7 @@
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 12px;
-    padding: 0 14px;
+    padding: 0 clamp(10px, 3vw, 14px);
     transition: all 0.2s ease;
   }
 
@@ -480,9 +492,10 @@
   }
 
   .input-icon {
-    font-size: 16px;
-    margin-right: 10px;
+    font-size: clamp(14px, 4vw, 16px);
+    margin-right: 8px;
     opacity: 0.5;
+    flex-shrink: 0;
   }
 
   .input-wrap input {
@@ -491,10 +504,11 @@
     border: none;
     outline: none;
     color: #e2e8f0;
-    font-size: 14px;
+    font-size: clamp(13px, 4vw, 14px);
     font-family: 'JetBrains Mono', monospace;
-    padding: 14px 0;
+    padding: clamp(10px, 3.5vw, 14px) 0;
     width: 100%;
+    min-width: 0;
   }
 
   .input-wrap input::placeholder {
@@ -503,24 +517,30 @@
 
   .login-btn {
     width: 100%;
-    padding: 14px;
+    padding: clamp(10px, 3.5vw, 14px);
     background: linear-gradient(135deg, #e94560, #ff6b6b);
     border: none;
     border-radius: 12px;
     color: white;
-    font-size: 15px;
+    font-size: clamp(13px, 4vw, 15px);
     font-weight: 600;
     font-family: 'Inter', sans-serif;
     cursor: pointer;
     transition: all 0.2s ease;
-    margin-top: 8px;
+    margin-top: 4px;
     position: relative;
     overflow: hidden;
+    min-height: 44px;
+    touch-action: manipulation;
   }
 
   .login-btn:hover:not(:disabled) {
     transform: scale(1.02);
     box-shadow: 0 0 30px rgba(233,69,96,0.3);
+  }
+
+  .login-btn:active:not(:disabled) {
+    transform: scale(0.98);
   }
 
   .login-btn:disabled {
@@ -547,23 +567,253 @@
   .btn-dots span:nth-child(2) { animation-delay: -0.16s; }
 
   .users-hint {
-    margin-top: 24px;
+    margin-top: clamp(14px, 4vw, 24px);
     text-align: center;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
   }
 
   .hint-label {
     color: #475569;
-    font-size: 12px;
+    font-size: clamp(10px, 3vw, 12px);
   }
 
   .user-tag {
-    font-size: 12px;
+    font-size: clamp(10px, 3vw, 12px);
     font-weight: 500;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     BREAKPOINTS — progressive enhancement
+     ═══════════════════════════════════════════════════════════ */
+
+  /* Celulares pequenos em landscape / médios (>= 480px) */
+  @media (min-width: 480px) and (orientation: landscape) {
+    .login-page {
+      flex-direction: row;
+      overflow-y: hidden;
+    }
+    .mascot-side {
+      flex: 1;
+      padding: 20px 16px 16px;
+      min-height: auto;
+      gap: 12px;
+    }
+    .mascot-container {
+      width: clamp(100px, 18vw, 160px);
+      height: clamp(100px, 18vw, 160px);
+    }
+    .mascot-bubble {
+      margin-top: 12px;
+      padding: 12px 18px;
+    }
+    .branding {
+      margin-top: 12px;
+    }
+    .login-side {
+      flex: 1.1;
+      padding: 20px;
+    }
+    .login-card {
+      max-width: 380px;
+    }
+  }
+
+  /* Tablets e celulares grandes em landscape (>= 640px) */
+  @media (min-width: 640px) and (orientation: landscape) {
+    .mascot-side {
+      padding: 28px 24px 20px;
+    }
+    .mascot-container {
+      width: clamp(120px, 18vw, 180px);
+      height: clamp(120px, 18vw, 180px);
+    }
+    .mascot-bubble {
+      margin-top: 16px;
+      padding: 12px 20px;
+      max-width: 300px;
+    }
+    .branding {
+      margin-top: 20px;
+    }
+    .login-side {
+      padding: 28px;
+    }
+    .login-card {
+      max-width: 400px;
+    }
+  }
+
+  /* Tablets em portrait / small laptops (>= 768px) */
+  @media (min-width: 768px) {
+    .mascot-side {
+      padding: 32px;
+    }
+    .mascot-container {
+      width: clamp(140px, 20vw, 180px);
+      height: clamp(140px, 20vw, 180px);
+    }
+    .mascot-bubble {
+      margin-top: 20px;
+      padding: 14px 22px;
+      max-width: 320px;
+    }
+    .branding {
+      margin-top: 28px;
+    }
+    .login-side {
+      padding: 32px;
+    }
+    .login-card {
+      max-width: 460px;
+      padding: 36px 32px;
+    }
+  }
+
+  /* Tablets em landscape e laptops (>= 768px landscape) */
+  @media (min-width: 768px) and (orientation: landscape) {
+    .login-page {
+      flex-direction: row;
+      overflow-y: hidden;
+    }
+    .mascot-side {
+      flex: 1.1;
+      justify-content: center;
+      padding: 32px;
+    }
+    .mascot-container {
+      width: 160px;
+      height: 160px;
+    }
+    .login-side {
+      flex: 1;
+      padding: 32px;
+      min-width: 360px;
+    }
+    .login-card {
+      max-width: 420px;
+    }
+  }
+
+  /* Desktop padrão (>= 1024px) */
+  @media (min-width: 1024px) {
+    .mascot-side {
+      flex: 1.2;
+      padding: 40px;
+    }
+    .mascot-container {
+      width: 200px;
+      height: 200px;
+    }
+    .mascot-orb {
+      font-size: 100px;
+    }
+    .mascot-bubble {
+      margin-top: 24px;
+      padding: 14px 20px;
+      max-width: 280px;
+    }
+    .branding {
+      margin-top: 40px;
+    }
+    .login-side {
+      flex: 1;
+      padding: 40px;
+      min-width: 400px;
+    }
+    .login-card {
+      padding: 40px 36px;
+    }
+  }
+
+  /* Large desktop (>= 1280px) */
+  @media (min-width: 1280px) {
+    .mascot-side {
+      flex: 1.3;
+    }
+    .login-card {
+      max-width: 440px;
+    }
+  }
+
+  /* Landscape em celulares muito pequenos — compactar mais */
+  @media (max-height: 500px) and (max-width: 900px) {
+    .login-page {
+      flex-direction: row;
+      overflow-y: hidden;
+    }
+    .mascot-side {
+      flex: 0.8;
+      padding: 12px;
+      gap: 4px;
+    }
+    .mascot-container {
+      width: 64px;
+      height: 64px;
+    }
+    .mascot-bubble {
+      display: none;
+    }
+    .branding {
+      margin-top: 4px;
+    }
+    .login-side {
+      flex: 1.2;
+      padding: 12px;
+    }
+    .login-card {
+      padding: 16px 14px;
+    }
+    .card-header {
+      margin-bottom: 12px;
+    }
+    .form-group {
+      margin-bottom: 8px;
+    }
+  }
+
+  /* Very small screens (<= 360px) */
+  @media (max-width: 360px) {
+    .mascot-side {
+      padding: 12px 8px 4px;
+    }
+    .mascot-container {
+      width: 64px;
+      height: 64px;
+    }
+    .mascot-bubble {
+      padding: 8px 12px;
+      border-radius: 10px;
+    }
+    .login-side {
+      padding: 8px 12px 16px;
+    }
+    .login-card {
+      border-radius: 14px;
+      padding: 16px 14px;
+    }
+  }
+
+  /* Reduce motion for users who prefer it */
+  @media (prefers-reduced-motion: reduce) {
+    .mascot-orb,
+    .mascot-glow,
+    .eye,
+    .scan-line,
+    .logo-icon {
+      animation: none !important;
+    }
+    .login-card {
+      opacity: 1;
+      transform: none;
+      transition: none;
+    }
+    .cursor {
+      animation: none;
+    }
   }
 
   /* ── Animations ── */
@@ -627,36 +877,5 @@
   @keyframes bounceDots {
     0%, 80%, 100% { transform: scale(0); }
     40% { transform: scale(1); }
-  }
-
-  /* ── Responsive ── */
-  @media (max-width: 900px) {
-    .login-page {
-      flex-direction: column;
-    }
-    .mascot-side {
-      flex: none;
-      padding: 30px 20px 10px;
-      min-height: 40vh;
-    }
-    .mascot-container {
-      width: 120px;
-      height: 120px;
-    }
-    .mascot-orb {
-      font-size: 60px;
-    }
-    .brand-title {
-      font-size: 32px;
-    }
-    .login-side {
-      flex: none;
-      padding: 20px;
-      min-width: auto;
-    }
-    .login-card {
-      max-width: 100%;
-      padding: 28px 24px;
-    }
   }
 </style>

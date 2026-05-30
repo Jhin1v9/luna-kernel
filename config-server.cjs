@@ -9,6 +9,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 // Load .env manually (no dotenv dependency) — MUST be before any luna-tools require
 const envPath = path.join(__dirname, '.env');
@@ -28,6 +30,9 @@ const LUNA_DIR = path.dirname(__filename);
 const ENV_PATH = path.join(LUNA_DIR, '.env');
 const SOUL_PATH = path.join(LUNA_DIR, 'luna-soul.cjs');
 const RUNTIME_PATH = path.join(LUNA_DIR, '.luna-runtime.json');
+const USERS_FILE = path.join(__dirname, '..', 'NEXO_DASHBOARD_PRO', 'backend', 'data', 'users.json');
+const JWT_SECRET = process.env.JWT_SECRET || 'nexo-test-secret-2026';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
 
 // Write runtime config so frontend dev server can discover our port
 fs.writeFileSync(RUNTIME_PATH, JSON.stringify({ apiPort: PORT, apiUrl: `http://localhost:${PORT}` }));
@@ -115,7 +120,7 @@ function sendJSON(res, status, data) {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
   res.end(JSON.stringify(data));
 }
@@ -134,10 +139,10 @@ function parseBody(req, cb) {
 }
 
 function sendSSE(res, event, data) {
-  // Send as generic 'message' event so EventSource.onmessage captures it
-  // The event type is included in the JSON data
   res.write(`event: message\n`);
-  res.write(`data: ${JSON.stringify({ ...data, _eventType: event })}\n\n`);
+  res.write(`data: ${JSON.stringify({ ...data, type: event })}\n\n`);
+  if (res.flush) res.flush();
+  if (res.socket && res.socket.setNoDelay) res.socket.setNoDelay(true);
 }
 
 // ============================================================
@@ -303,9 +308,63 @@ const server = http.createServer((req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     });
     res.end();
+    return;
+  }
+
+  // ============================================================
+  // AUTH API
+  // ============================================================
+  async function validateCredentials(username, password) {
+    try {
+      const data = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
+      const user = data.users?.[username.toLowerCase()];
+      if (!user) return null;
+      const match = await bcrypt.compare(password, user.passwordHash || user.password);
+      if (!match) return null;
+      return { id: username.toLowerCase(), name: user.name || username, role: user.role || 'User', color: user.color };
+    } catch (e) {
+      console.error('Auth error:', e.message);
+      return null;
+    }
+  }
+  function generateToken(userId) {
+    return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  }
+  function requireAuth(req) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) return null;
+    try {
+      const token = authHeader.slice(7);
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const data = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
+      const user = data.users?.[decoded.userId.toLowerCase()];
+      if (!user) return null;
+      return { id: decoded.userId, name: user.name || decoded.userId, role: user.role || 'User', color: user.color };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  if (pathname === '/api/auth/login' && req.method === 'POST') {
+    parseBody(req, async (body) => {
+      if (!body || !body.username || !body.password) {
+        return sendError(res, 400, 'Username e senha obrigatórios');
+      }
+      const user = await validateCredentials(body.username, body.password);
+      if (!user) return sendError(res, 401, 'Credenciais inválidas');
+      const token = generateToken(user.id);
+      sendJSON(res, 200, { ok: true, token, user });
+    });
+    return;
+  }
+
+  if (pathname === '/api/auth/me' && req.method === 'GET') {
+    const user = requireAuth(req);
+    if (!user) return sendError(res, 401, 'Não autorizado');
+    sendJSON(res, 200, { ok: true, user });
     return;
   }
 
@@ -317,13 +376,32 @@ const server = http.createServer((req, res) => {
   if (pathname === '/api/chat' && req.method === 'POST') {
     parseBody(req, async (body) => {
       if (!body) return sendError(res, 400, 'JSON inválido');
-      const { message, sessionId, mode = 'thinking' } = body;
+      const { message, sessionId, mode = 'thinking', files } = body;
       if (!message) return sendError(res, 400, 'message obrigatório');
 
       let session = sessionId ? getWebSession(sessionId) : null;
       if (!session) {
         session = createWebSession(message.slice(0, 40), mode);
       }
+
+      // Check if plan mode is active and awaiting approval
+      if (session.planMode === true && session.planStatus === 'awaiting_approval') {
+        return sendJSON(res, 423, {
+          ok: false,
+          error: 'Há um plano aguardando aprovação. Aprove ou rejeite antes de continuar.',
+          planStatus: session.planStatus,
+          planPath: session.planPath,
+        });
+      }
+
+      // If plan was approved, clear plan mode and proceed normally
+      if (session.planMode === true && session.planStatus === 'approved') {
+        session.planMode = false;
+        session.planStatus = null;
+        session.planContent = null;
+        session.planPath = null;
+      }
+
       // Persist mode on session
       session.mode = mode;
 
@@ -333,6 +411,7 @@ const server = http.createServer((req, res) => {
         role: 'user',
         type: 'text',
         content: message,
+        files: files || [],
         timestamp: new Date().toISOString(),
       });
 
@@ -354,14 +433,19 @@ const server = http.createServer((req, res) => {
           const streamMeta = activeStreams.get(session.id);
           if (!streamMeta || streamMeta.cancelled) break;
 
-          // Store message events
-          if (['response_delta', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta'].includes(ev.type)) {
+          // Store message events (including plan mode events)
+          if (['response_delta', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta',
+               'plan_start', 'plan_delta', 'plan_display', 'plan_awaiting_approval', 'plan_approved', 'plan_rejected', 'plan_revised'].includes(ev.type)) {
+            // For 'done' events, capture the final parsed response from result
+            const doneResponse = ev.type === 'done' ? (ev.result?.response || ev.response) : undefined;
             addMessageToSession(session.id, {
               id: 'ev-' + Date.now(),
               role: 'assistant',
               type: ev.type,
-              content: ev.text || ev.fullResponse || '',
+              content: doneResponse || ev.text || ev.fullResponse || ev.plan || ev.message || '',
               fullThinking: ev.fullThinking || undefined,
+              plan: ev.plan || undefined,
+              planPath: ev.planPath || undefined,
               tool: ev.tool,
               params: ev.params,
               result: ev.result,
@@ -385,6 +469,176 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ============================================================
+  // PLAN MODE API
+  // ============================================================
+
+  // POST /api/plan — start plan mode investigation
+  if (pathname === '/api/plan' && req.method === 'POST') {
+    parseBody(req, async (body) => {
+      if (!body) return sendError(res, 400, 'JSON inválido');
+      const { message, sessionId, mode = 'thinking' } = body;
+      if (!message) return sendError(res, 400, 'message obrigatório');
+
+      let session = sessionId ? getWebSession(sessionId) : null;
+      if (!session) {
+        session = createWebSession(message.slice(0, 40), mode);
+      }
+
+      session.planMode = true;
+      session.planStatus = 'investigating';
+      session.mode = mode;
+
+      // Add user message
+      addMessageToSession(session.id, {
+        id: 'msg-' + Date.now(),
+        role: 'user',
+        type: 'text',
+        content: `[PLAN MODE] ${message}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Mark stream as active
+      activeStreams.set(session.id, { cancelled: false });
+
+      sendJSON(res, 200, { ok: true, sessionId: session.id, status: 'planning' });
+
+      // Process plan mode in background
+      try {
+        const luna = await getLunaSoul();
+        const stream = luna.processPlanModeStream(message, {
+          sessionId: session.id,
+          userId: 'web-' + session.id,
+          mode: 'thinking',
+        });
+
+        for await (const ev of stream) {
+          const streamMeta = activeStreams.get(session.id);
+          if (!streamMeta || streamMeta.cancelled) break;
+
+          // Store plan events
+          if (['thinking_start', 'thinking_delta', 'plan_start', 'plan_delta', 'plan_display',
+               'plan_awaiting_approval', 'error', 'action_start', 'action_end'].includes(ev.type)) {
+            addMessageToSession(session.id, {
+              id: 'ev-' + Date.now(),
+              role: 'assistant',
+              type: ev.type,
+              content: ev.text || ev.message || ev.plan || '',
+              fullThinking: ev.fullThinking || undefined,
+              plan: ev.plan || undefined,
+              planPath: ev.planPath || undefined,
+              tool: ev.tool,
+              params: ev.params,
+              result: ev.result,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (e) {
+        console.error('[WEB] Erro no plan mode:', e.message);
+        session.planStatus = 'error';
+        addMessageToSession(session.id, {
+          id: 'err-' + Date.now(),
+          role: 'assistant',
+          type: 'error',
+          content: e.message,
+          timestamp: new Date().toISOString(),
+        });
+      } finally {
+        activeStreams.delete(session.id);
+      }
+    });
+    return;
+  }
+
+  // POST /api/plan/approve — approve the plan
+  if (pathname === '/api/plan/approve' && req.method === 'POST') {
+    parseBody(req, (body) => {
+      if (!body || !body.sessionId) return sendError(res, 400, 'sessionId obrigatório');
+      const session = getWebSession(body.sessionId);
+      if (!session) return sendError(res, 404, 'Sessão não encontrada');
+      if (session.planStatus !== 'awaiting_approval') {
+        return sendError(res, 400, 'Não há plano aguardando aprovação');
+      }
+
+      session.planStatus = 'approved';
+      addMessageToSession(session.id, {
+        id: 'plan-approved-' + Date.now(),
+        role: 'assistant',
+        type: 'plan_approved',
+        content: 'Plano aprovado! Iniciando execução...',
+        plan: session.planContent,
+        planPath: session.planPath,
+        timestamp: new Date().toISOString(),
+      });
+
+      sendJSON(res, 200, { ok: true, message: 'Plano aprovado', sessionId: session.id });
+    });
+    return;
+  }
+
+  // POST /api/plan/reject — reject the plan
+  if (pathname === '/api/plan/reject' && req.method === 'POST') {
+    parseBody(req, (body) => {
+      if (!body || !body.sessionId) return sendError(res, 400, 'sessionId obrigatório');
+      const session = getWebSession(body.sessionId);
+      if (!session) return sendError(res, 404, 'Sessão não encontrada');
+
+      session.planMode = false;
+      session.planStatus = 'rejected';
+      addMessageToSession(session.id, {
+        id: 'plan-rejected-' + Date.now(),
+        role: 'assistant',
+        type: 'plan_rejected',
+        content: 'Plano rejeitado. Investigação encerrada.',
+        timestamp: new Date().toISOString(),
+      });
+
+      sendJSON(res, 200, { ok: true, message: 'Plano rejeitado', sessionId: session.id });
+    });
+    return;
+  }
+
+  // POST /api/plan/revise — revise the plan
+  if (pathname === '/api/plan/revise' && req.method === 'POST') {
+    parseBody(req, (body) => {
+      if (!body || !body.sessionId || !body.revisedPlan) {
+        return sendError(res, 400, 'sessionId e revisedPlan obrigatórios');
+      }
+      const session = getWebSession(body.sessionId);
+      if (!session) return sendError(res, 404, 'Sessão não encontrada');
+
+      session.planContent = body.revisedPlan;
+      session.planStatus = 'awaiting_approval';
+
+      // Save revised plan to file
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const planDir = path.join(process.env.HOME || '/home/jhin', '.luna-kernel', 'plans');
+        fs.mkdirSync(planDir, { recursive: true });
+        const planPath = path.join(planDir, `${session.id}.md`);
+        fs.writeFileSync(planPath, body.revisedPlan, 'utf-8');
+        session.planPath = planPath;
+      } catch (e) {
+        console.error('[WEB] Erro ao salvar plano revisado:', e.message);
+      }
+
+      addMessageToSession(session.id, {
+        id: 'plan-revised-' + Date.now(),
+        role: 'assistant',
+        type: 'plan_revised',
+        content: 'Plano revisado. Aguardando nova aprovação.',
+        plan: body.revisedPlan,
+        planPath: session.planPath,
+        timestamp: new Date().toISOString(),
+      });
+
+      sendJSON(res, 200, { ok: true, message: 'Plano revisado', sessionId: session.id });
+    });
+    return;
+  }
+
   // GET /api/chat/stream — SSE streaming
   if (pathname === '/api/chat/stream' && req.method === 'GET') {
     const sessionId = url.searchParams.get('sessionId');
@@ -399,7 +653,13 @@ const server = http.createServer((req, res) => {
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no',
     });
+
+    // Disable Nagle's algorithm for real-time streaming
+    if (res.socket && res.socket.setNoDelay) {
+      res.socket.setNoDelay(true);
+    }
 
     // Send connection confirmation
     sendSSE(res, 'connected', { type: 'connected', sessionId });
@@ -442,10 +702,13 @@ const server = http.createServer((req, res) => {
         if (msg.tool) eventData.tool = msg.tool;
         if (msg.params) eventData.params = msg.params;
         if (msg.result) eventData.result = msg.result;
+        if (msg.plan) eventData.plan = msg.plan;
+        if (msg.planPath) eventData.planPath = msg.planPath;
         if (msg.type === 'error') eventData.error = msg.content;
         // Include user message content for display
         if (msg.role === 'user') {
           eventData.content = msg.content;
+          if (msg.files && msg.files.length > 0) eventData.files = msg.files;
         }
 
         sendSSE(res, msg.type, eventData);
@@ -469,6 +732,8 @@ const server = http.createServer((req, res) => {
         id: s.id,
         title: s.title,
         mode: s.mode || 'thinking',
+        planMode: s.planMode || false,
+        planStatus: s.planStatus || null,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         messageCount: s.messages.length,

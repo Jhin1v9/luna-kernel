@@ -1,12 +1,17 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { isStreaming } from '../stores.js';
   import { scrollManager } from '../utils.js';
   import UserMessage from './UserMessage.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import ThinkingBubble from './ThinkingBubble.svelte';
   import ToolCard from './ToolCard.svelte';
+  import PlanCard from './PlanCard.svelte';
 
   export let messages = [];
+  export let onApprovePlan = () => {};
+  export let onRejectPlan = () => {};
+  export let onRevisePlan = () => {};
 
   let listEl;
   let userScrolledUp = false;
@@ -67,11 +72,11 @@
   {:else}
     <div class="messages-container">
       {#each messages as message (message.id)}
-        <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error'}>
+        <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}>
           {#if message.type === 'user'}
             <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
           {:else if message.type === 'assistant'}
-            <AssistantMessage content={message.content} timestamp={message.timestamp} />
+            <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} />
           {:else if message.type === 'thinking'}
             <ThinkingBubble text={message.content} />
           {:else if message.type === 'tool'}
@@ -81,9 +86,22 @@
               result={message.result}
               duration={message.duration}
             />
+          {:else if message.type === 'plan'}
+            <PlanCard
+              plan={message.content}
+              status={message.status || 'awaiting_approval'}
+              onApprove={onApprovePlan}
+              onReject={onRejectPlan}
+              onRevise={onRevisePlan}
+            />
           {:else if message.type === 'system' || message.type === 'error'}
             <div class="system-banner" class:error={message.type === 'error'}>
               {message.content}
+            </div>
+          {:else if message.type === 'login_required'}
+            <div class="system-banner login-required">
+              🔒 {message.content}
+              <button class="retry-btn" on:click={() => location.reload()}>Recarregar página</button>
             </div>
           {/if}
         </div>
@@ -117,6 +135,14 @@
     max-width: 900px;
     margin: 0 auto;
     width: 100%;
+  }
+  @media (max-width: 640px) {
+    .messages-list {
+      padding: 10px;
+    }
+    .messages-container {
+      gap: 12px;
+    }
   }
   .message-wrapper {
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -193,13 +219,36 @@
     border-color: rgba(239, 68, 68, 0.2);
     color: #fca5a5;
   }
+  .system-banner.login-required {
+    background: rgba(245, 158, 11, 0.1);
+    border-color: rgba(245, 158, 11, 0.2);
+    color: #fbbf24;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .retry-btn {
+    background: rgba(245, 158, 11, 0.2);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    color: #fbbf24;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .retry-btn:hover {
+    background: rgba(245, 158, 11, 0.3);
+  }
   .new-messages-badge {
     position: absolute;
     bottom: 16px;
     left: 50%;
     transform: translateX(-50%);
     padding: 8px 16px;
-    background: var(--luna-primary);
+    background: var(--luna-accent);
     color: white;
     border: none;
     border-radius: 20px;

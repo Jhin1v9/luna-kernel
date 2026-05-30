@@ -1,9 +1,14 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { MODE_COLORS, planModeState } from '../stores.js';
+  import { playSound } from '../sound.js';
+  import { Search, Shield } from 'lucide-svelte';
 
   export let title = 'Nova Conversa';
   export let mode = 'thinking';
   export let isStreaming = false;
+
+  $: theme = MODE_COLORS[mode] || MODE_COLORS.thinking;
 
   const dispatch = createEventDispatcher();
 
@@ -35,6 +40,8 @@
   }
 
   function selectMode(newMode) {
+    if ($planModeState.active) return; // disable mode switch in plan mode
+    playSound('modeChange');
     dispatch('modeChange', newMode);
     showModeDropdown = false;
   }
@@ -54,14 +61,19 @@
       <button
         class="mode-btn"
         on:click|stopPropagation={() => showModeDropdown = !showModeDropdown}
-        disabled={isStreaming}
+        disabled={isStreaming || $planModeState.active}
       >
-        <span class="mode-icon">{
-          mode === 'thinking' ? '⭐' :
-          mode === 'agent' ? '🔍' :
-          mode === 'swarm' ? '🐝' : '⚡'
-        }</span>
-        <span class="mode-text">{mode}</span>
+        {#if $planModeState.active}
+          <span class="mode-icon plan-mode-icon"><Search size={14} /></span>
+          <span class="mode-text plan-mode-text">detetive</span>
+        {:else}
+          <span class="mode-icon">{
+            mode === 'thinking' ? '⭐' :
+            mode === 'agent' ? '🔍' :
+            mode === 'swarm' ? '🐝' : '⚡'
+          }</span>
+          <span class="mode-text">{mode}</span>
+        {/if}
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <polyline points="6 9 12 15 18 9"/>
         </svg>
@@ -168,14 +180,17 @@
     transition: all 0.2s;
   }
   .mode-btn:hover:not(:disabled) {
-    border-color: rgba(255,255,255,0.12);
+    border-color: var(--luna-accent);
+    box-shadow: 0 0 12px var(--luna-accent-border);
   }
   .mode-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
-  .mode-icon { font-size: 14px; }
+  .mode-icon { font-size: 14px; display: flex; align-items: center; }
   .mode-text { font-weight: 500; }
+  .plan-mode-icon { color: #ffd700; }
+  .plan-mode-text { color: #ffd700; text-transform: uppercase; letter-spacing: 0.5px; font-size: 11px; }
   .mode-dropdown {
     position: absolute;
     top: calc(100% + 4px);
@@ -185,7 +200,7 @@
     border-radius: 8px;
     padding: 4px;
     z-index: 100;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 20px var(--luna-accent-border);
     min-width: 140px;
   }
   .mode-option {
@@ -202,7 +217,8 @@
     transition: background 0.15s;
   }
   .mode-option:hover, .mode-option.active {
-    background: rgba(255,255,255,0.06);
+    background: var(--luna-accent-border);
+    color: var(--luna-accent);
   }
   .title-area {
     flex: 1;
@@ -230,7 +246,7 @@
     font-weight: 500;
     color: var(--luna-text);
     background: var(--luna-bg);
-    border: 1px solid var(--luna-primary);
+    border: 1px solid var(--luna-accent);
     border-radius: 6px;
     padding: 4px 8px;
     outline: none;
@@ -291,5 +307,24 @@
   }
   .menu-item:hover {
     background: rgba(255,255,255,0.06);
+  }
+  @media (max-width: 640px) {
+    .chat-header {
+      padding: 0 10px;
+      height: 48px;
+      min-height: 48px;
+    }
+    .header-left {
+      gap: 8px;
+    }
+    .mode-btn {
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+    .mode-icon { font-size: 12px; }
+    .title {
+      font-size: 13px;
+      padding: 2px 6px;
+    }
   }
 </style>

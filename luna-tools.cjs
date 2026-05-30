@@ -22,6 +22,19 @@ const { execSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
 
+// Load .env from NEXO_DASHBOARD_PRO backend
+const ENV_PATH = path.join(require('os').homedir(), 'NEXO_DASHBOARD_PRO', 'backend', '.env');
+if (fs.existsSync(ENV_PATH)) {
+  fs.readFileSync(ENV_PATH, 'utf8').split('\n').forEach(line => {
+    const eq = line.indexOf('=');
+    if (eq > 0 && !line.startsWith('#')) {
+      const key = line.slice(0, eq).trim();
+      const val = line.slice(eq + 1).trim();
+      if (key && process.env[key] === undefined) process.env[key] = val;
+    }
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1497,6 +1510,56 @@ async function dashboardGetConfig(params) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// VOTING TOOLS
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function dashboardListVotingSessions(params) {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.page) query.set('page', String(params.page));
+  if (params.limit) query.set('limit', String(params.limit));
+  const data = await dashboardApi(`/voting/sessions?${query.toString()}`);
+  const sessions = data.sessions || [];
+  const lines = sessions.map(s => `- [${s.status}] ${s.title} (tipo: ${s.type}, quorum: ${s.quorumRequired})`).join('\n');
+  return ok({ stdout: `🗳️ ${data.pagination?.total || sessions.length} sessão(ões) de votação:\n${lines || 'Nenhuma sessão encontrada.'}` });
+}
+
+async function dashboardGetVotingSession(params) {
+  const data = await dashboardApi(`/voting/sessions/${params.id}`);
+  const votes = data.votes || {};
+  const voteLines = Object.entries(votes).map(([k, v]) => `  ${k}: ${v ? v.vote : 'não votou'}`).join('\n');
+  return ok({ stdout: `🗳️ Sessão "${data.title}" [${data.status}]\n${data.description || ''}\nVotos:\n${voteLines}` });
+}
+
+async function dashboardCreateVotingSession(params) {
+  const body = {
+    title: params.title,
+    description: params.description || '',
+    type: params.type || 'generic',
+    quorumRequired: params.quorumRequired || 3
+  };
+  if (params.type === 'tool_action') {
+    body.toolName = params.toolName;
+    body.toolParams = params.toolParams || {};
+  }
+  const data = await dashboardApi('/voting/sessions', 'POST', body);
+  return ok({ stdout: `🗳️ Sessão de votação criada: "${data.title}" (ID: ${data.id}, quorum: ${data.quorumRequired})` });
+}
+
+async function dashboardVoteInSession(params) {
+  const data = await dashboardApi(`/voting/sessions/${params.id}/vote`, 'POST', {
+    vote: params.vote,
+    comment: params.comment || ''
+  });
+  return ok({ stdout: `🗳️ Voto registrado em "${data.session?.title}": ${params.vote}\nContagem: ${data.tally?.yes || 0} sim, ${data.tally?.no || 0} não` });
+}
+
+async function dashboardDeleteVotingSession(params) {
+  await dashboardApi(`/voting/sessions/${params.id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Sessão de votação deletada (ID: ${params.id})` });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1634,6 +1697,12 @@ module.exports = {
   dashboardGetConfig,
   // Dashboard — Finance Summary
   dashboardGetFinanceSummary,
+  // Dashboard — Voting
+  dashboardListVotingSessions,
+  dashboardGetVotingSession,
+  dashboardCreateVotingSession,
+  dashboardVoteInSession,
+  dashboardDeleteVotingSession,
   // System
   getCurrentDirectory,
   // Project Validation

@@ -33,13 +33,20 @@
       ? result.output.slice(0, 500) + '...'
       : result.output
     : '';
+
+  // Cinema animations per tool type
+  $: toolAnimationClass = status === 'running' ? `anim-${tool}` : '';
+  $: cardClasses = [
+    'tool-card',
+    status === 'running' ? 'running' : '',
+    status === 'success' ? 'success' : '',
+    status === 'error' ? 'error' : '',
+    toolAnimationClass
+  ].filter(Boolean).join(' ');
 </script>
 
 <div
-  class="tool-card"
-  class:running={status === 'running'}
-  class:success={status === 'success'}
-  class:error={status === 'error'}
+  class={cardClasses}
   style="--tool-color: {color}"
 >
   <div class="tool-header">
@@ -110,7 +117,12 @@
   .tool-card.running {
     border-color: var(--tool-color);
     animation: springIn 300ms cubic-bezier(0.34, 1.56, 0.64, 1),
-               pulseGlow 2s infinite;
+               pulseGlowTool 2s infinite;
+    box-shadow: 0 0 20px rgba(0,0,0,0.2), 0 0 8px var(--luna-accent-border);
+  }
+  @keyframes pulseGlowTool {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(0,0,0,0.2), 0 0 4px var(--luna-accent-border); }
+    50% { box-shadow: 0 0 12px 2px rgba(0,0,0,0.3), 0 0 12px var(--luna-accent-glow); }
   }
   .tool-card.success {
     border-left-color: #22c55e;
@@ -140,6 +152,41 @@
   }
   .tool-icon {
     font-size: 16px;
+    display: inline-block;
+  }
+  /* Cinema animations per tool */
+  .anim-executeShell .tool-icon {
+    animation: terminalBlink 1s steps(2) infinite;
+  }
+  @keyframes terminalBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .anim-writeFile .tool-icon {
+    animation: fileWrite 1.5s ease-in-out infinite;
+  }
+  @keyframes fileWrite {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-2px); }
+  }
+  .anim-searchWeb .tool-icon,
+  .anim-searchFiles .tool-icon {
+    animation: searchPulse 1.2s ease-in-out infinite;
+  }
+  @keyframes searchPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+  }
+  .anim-gitStatus .tool-icon,
+  .anim-gitDiff .tool-icon,
+  .anim-gitLog .tool-icon,
+  .anim-gitCommit .tool-icon {
+    animation: gitBranch 2s ease-in-out infinite;
+  }
+  @keyframes gitBranch {
+    0%, 100% { transform: rotate(0deg); }
+    25% { transform: rotate(-5deg); }
+    75% { transform: rotate(5deg); }
   }
   .tool-name {
     font-weight: 600;

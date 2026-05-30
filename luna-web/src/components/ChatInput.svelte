@@ -1,16 +1,78 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { planModeState } from '../stores.js';
+  import { Search, FileSearch, Shield, Eye } from 'lucide-svelte';
 
   export let onSend = () => {};
   export let onCancel = () => {};
   export let disabled = false;
-  export let placeholder = 'Mensagem Luna...';
+  export let placeholder = $planModeState.active ? 'Descreva o caso para investigação...' : 'Mensagem Luna...';
+  $: placeholder = $planModeState.active ? 'Descreva o caso para investigação...' : 'Mensagem Luna...';
 
   let text = '';
   let textareaEl;
   let files = [];
   let isDragging = false;
   let fileInputEl;
+
+  // Slash commands
+  const COMMANDS = [
+    { cmd: '/plan', desc: 'Modo Detetive — planejar antes de executar', icon: 'search', lucide: Search },
+    { cmd: '/tarefa', desc: 'Criar tarefa', icon: '📋' },
+    { cmd: '/lead', desc: 'Criar lead', icon: '👤' },
+    { cmd: '/caixa', desc: 'Consultar caixa', icon: '💰' },
+    { cmd: '/modo', desc: 'Trocar modo (instant/thinking/agent/swarm)', icon: '⚡' },
+    { cmd: '/limpar', desc: 'Limpar chat', icon: '🗑️' },
+    { cmd: '/nova', desc: 'Nova sessão', icon: '✨' },
+    { cmd: '/ajuda', desc: 'Mostrar ajuda', icon: '❓' },
+  ];
+
+  let showCommands = false;
+  let filteredCommands = [];
+  let selectedCommandIndex = 0;
+
+  function updateCommands() {
+    if (!text.startsWith('/')) {
+      showCommands = false;
+      return;
+    }
+    const query = text.toLowerCase();
+    filteredCommands = COMMANDS.filter(c => c.cmd.toLowerCase().startsWith(query));
+    showCommands = filteredCommands.length > 0;
+    selectedCommandIndex = 0;
+  }
+
+  function selectCommand(cmd) {
+    text = cmd + ' ';
+    showCommands = false;
+    tick().then(() => {
+      autoResize();
+      textareaEl?.focus();
+    });
+  }
+
+  function handleCommandKeydown(e) {
+    if (!showCommands) return false;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedCommandIndex = (selectedCommandIndex + 1) % filteredCommands.length;
+      return true;
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedCommandIndex = (selectedCommandIndex - 1 + filteredCommands.length) % filteredCommands.length;
+      return true;
+    } else if (e.key === 'Tab' || e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredCommands[selectedCommandIndex]) {
+        selectCommand(filteredCommands[selectedCommandIndex].cmd);
+      }
+      return true;
+    } else if (e.key === 'Escape') {
+      showCommands = false;
+      return true;
+    }
+    return false;
+  }
 
   function autoResize() {
     if (!textareaEl) return;
@@ -23,9 +85,17 @@
 
   function handleInput() {
     autoResize();
+    updateCommands();
   }
 
   function handleKeydown(e) {
+    // Shift+Tab toggle plan mode
+    if (e.key === 'Tab' && e.shiftKey) {
+      e.preventDefault();
+      togglePlanMode();
+      return;
+    }
+    if (handleCommandKeydown(e)) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -34,9 +104,28 @@
     }
   }
 
+  function togglePlanMode() {
+    planModeState.update(s => ({ ...s, active: !s.active }));
+  }
+
   function handleSend() {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
+
+    // If /plan command, toggle plan mode and send
+    if (trimmed.startsWith('/plan')) {
+      const planMessage = trimmed.slice(5).trim();
+      planModeState.update(s => ({ ...s, active: true }));
+      onSend(planMessage || '/plan', files.length > 0 ? files : undefined);
+      text = '';
+      files = [];
+      tick().then(() => {
+        autoResize();
+        textareaEl?.focus();
+      });
+      return;
+    }
+
     onSend(trimmed, files.length > 0 ? files : undefined);
     text = '';
     files = [];
@@ -124,6 +213,29 @@
     </div>
   {/if}
 
+  {#if showCommands}
+    <div class="slash-commands">
+      {#each filteredCommands as command, i}
+        <button
+          class="slash-command"
+          class:selected={i === selectedCommandIndex}
+          on:click={() => selectCommand(command.cmd)}
+          on:mouseenter={() => selectedCommandIndex = i}
+        >
+          <span class="cmd-icon">
+            {#if command.lucide}
+              <svelte:component this={command.lucide} size={14} />
+            {:else}
+              {command.icon}
+            {/if}
+          </span>
+          <span class="cmd-name">{command.cmd}</span>
+          <span class="cmd-desc">{command.desc}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   <div class="input-row">
     <input
       type="file"
@@ -200,11 +312,11 @@
     content: '';
     position: absolute;
     inset: 0;
-    border: 2px dashed var(--luna-primary);
+    border: 2px dashed var(--luna-accent);
     border-radius: 12px;
     margin: 4px;
     pointer-events: none;
-    background: rgba(233, 69, 96, 0.05);
+    background: var(--luna-accent-border);
   }
   .drag-overlay {
     position: absolute;
@@ -215,7 +327,7 @@
     justify-content: center;
     gap: 8px;
     background: rgba(10, 10, 26, 0.95);
-    color: var(--luna-primary);
+    color: var(--luna-accent);
     font-size: 16px;
     font-weight: 500;
     z-index: 10;
@@ -260,7 +372,7 @@
     transition: color 0.15s;
   }
   .chip-remove:hover {
-    color: var(--luna-primary);
+    color: var(--luna-accent);
   }
   .input-row {
     display: flex;
@@ -314,7 +426,8 @@
     transition: border-color 0.2s;
   }
   .chat-textarea:focus {
-    border-color: var(--luna-primary);
+    border-color: var(--luna-accent);
+    box-shadow: 0 0 0 3px var(--luna-accent-border);
   }
   .chat-textarea::placeholder {
     color: var(--luna-text-secondary);
@@ -325,7 +438,7 @@
     cursor: not-allowed;
   }
   .send-btn {
-    background: var(--luna-primary);
+    background: var(--luna-accent);
     border: none;
     color: white;
     cursor: pointer;
@@ -338,10 +451,13 @@
     flex-shrink: 0;
     min-width: 44px;
     min-height: 44px;
+    box-shadow: 0 0 12px var(--luna-accent-border);
   }
   .send-btn:hover:not(:disabled) {
-    background: var(--luna-primary-hover);
+    background: var(--luna-accent);
+    filter: brightness(1.15);
     transform: translateY(-1px);
+    box-shadow: 0 0 20px var(--luna-accent-glow);
   }
   .send-btn:active:not(:disabled) {
     transform: translateY(0);
@@ -369,6 +485,58 @@
   }
   .cancel-btn:hover {
     background: rgba(239, 68, 68, 0.25);
+  }
+  .slash-commands {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 16px;
+    right: 16px;
+    background: var(--luna-elevated);
+    border: 1px solid var(--luna-border);
+    border-radius: 10px;
+    padding: 4px;
+    z-index: 100;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 20px var(--luna-accent-border);
+    max-height: 240px;
+    overflow-y: auto;
+    animation: fadeIn 150ms ease;
+  }
+  .slash-command {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    color: var(--luna-text);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all 0.12s;
+  }
+  .slash-command:hover,
+  .slash-command.selected {
+    background: var(--luna-accent-border);
+  }
+  .slash-command.selected {
+    color: var(--luna-accent);
+  }
+  .cmd-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .cmd-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .cmd-desc {
+    color: var(--luna-text-secondary);
+    font-size: 12px;
+    margin-left: auto;
   }
   @keyframes fadeIn {
     from { opacity: 0; transform: scale(0.9); }

@@ -125,7 +125,7 @@
           on:contextmenu={(e) => showContextMenu(e, session)}
           on:dblclick={(e) => startRename(session, e)}
         >
-          <div class="session-indicator" style="background-color: {session.id === currentId ? 'var(--luna-primary)' : 'transparent'}"></div>
+          <div class="session-indicator" style="background-color: {session.id === currentId ? 'var(--luna-accent)' : 'transparent'}"></div>
           <div class="session-content">
             {#if editingId === session.id}
               <input
@@ -213,8 +213,10 @@
   .sidebar {
     width: 260px;
     min-width: 260px;
-    background: var(--luna-surface);
-    border-right: 1px solid var(--luna-border);
+    background: rgba(18, 18, 31, 0.82);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -251,7 +253,7 @@
   .new-session-btn {
     margin: 12px 16px;
     padding: 10px 16px;
-    background: var(--luna-primary);
+    background: var(--luna-accent);
     color: white;
     border: none;
     border-radius: 10px;
@@ -332,7 +334,7 @@
   }
   .session-title.active {
     font-weight: 500;
-    color: var(--luna-primary);
+    color: var(--luna-accent);
   }
   .session-time {
     font-size: 11px;
@@ -342,7 +344,7 @@
   .session-edit-input {
     width: 100%;
     background: var(--luna-bg);
-    border: 1px solid var(--luna-primary);
+    border: 1px solid var(--luna-accent);
     border-radius: 6px;
     padding: 4px 8px;
     color: var(--luna-text);
