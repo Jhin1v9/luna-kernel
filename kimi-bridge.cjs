@@ -457,6 +457,22 @@ class KimiBridge {
       log.warn(`Failed to copy cookies for ${hashUserId(userId)}: ${e.message}`);
     }
 
+    // Also inject MASTER cookies (permanent save after manual login)
+    // This ensures new contexts always have login cookies even if Chrome was restarted
+    try {
+      const masterPath = path.join(__dirname, 'cookies', 'kimi-master-cookies.json');
+      if (fs.existsSync(masterPath)) {
+        const masterData = JSON.parse(fs.readFileSync(masterPath, 'utf8'));
+        const masterCookies = masterData.cookies || [];
+        if (masterCookies.length > 0) {
+          await ctx.addCookies(masterCookies);
+          log.info(`Injected ${masterCookies.length} MASTER cookies to context for user ${hashUserId(userId)}`);
+        }
+      }
+    } catch (e) {
+      log.warn(`Failed to inject MASTER cookies for ${hashUserId(userId)}: ${e.message}`);
+    }
+
     this.userContexts.set(userId, ctx);
     return ctx;
   }
