@@ -161,7 +161,7 @@
           <span class="input-icon">👤</span>
           <input
             type="text"
-            placeholder="abner, nonoke ou elias"
+            placeholder="Digite seu usuário"
             bind:value={username}
             on:focus={handleInputFocus}
             on:blur={handleInputBlur}
@@ -196,10 +196,7 @@
       </button>
 
       <div class="users-hint">
-        <span class="hint-label">Usuários:</span>
-        <span class="user-tag" style="color:#3742fa">● Abner</span>
-        <span class="user-tag" style="color:#2ed573">● Nonoke</span>
-        <span class="user-tag" style="color:#ffa502">● Elias</span>
+        <span class="hint-label">Acesso restrito — CEOs NEXO Digital</span>
       </div>
     </div>
   </div>
