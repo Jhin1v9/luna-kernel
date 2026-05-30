@@ -214,10 +214,16 @@ CRITICAL ARCHITECTURE — READ CAREFULLY
    │ Search web         │ searchWeb or web_search                            │
    │ Browse site        │ browser or fetchURL                                │
    │ Git ops            │ gitStatus, gitCommit, etc.                         │
-   │ Dashboard task     │ dashboardCreateTask, dashboardListTasks            │
-   │ Dashboard lead     │ dashboardCreateLead, dashboardListLeads            │
+   │ Dashboard task     │ dashboardCreateTask, dashboardListTasks, dashboardUpdateTask, dashboardDeleteTask, dashboardCompleteTask, dashboardAddComment │
+   │ Dashboard lead     │ dashboardCreateLead, dashboardListLeads, dashboardUpdateLead, dashboardConvertLead, dashboardDeleteLead │
    │ Dashboard idea     │ dashboardCreateIdea, dashboardListIdeas            │
-   │ Dashboard finance  │ dashboardGetFinanceSummary                         │
+   │ Dashboard finance  │ dashboardGetFinanceSummary, dashboardCreatePayment, dashboardListPayments, dashboardCreateExpense, dashboardListExpenses, dashboardGetCashBox, dashboardListCashHistory │
+   │ Dashboard quote    │ dashboardCreateQuote, dashboardListQuotes, dashboardUpdateQuote, dashboardDeleteQuote │
+   │ Dashboard project  │ dashboardListProjects                              │
+   │ Dashboard link     │ dashboardAddLink, dashboardListLinks, dashboardDeleteLink, dashboardSyncLinks │
+   │ Dashboard email    │ dashboardSendEmail, dashboardListEmails, dashboardSyncEmails │
+   │ Dashboard whatsapp │ dashboardSendWhatsApp, dashboardGetWhatsAppHistory, dashboardScanWhatsApp │
+   │ Dashboard system   │ dashboardGetSystemStatus, dashboardGetSystemLogs, dashboardListNotifications │
    └────────────────────┴────────────────────────────────────────────────────┘
 
 4. ipython = Python no PC REAL. Pode usar os, subprocess, pathlib, tudo.
@@ -310,6 +316,51 @@ Criando a ideia no dashboard NEXO.
 
 \`\`\`json
 {"tool":"dashboardCreateIdea","params":{"title":"Nova funcionalidade para app","type":"brainstorm","description":"Adicionar modo dark ao dashboard","priority":"alta"}}
+\`\`\`
+
+EXEMPLO — REGISTRAR PAGAMENTO:
+[[response]]
+Registrando o pagamento no sistema.
+[[/response]]
+
+\`\`\`json
+{"tool":"dashboardCreatePayment","params":{"amount":500,"description":"Fatura cliente XYZ","from":"Cliente XYZ"}}
+\`\`\`
+
+EXEMPLO — LISTAR DESPESAS:
+[[response]]
+Buscando despesas...
+[[/response]]
+
+\`\`\`json
+{"tool":"dashboardListExpenses","params":{"status":"pending"}}
+\`\`\`
+
+EXEMPLO — VER CAIXA:
+[[response]]
+Consultando o caixa...
+[[/response]]
+
+\`\`\`json
+{"tool":"dashboardGetCashBox","params":{}}
+\`\`\`
+
+EXEMPLO — ENVIAR EMAIL:
+[[response]]
+Enviando email...
+[[/response]]
+
+\`\`\`json
+{"tool":"dashboardSendEmail","params":{"to":"cliente@exemplo.com","subject":"Proposta","body":"Olá, segue a proposta..."}}
+\`\`\`
+
+EXEMPLO — ENVIAR WHATSAPP:
+[[response]]
+Enviando mensagem...
+[[/response]]
+
+\`\`\`json
+{"tool":"dashboardSendWhatsApp","params":{"phone":"+34600000000","message":"Oi! Tudo bem?"}}
 \`\`\`
 
 → ESPERA o resultado do LUNA-MIRROR antes de responder ao usuário.
@@ -1473,8 +1524,8 @@ class LunaSoul extends EventEmitter {
     this.kimiBridge = options.kimiBridge || null;
     this.engine = options.engine || new ComputerUseEngine();
     this.metaExecutor = new MetaExecutor();
-    this.maxIterations = options.maxIterations || 20;
-    this.taskTimeoutMs = options.taskTimeoutMs || 5 * 60 * 1000;
+    this.maxIterations = options.maxIterations || 999999; // SEM LIMITES — DONO ABSOLUTO
+    this.taskTimeoutMs = options.taskTimeoutMs || 999999999; // SEM LIMITES — DONO ABSOLUTO
     this.defaultMode = options.defaultMode || 'thinking';
     this.autoSwitchEnabled = options.autoSwitch !== false; // default true
     this.autoConfirmDestructive = options.autoConfirmDestructive === true; // default false for safety
@@ -1703,6 +1754,11 @@ class LunaSoul extends EventEmitter {
   async _routeDashboardCommand(input) {
     const text = (input || '').toLowerCase().trim();
 
+    // SKIP: Prompts arquiteturais longos (não são comandos de dashboard)
+    if ((input || '').length > 1000 || text.includes('prompt técnico arquitetural') || text.includes('@arquiteta')) {
+      return null;
+    }
+
     // Criar tarefa
     // FIX: Support multi-word titles and priority synonyms (alta→high, baixa→low, média→medium)
     const createTaskMatch = text.match(/(?:criar?|crie|nova?|add|adicionar?)\s+(?:uma?\s+)?tarefa\s+(?:no\s+dashboard\s+)?(?:chamada?\s+)?["']?(.+?)["']?(?:\s+com\s+prioridade\s+(\w+))?/i);
@@ -1741,6 +1797,78 @@ class LunaSoul extends EventEmitter {
     if (/(?:resumo|sumário|status)\s+(?:financeiro|financeira|de\s+finanças|pagamentos)/i.test(text)) {
       const result = await lunaTools.dashboardGetFinanceSummary({});
       return { tool: 'dashboardGetFinanceSummary', result, friendly: result.stdout || '💰 Resumo financeiro.' };
+    }
+
+    // Completar tarefa
+    const completeTaskMatch = text.match(/(?:completar?|concluir?|finalizar?|marcar?\s+como\s+concluída?)\s+(?:a\s+)?tarefa\s+["']?(.+?)["']?/i);
+    if (completeTaskMatch || /tarefa\s+(?:como\s+)?concluída/i.test(text)) {
+      // Try to find task ID from text, otherwise let Kimi handle it
+      return null; // Too complex for fast-path, let Kimi extract ID
+    }
+
+    // Listar pagamentos
+    if (/(?:listar?|mostrar?|ver|quais)\s+(?:os\s+)?pagamentos?/i.test(text)) {
+      const result = await lunaTools.dashboardListPayments({});
+      return { tool: 'dashboardListPayments', result, friendly: result.stdout || '💰 Pagamentos listados.' };
+    }
+
+    // Registrar pagamento
+    const paymentMatch = text.match(/(?:registrar?|adicionar?|novo|criar?)\s+(?:um\s+)?pagamento/i);
+    if (paymentMatch) {
+      return null; // Let Kimi extract amount and description
+    }
+
+    // Listar despesas
+    if (/(?:listar?|mostrar?|ver|quais)\s+(?:as\s+)?despesas?/i.test(text)) {
+      const result = await lunaTools.dashboardListExpenses({});
+      return { tool: 'dashboardListExpenses', result, friendly: result.stdout || '📤 Despesas listadas.' };
+    }
+
+    // Registrar despesa
+    if (/(?:registrar?|adicionar?|novo|criar?)\s+(?:uma\s+)?despesa/i.test(text)) {
+      return null; // Let Kimi extract amount and description
+    }
+
+    // Ver caixa
+    if (/(?:ver|consultar?|mostrar?|status\s+do?)\s+(?:o\s+)?caixa/i.test(text)) {
+      const result = await lunaTools.dashboardGetCashBox({});
+      return { tool: 'dashboardGetCashBox', result, friendly: result.stdout || '💵 Caixa consultado.' };
+    }
+
+    // Listar orçamentos
+    if (/(?:listar?|mostrar?|ver|quais)\s+(?:os\s+)?orçamentos?/i.test(text)) {
+      const result = await lunaTools.dashboardListQuotes({});
+      return { tool: 'dashboardListQuotes', result, friendly: result.stdout || '📄 Orçamentos listados.' };
+    }
+
+    // Listar links
+    if (/(?:listar?|mostrar?|ver|quais)\s+(?:os\s+)?links?/i.test(text)) {
+      const result = await lunaTools.dashboardListLinks({});
+      return { tool: 'dashboardListLinks', result, friendly: result.stdout || '🔗 Links listados.' };
+    }
+
+    // Listar emails
+    if (/(?:listar?|mostrar?|ver|quais)\s+(?:os\s+)?emails?/i.test(text)) {
+      const result = await lunaTools.dashboardListEmails({});
+      return { tool: 'dashboardListEmails', result, friendly: result.stdout || '📧 Emails listados.' };
+    }
+
+    // Listar notificações
+    if (/(?:listar?|mostrar?|ver|quais)\s+(?:as\s+)?notificações?/i.test(text)) {
+      const result = await lunaTools.dashboardListNotifications({});
+      return { tool: 'dashboardListNotifications', result, friendly: result.stdout || '🔔 Notificações listadas.' };
+    }
+
+    // Status sistema
+    if (/(?:status\s+do\s+sistema|sistema\s+status|como\s+está\s+o\s+sistema)/i.test(text)) {
+      const result = await lunaTools.dashboardGetSystemStatus({});
+      return { tool: 'dashboardGetSystemStatus', result, friendly: result.stdout || '🖥️ Status do sistema.' };
+    }
+
+    // WhatsApp status
+    if (/(?:status\s+do\s+whatsapp|whatsapp\s+status)/i.test(text)) {
+      const result = await lunaTools.dashboardGetWhatsAppStatus({});
+      return { tool: 'dashboardGetWhatsAppStatus', result, friendly: result.stdout || '📱 Status WhatsApp.' };
     }
 
     return null;
@@ -1811,7 +1939,7 @@ class LunaSoul extends EventEmitter {
 
     const session = this.sessionManager.loadSession(sessionId);
     let mode = options.mode || session?.mode || this.defaultMode;
-    // Kimi Bridge only accepts 'instant' or 'thinking'
+    // CHAT is a parsed response mode, not a Kimi Web mode — map to thinking
     if (mode === 'CHAT') mode = 'thinking';
     const userId = options.userId || 'luna-default';
 
@@ -1860,9 +1988,9 @@ class LunaSoul extends EventEmitter {
 
     let loopContext = await this._buildContext(sessionId, input, { ...options, isFirstMessage });
     let safety = 0;
-    const MAX_LOOPS = 8;
+    const MAX_LOOPS = Number.MAX_SAFE_INTEGER; // ILIMITADO — o usuário pediu zero limites
     let autoContinues = 0;
-    const MAX_AUTO_CONTINUES = 2;
+    const MAX_AUTO_CONTINUES = Number.MAX_SAFE_INTEGER; // SEM LIMITES — DONO ABSOLUTO
 
     // Track DOM action codes already executed in this message stream to prevent
     // infinite loops when Kimi repeats the same code block across auto-continue iterations.
@@ -1993,7 +2121,7 @@ class LunaSoul extends EventEmitter {
       // v3.4: Auto-healing — detect incomplete responses and auto-continue
       if (isIncompleteResponse(fullResponse) && autoContinues < MAX_AUTO_CONTINUES) {
         autoContinues++;
-        yield { type: 'warning', message: `⏳ Resposta incompleta detectada — auto-continuando (${autoContinues}/${MAX_AUTO_CONTINUES})...`, sessionId };
+        yield { type: 'warning', message: `⏳ Resposta incompleta detectada — auto-continuando (${autoContinues})...`, sessionId };
         loopContext = await this._buildContext(sessionId, '[CONTINUE] Por favor, continue de onde parou. Complete a action/response que estava em andamento.', { ...options, isFirstMessage: false });
         continue; // Restart loop with "continue" prompt
       }
@@ -2330,7 +2458,7 @@ ${outputText}`;
 REGRAS: Use delimitadores [[response]]...[[/response]] para texto. [[action]]{"tool":"...","params":{}}[[/action]] para ferramentas Luna. Use suas ferramentas NATIVAS (ipython, web_search, browser) livremente — o sandbox é um espelho read-only do PC, ignore erros FileNotFound. NUNCA diga que não pode fazer algo.
 EXEMPLO: [[response]]Oi! Como posso ajudar?[[/response]]
 FERRAMENTAS NATIVAS: ipython, web_search, browser (use livremente, ignore erros de sandbox)
-FERRAMENTAS LUNA: readFile, writeFile, replaceInFile, executeShell, executeScript, searchFiles, grep, viewDirectory, gitStatus, gitCommit, searchWeb, fetchURL, downloadFile, clipboardRead, clipboardWrite.
+FERRAMENTAS LUNA: readFile, writeFile, replaceInFile, executeShell, executeScript, searchFiles, grep, viewDirectory, gitStatus, gitCommit, searchWeb, fetchURL, downloadFile, clipboardRead, clipboardWrite, dashboardCreateTask, dashboardListTasks, dashboardUpdateTask, dashboardDeleteTask, dashboardCompleteTask, dashboardAddComment, dashboardCreateLead, dashboardListLeads, dashboardUpdateLead, dashboardConvertLead, dashboardDeleteLead, dashboardCreatePayment, dashboardListPayments, dashboardUpdatePayment, dashboardDeletePayment, dashboardCreateExpense, dashboardListExpenses, dashboardUpdateExpense, dashboardDeleteExpense, dashboardPayExpense, dashboardGetCashBox, dashboardAddCashEntry, dashboardListCashHistory, dashboardCreateQuote, dashboardListQuotes, dashboardUpdateQuote, dashboardDeleteQuote, dashboardListProjects, dashboardAddLink, dashboardListLinks, dashboardDeleteLink, dashboardSyncLinks, dashboardSendEmail, dashboardListEmails, dashboardSyncEmails, dashboardSendWhatsApp, dashboardGetWhatsAppHistory, dashboardScanWhatsApp, dashboardGetSystemStatus, dashboardGetSystemLogs, dashboardListNotifications, dashboardMarkNotificationRead, dashboardListUsers, dashboardListGitHubRepos, dashboardListVercelProjects, dashboardListBugReports, dashboardGetFinanceSummary, dashboardCreateIdea, dashboardListIdeas.
 FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/action]] | [[script]]...[[/script]] (workflow multi-action) | [[meta]]{"action":"...","params":{}}[[/meta]] | [[suggest]]{"type":"...","target":"..."}[[/suggest]]`;
 
       // Workspace context (if set) — include in follow-ups too
@@ -2671,10 +2799,74 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
               case 'think': return lunaTools.think(p.thought || p.reasoning || p.text);
               case 'dashboardCreateTask': return lunaTools.dashboardCreateTask(p);
               case 'dashboardListTasks': return lunaTools.dashboardListTasks(p);
+              case 'dashboardUpdateTask': return lunaTools.dashboardUpdateTask(p);
+              case 'dashboardDeleteTask': return lunaTools.dashboardDeleteTask(p);
+              case 'dashboardCompleteTask': return lunaTools.dashboardCompleteTask(p);
+              case 'dashboardAddComment': return lunaTools.dashboardAddComment(p);
               case 'dashboardCreateLead': return lunaTools.dashboardCreateLead(p);
               case 'dashboardListLeads': return lunaTools.dashboardListLeads(p);
+              case 'dashboardUpdateLead': return lunaTools.dashboardUpdateLead(p);
+              case 'dashboardConvertLead': return lunaTools.dashboardConvertLead(p);
+              case 'dashboardDeleteLead': return lunaTools.dashboardDeleteLead(p);
+              case 'dashboardCreatePayment': return lunaTools.dashboardCreatePayment(p);
+              case 'dashboardListPayments': return lunaTools.dashboardListPayments(p);
+              case 'dashboardUpdatePayment': return lunaTools.dashboardUpdatePayment(p);
+              case 'dashboardDeletePayment': return lunaTools.dashboardDeletePayment(p);
+              case 'dashboardReceiveSplit': return lunaTools.dashboardReceiveSplit(p);
+              case 'dashboardCreateExpense': return lunaTools.dashboardCreateExpense(p);
+              case 'dashboardListExpenses': return lunaTools.dashboardListExpenses(p);
+              case 'dashboardUpdateExpense': return lunaTools.dashboardUpdateExpense(p);
+              case 'dashboardDeleteExpense': return lunaTools.dashboardDeleteExpense(p);
+              case 'dashboardPayExpense': return lunaTools.dashboardPayExpense(p);
+              case 'dashboardCreateExpenseTemplate': return lunaTools.dashboardCreateExpenseTemplate(p);
+              case 'dashboardQuickExpense': return lunaTools.dashboardQuickExpense(p);
+              case 'dashboardGetCashBox': return lunaTools.dashboardGetCashBox(p);
+              case 'dashboardAddCashEntry': return lunaTools.dashboardAddCashEntry(p);
+              case 'dashboardListCashHistory': return lunaTools.dashboardListCashHistory(p);
+              case 'dashboardReconcileCashBox': return lunaTools.dashboardReconcileCashBox(p);
+              case 'dashboardAdjustCashBox': return lunaTools.dashboardAdjustCashBox(p);
+              case 'dashboardGetCashBoxProjection': return lunaTools.dashboardGetCashBoxProjection(p);
+              case 'dashboardCreateCashPayment': return lunaTools.dashboardCreateCashPayment(p);
+              case 'dashboardCreateQuote': return lunaTools.dashboardCreateQuote(p);
+              case 'dashboardListQuotes': return lunaTools.dashboardListQuotes(p);
+              case 'dashboardUpdateQuote': return lunaTools.dashboardUpdateQuote(p);
+              case 'dashboardDeleteQuote': return lunaTools.dashboardDeleteQuote(p);
+              case 'dashboardListProjects': return lunaTools.dashboardListProjects(p);
+              case 'dashboardListClients': return lunaTools.dashboardListClients(p);
               case 'dashboardCreateIdea': return lunaTools.dashboardCreateIdea(p);
               case 'dashboardListIdeas': return lunaTools.dashboardListIdeas(p);
+              case 'dashboardAddLink': return lunaTools.dashboardAddLink(p);
+              case 'dashboardListLinks': return lunaTools.dashboardListLinks(p);
+              case 'dashboardDeleteLink': return lunaTools.dashboardDeleteLink(p);
+              case 'dashboardEnrichLink': return lunaTools.dashboardEnrichLink(p);
+              case 'dashboardSyncLinks': return lunaTools.dashboardSyncLinks(p);
+              case 'dashboardGetLinksStats': return lunaTools.dashboardGetLinksStats(p);
+              case 'dashboardSendEmail': return lunaTools.dashboardSendEmail(p);
+              case 'dashboardListEmails': return lunaTools.dashboardListEmails(p);
+              case 'dashboardSyncEmails': return lunaTools.dashboardSyncEmails(p);
+              case 'dashboardSendWhatsApp': return lunaTools.dashboardSendWhatsApp(p);
+              case 'dashboardGetWhatsAppHistory': return lunaTools.dashboardGetWhatsAppHistory(p);
+              case 'dashboardScanWhatsApp': return lunaTools.dashboardScanWhatsApp(p);
+              case 'dashboardGetWhatsAppStatus': return lunaTools.dashboardGetWhatsAppStatus(p);
+              case 'dashboardGetWhatsAppClassifications': return lunaTools.dashboardGetWhatsAppClassifications(p);
+              case 'dashboardGetSystemStatus': return lunaTools.dashboardGetSystemStatus(p);
+              case 'dashboardGetSystemLogs': return lunaTools.dashboardGetSystemLogs(p);
+              case 'dashboardControlService': return lunaTools.dashboardControlService(p);
+              case 'dashboardListNotifications': return lunaTools.dashboardListNotifications(p);
+              case 'dashboardMarkNotificationRead': return lunaTools.dashboardMarkNotificationRead(p);
+              case 'dashboardMarkAllNotificationsRead': return lunaTools.dashboardMarkAllNotificationsRead(p);
+              case 'dashboardListUsers': return lunaTools.dashboardListUsers(p);
+              case 'dashboardListMembers': return lunaTools.dashboardListMembers(p);
+              case 'dashboardListBugReports': return lunaTools.dashboardListBugReports(p);
+              case 'dashboardDeleteBugReport': return lunaTools.dashboardDeleteBugReport(p);
+              case 'dashboardListGitHubRepos': return lunaTools.dashboardListGitHubRepos(p);
+              case 'dashboardListVercelProjects': return lunaTools.dashboardListVercelProjects(p);
+              case 'dashboardListOpsAlerts': return lunaTools.dashboardListOpsAlerts(p);
+              case 'dashboardCreateOpsAlert': return lunaTools.dashboardCreateOpsAlert(p);
+              case 'dashboardDeleteOpsAlert': return lunaTools.dashboardDeleteOpsAlert(p);
+              case 'dashboardListTransactions': return lunaTools.dashboardListTransactions(p);
+              case 'dashboardGetNexoState': return lunaTools.dashboardGetNexoState(p);
+              case 'dashboardGetConfig': return lunaTools.dashboardGetConfig(p);
               case 'dashboardGetFinanceSummary': return lunaTools.dashboardGetFinanceSummary(p);
               default: return { success: false, error: `Ferramenta desconhecida: ${tool}` };
             }
@@ -3235,7 +3427,7 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
     const maxIterations = options.maxIterations || this.maxIterations;
 
     for (let i = 0; i < maxIterations; i++) {
-      if (Date.now() - startTime > this.taskTimeoutMs) {
+      if (false) { // [DONO ABSOLUTO] Timeout desativado
         return { success: false, error: 'Timeout', sessionId };
       }
 
@@ -3269,7 +3461,8 @@ FORMATOS: [[response]]...[[/response]] | [[action]]{"tool":"...","params":{}}[[/
       await new Promise(r => setTimeout(r, 500));
     }
 
-    return { success: false, error: `Máximo de iterações (${maxIterations}) atingido`, sessionId };
+    // [DONO ABSOLUTO] Sem limite de iterações
+      // return { success: false, error: `Máximo de iterações (${maxIterations}) atingido`, sessionId };
   }
 
   // ── v3.3: Destructive operation confirmation gate ──

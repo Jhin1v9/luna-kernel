@@ -1,6 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { formatTime } from '../utils.js';
+  import { user } from '../stores.js';
+  import { logout } from '../api.js';
 
   export let sessions = [];
   export let currentId = null;
@@ -170,6 +172,19 @@
 
   <!-- Footer -->
   <div class="sidebar-footer">
+    {#if $user}
+      <div class="user-bar">
+        <span class="user-avatar" style="background: {$user.color || '#e94560'}">{$user.name?.[0]?.toUpperCase() || '?'}</span>
+        <span class="user-name">{$user.name}</span>
+        <button class="logout-btn" on:click={() => { logout(); user.set(null); window.location.reload(); }} title="Sair">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
+      </div>
+    {/if}
     <button class="footer-btn" on:click={onOpenConfig}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/>
@@ -425,6 +440,53 @@
   .footer-version {
     margin-left: auto;
     opacity: 0.6;
+  }
+  .user-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    border: 1px solid rgba(255,255,255,0.04);
+  }
+  .user-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .user-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--luna-text);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .logout-btn {
+    background: transparent;
+    border: none;
+    color: var(--luna-text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .logout-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #fca5a5;
   }
   .mobile-overlay {
     display: none;

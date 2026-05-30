@@ -47,6 +47,12 @@ process.on('unhandledRejection', (reason) => {
 // ============================================================
 const CDP_PORTS = [9222, 9223, 9224, 9225];
 const DEFAULT_TIMEOUT = parseInt(process.env.KIMI_TIMEOUT, 10) || 120000;
+const KIMI_MODE_URLS = {
+  instant: 'https://kimi.com/?chat_enter_method=new_chat',
+  thinking: 'https://kimi.com/?chat_enter_method=new_chat',
+  agent: 'https://kimi.com/agent',
+  swarm: 'https://kimi.com/agent-swarm',
+};
 const MAX_CONCURRENT_PAGES = parseInt(process.env.KIMI_MAX_PAGES, 10) || 5;
 const IDLE_TIMEOUT_MS = parseInt(process.env.KIMI_IDLE_TIMEOUT, 10) || 10 * 60 * 1000;
 const COOLDOWN_MS = parseInt(process.env.KIMI_COOLDOWN_MS, 10) || 5000;
@@ -308,14 +314,25 @@ class KimiBridge {
       return this;
     }
 
-    const cdpUrl = await this._getCdpUrl();
+    let cdpUrl = await this._getCdpUrl();
     log.info(`Connecting to Chrome at ${cdpUrl}`);
     try {
       this.browser = await chromium.connectOverCDP(cdpUrl);
     } catch (e) {
-      // Clear cached URL so next attempt re-discovers
-      this._resetCdpUrl();
-      throw e;
+      // v3.7-fix: If connection fails, try to start Chrome automatically
+      log.warn(`Failed to connect to Chrome at ${cdpUrl}: ${e.message}`);
+      log.info('Attempting to start Chrome automatically...');
+      const chromeStatus = await this.checkChrome();
+      if (chromeStatus.running || chromeStatus.started) {
+        // Re-discover CDP URL after starting Chrome
+        this._resetCdpUrl();
+        cdpUrl = await this._getCdpUrl();
+        log.info(`Retrying connection to Chrome at ${cdpUrl}`);
+        this.browser = await chromium.connectOverCDP(cdpUrl);
+      } else {
+        this._resetCdpUrl();
+        throw new Error(`Cannot connect to Chrome: ${chromeStatus.error || e.message}`);
+      }
     }
     const contexts = this.browser.contexts();
 
@@ -467,6 +484,8 @@ class KimiBridge {
       // v3.3-fix: Re-inject via evaluate after navigation to ensure observer is active
       // addInitScript only works for future navigations; evaluate ensures current page
       await this._injectDomObserverEvaluate(page);
+      // v3.7-fix: Also re-inject stream interceptor for current page
+      await this._injectStreamInterceptorEvaluate(page);
     } catch (e) {
       log.warn(`Navigation failed for ${hashUserId(userId)}: ${e.message}`);
       if (page && !page.isClosed()) {
@@ -525,7 +544,10 @@ class KimiBridge {
     try {
       const intercepted = await page.evaluate(() => {
         const s = window.__lunaStream;
-        if (s && s.active && s.content) return s.content;
+        if (s && s.active && s.content) {
+          // v3.7-fix: s.content is an array of deltas — join into string
+          return Array.isArray(s.content) ? s.content.join('') : (s.content || '');
+        }
         return null;
       });
       if (intercepted && intercepted.trim()) {
@@ -691,10 +713,13 @@ class KimiBridge {
   }
 
   /**
-   * Detect the actual mode currently selected in the Kimi UI
+   * Detect the actual mode currently selected in the Kimi UI or page URL
    */
   async _detectActualMode(page) {
     try {
+      const url = page.url();
+      if (url.includes('kimi.com/agent-swarm')) return 'swarm';
+      if (url.includes('kimi.com/agent')) return 'agent';
       const label = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 5000 });
       if (label.includes('Instant')) return 'instant';
       if (label.includes('Thinking')) return 'thinking';
@@ -764,7 +789,7 @@ class KimiBridge {
     let stableSince = null;
     let thinkingNotified = false;
     const pollStartTime = Date.now();
-    const MAX_POLL_TIME = 300000; // 5 minutes absolute max
+    const MAX_POLL_TIME = 999999999; // [DONO ABSOLUTO] sem limite de poll
 
     while (true) {
       // Safety: don't poll forever
@@ -826,19 +851,45 @@ class KimiBridge {
   }
 
   /**
-   * Set Kimi mode (instant or thinking) for a user's page
+   * Set Kimi mode for a user's page.
+   * For 'instant'/'thinking': clicks the Kimi mode selector.
+   * For 'agent'/'swarm': navigates to kimi.com/agent or kimi.com/agent-swarm.
    */
   async setMode(userId, mode) {
-    if (!['instant', 'thinking'].includes(mode)) {
-      throw new Error(`Invalid mode: ${mode}. Use 'instant' or 'thinking'`);
-    }
-
     const page = await this._getOrCreateUserPage(userId);
     const session = this.userSessions.get(userId);
 
-    // Check if already in desired mode
+    // Agent / Swarm modes require navigating to a dedicated URL
+    if (mode === 'agent' || mode === 'swarm') {
+      const targetUrl = KIMI_MODE_URLS[mode];
+      const currentUrl = page.url();
+      if (currentUrl.includes(targetUrl.replace('https://', ''))) {
+        this._log(`Already on ${mode} page`);
+        session.mode = mode;
+        this.store.setUser(userId, { mode });
+        return mode;
+      }
+
+      log.info(`Switching user ${hashUserId(userId)} to ${mode} mode (navigating to ${targetUrl})...`);
+      try {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(3000);
+        session.chatUrl = page.url();
+        this._saveChatUrl(userId, session.chatUrl, { mode });
+        session.mode = mode;
+        this.store.setUser(userId, { mode });
+        log.success(`Mode switched to ${mode} for user ${hashUserId(userId)}`);
+        return mode;
+      } catch (e) {
+        log.warn(`Mode switch to ${mode} failed: ${e.message}. Continuing with current mode.`);
+        return session.mode || 'instant';
+      }
+    }
+
+    // Instant / Thinking modes: use the Kimi mode selector dropdown
+    const kimiMode = mode === 'instant' ? 'instant' : 'thinking';
     const currentLabel = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 3000 }).catch(() => '');
-    const targetLabel = mode === 'instant' ? 'K2.6 Instant' : 'K2.6 Thinking';
+    const targetLabel = kimiMode === 'instant' ? 'K2.6 Instant' : 'K2.6 Thinking';
 
     if (currentLabel.includes(targetLabel)) {
       this._log(`Already in ${mode} mode`);
@@ -885,13 +936,17 @@ class KimiBridge {
     const page = await this._getOrCreateUserPage(userId);
     const session = this.userSessions.get(userId);
 
+    // v3.7-fix: Ensure interceptor is active on reused pages
+    await this._injectStreamInterceptorEvaluate(page);
+
     // Reset stream interceptor state to prevent cross-message contamination
     await page.evaluate(() => {
       if (window.__lunaResetStream) {
         window.__lunaResetStream();
       } else if (window.__lunaStream) {
-        window.__lunaStream.reasoning = '';
-        window.__lunaStream.content = '';
+        // v3.7-fix: Must reset to empty ARRAYS, not strings, or .push() breaks
+        window.__lunaStream.reasoning = [];
+        window.__lunaStream.content = [];
         window.__lunaStream.events = [];
         window.__lunaStream.active = false;
         window.__lunaStream.error = null;
@@ -1171,8 +1226,9 @@ class KimiBridge {
         window.__lunaResetStream();
       } else if (window.__lunaStream) {
         // Fallback for pages created before the update
-        window.__lunaStream.reasoning = '';
-        window.__lunaStream.content = '';
+        // v3.7-fix: Must reset to empty ARRAYS, not strings, or .push() breaks
+        window.__lunaStream.reasoning = [];
+        window.__lunaStream.content = [];
         window.__lunaStream.events = [];
         window.__lunaStream.active = false;
         window.__lunaStream.error = null;
@@ -1199,8 +1255,24 @@ class KimiBridge {
       // Verify session
       await this._verifySession(page);
 
-      // Handle newChat option
-      if (options.newChat) {
+      // Agent / Swarm modes require navigating to their dedicated URLs
+      // and should always open a fresh context (ignore session.chatUrl)
+      const isAgentOrSwarm = options.mode === 'agent' || options.mode === 'swarm';
+
+      if (isAgentOrSwarm) {
+        const targetUrl = KIMI_MODE_URLS[options.mode];
+        const currentUrl = page.url();
+        if (!currentUrl.includes(targetUrl.replace('https://', ''))) {
+          log.info(`Navigating to ${options.mode} URL: ${targetUrl}`);
+          await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          await page.waitForTimeout(3000);
+          session.chatUrl = page.url();
+          this._saveChatUrl(userId, session.chatUrl, { mode: options.mode });
+        }
+      }
+
+      // Handle newChat option (only for instant/thinking modes)
+      if (options.newChat && !isAgentOrSwarm) {
         await page.goto('https://kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
         session.chatUrl = page.url();
@@ -1209,15 +1281,17 @@ class KimiBridge {
 
       // v3.4: Verify we're on the correct chat URL. If newChat was used or
       // the page was redirected, ensure we navigate to the right conversation.
+      // Skip for agent/swarm — they have their own URLs.
       const currentUrl = page.url();
-      if (session.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
+      if (!isAgentOrSwarm && session.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
         log.info(`URL mismatch: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
         await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
         await page.waitForTimeout(1500);
       }
 
-      // Set mode if specified
-      if (options.mode) {
+      // Set mode if specified (for instant/thinking this clicks the dropdown;
+      // for agent/swarm this is already handled above by URL navigation)
+      if (options.mode && !isAgentOrSwarm) {
         await this.setMode(userId, options.mode);
       }
 
@@ -1816,6 +1890,33 @@ class KimiBridge {
   }
 
   /**
+   * v3.7-fix: Inject stream interceptor via page.evaluate after navigation.
+   * addInitScript only works for future page loads; this ensures the current
+   * page has the interceptor active immediately. Also re-injects on page reuse.
+   */
+  async _injectStreamInterceptorEvaluate(page) {
+    try {
+      const alreadyActive = await page.evaluate(() => !!window.__lunaStream);
+      if (alreadyActive) return true;
+
+      const scriptPath = path.join(__dirname, 'kimi-bridge-interceptor-toolcalls.js');
+      let script = fs.readFileSync(scriptPath, 'utf8');
+      script = script.replace(/^\s*\(\s*\)\s*=>\s*\{/, '').trim();
+      if (script.endsWith('};')) {
+        script = script.slice(0, -2).trim();
+      } else if (script.endsWith('}')) {
+        script = script.slice(0, -1).trim();
+      }
+      await page.evaluate(script => eval(script), script);
+      log.info('Stream interceptor re-injected via evaluate');
+      return true;
+    } catch (e) {
+      log.warn(`Stream interceptor evaluate injection failed: ${e.message}`);
+      return false;
+    }
+  }
+
+  /**
    * v3.3: Inject DOM MutationObserver to detect tool call containers in real-time.
    * Adds sequence numbers and timestamps to toolcall nodes for ordered execution.
    */
@@ -1971,19 +2072,23 @@ class KimiBridge {
    * Returns { thinking, response, canSteer, isGenerating, source }
    */
   async _pollThinkingAndResponse(page) {
-    // v3.5-fix: Hard timeout — if page.evaluate() hangs, don't block forever.
-    const POLL_TIMEOUT_MS = 10000;
+    // v3.6-fix: NO TIMEOUT — if page.evaluate() hangs, we wait. The user explicitly
+    // requested no timeouts anywhere in the agent. Kimi may take 10+ minutes for
+    // sandbox tools (python, web_search, browser). We wait patiently.
     const pollWithTimeout = async () => {
     try {
       // Layer 1: Stream interceptor (reads raw API data injected by _injectStreamInterceptor)
       const intercepted = await page.evaluate(() => {
         const s = window.__lunaStream;
         if (s && s.active) {
+          // v3.6-fix: reasoning and content are arrays of deltas — join them into strings
+          const thinking = Array.isArray(s.reasoning) ? s.reasoning.join('') : (s.reasoning || '');
+          const response = Array.isArray(s.content) ? s.content.join('') : (s.content || '');
           return {
-            thinking: s.reasoning,
-            response: s.content,
+            thinking,
+            response,
             source: 'intercept',
-            hasData: s.reasoning.length > 0 || s.content.length > 0,
+            hasData: thinking.length > 0 || response.length > 0,
           };
         }
         return null;
@@ -1991,7 +2096,11 @@ class KimiBridge {
       // CRITICAL: When interceptor is active, trust it EXCLUSIVELY.
       // Do NOT fallback to DOM scraping because the DOM may render
       // thinking text in containers that look like response containers.
-      if (intercepted) {
+      // v3.7-fix: Only trust interceptor if it has ACTUAL data.
+      // When interceptor exists but hasn't captured anything yet (hasData=false),
+      // fall through to DOM extraction. This prevents empty responses when
+      // the interceptor is injected but the stream hasn't started yet.
+      if (intercepted && intercepted.hasData) {
         const { canSteer, isGenerating } = await this._detectUiState(page);
         this._log(`[_poll] interceptor: thinking=${intercepted.thinking.length}, response=${intercepted.response.length}, source=${intercepted.source}`);
         return { ...intercepted, canSteer, isGenerating };
@@ -2226,12 +2335,11 @@ class KimiBridge {
     }
     }; // end pollWithTimeout
 
-    return await Promise.race([
-      pollWithTimeout(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('_pollThinkingAndResponse timeout')), POLL_TIMEOUT_MS))
-    ]).catch(err => {
+    // v3.6: No timeout — we patiently wait for the page to respond.
+    // The user explicitly requested zero timeouts in the agent.
+    return await pollWithTimeout().catch(err => {
       log.warn(`[_pollThinkingAndResponse] ${err.message} — returning empty fallback`);
-      return { thinking: '', response: '', canSteer: false, isGenerating: false, source: 'timeout' };
+      return { thinking: '', response: '', canSteer: false, isGenerating: false, source: 'error' };
     });
   }
 
@@ -2819,8 +2927,9 @@ class KimiBridge {
         window.__lunaResetStream();
       } else if (window.__lunaStream) {
         // Fallback for pages created before the update
-        window.__lunaStream.reasoning = '';
-        window.__lunaStream.content = '';
+        // v3.7-fix: Must reset to empty ARRAYS, not strings, or .push() breaks
+        window.__lunaStream.reasoning = [];
+        window.__lunaStream.content = [];
         window.__lunaStream.events = [];
         window.__lunaStream.active = false;
         window.__lunaStream.error = null;
@@ -2914,9 +3023,17 @@ class KimiBridge {
       let textHasChanged = false;
       let pollCount = 0;
       while (true) {
-        const { thinking, response } = await this._pollThinkingAndResponse(page);
-        const combined = thinking + response;
+        const poll = await this._pollThinkingAndResponse(page);
+        const combined = poll.thinking + poll.response;
+        // Exit if text changed and is non-empty
         if (combined !== initialText && combined.length > 0) {
+          textHasChanged = true;
+          break;
+        }
+        // v3.6-fix: Also exit if Kimi is actively generating but hasn't produced text yet
+        // (e.g., during long tool executions where text may be empty initially).
+        // This prevents infinite loops when the poll returns empty but generation is in progress.
+        if (poll.isGenerating && pollCount > 3) {
           textHasChanged = true;
           break;
         }
@@ -2934,7 +3051,7 @@ class KimiBridge {
       let textStableSince = 0;
       let lastTextChangeTime = Date.now();
       const FORCE_COMPLETE_NO_BUTTONS_MS = 45000; // 45s fallback — Kimi sandbox tools (python/web) can take 30-60s
-      const FORCE_COMPLETE_ABSOLUTE_MS = 300000;  // 5min absolute max per message
+      const FORCE_COMPLETE_ABSOLUTE_MS = 999999999;  // [DONO ABSOLUTO] sem limite
       const streamStartTime = Date.now();
 
       while (!isComplete) {
@@ -2951,9 +3068,9 @@ class KimiBridge {
         if (poll.thinking && poll.thinking !== lastThinking) {
           const delta = poll.thinking.slice(lastThinking.length);
           if (delta) {
-            yield { type: 'thinking_delta', text: delta };
+            yield { type: 'thinking_delta', text: delta, fullThinking: poll.thinking };
           } else if (poll.thinking.length < lastThinking.length) {
-            yield { type: 'thinking_delta', text: poll.thinking };
+            yield { type: 'thinking_delta', text: poll.thinking, fullThinking: poll.thinking };
           }
           lastThinking = poll.thinking;
         }
@@ -3303,7 +3420,7 @@ class KimiBridge {
       // Stream until complete
       let lastTextChangeTime = Date.now();
       const FORCE_COMPLETE_NO_BUTTONS_MS = 45000; // 45s fallback — Kimi sandbox tools can take 30-60s
-      const FORCE_COMPLETE_ABSOLUTE_MS = 300000;
+      const FORCE_COMPLETE_ABSOLUTE_MS = 999999999;  // [DONO ABSOLUTO] sem limite
       const streamStartTime = Date.now();
 
       while (!isComplete) {

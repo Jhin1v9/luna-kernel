@@ -34,7 +34,7 @@ function discoverBackendPort() {
   return fallbackPorts[0];
 }
 
-const BACKEND_PORT = process.env.LUNA_CONFIG_PORT || discoverBackendPort();
+const BACKEND_PORT = process.env.LUNA_CONFIG_PORT || 3456;
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
 
 export default defineConfig({
@@ -42,6 +42,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    allowedHosts: ['.trycloudflare.com', '.loca.lt', 'localhost', '127.0.0.1'],
     proxy: {
       '/api': {
         target: BACKEND_URL,

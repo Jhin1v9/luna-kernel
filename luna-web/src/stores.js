@@ -7,6 +7,8 @@ export const currentMode = writable('thinking');
 export const messages = writable([]);
 export const lunaConfig = writable({});
 export const connectionStatus = writable('connected');
+export const user = writable(null);
+export const authToken = writable(localStorage.getItem('luna_token') || null);
 
 export const currentSession = derived(
   [sessions, currentSessionId],

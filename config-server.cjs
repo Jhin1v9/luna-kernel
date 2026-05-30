@@ -61,11 +61,12 @@ async function getLunaSoul() {
 const webSessions = new Map(); // sessionId -> { id, title, messages, createdAt, updatedAt }
 const activeStreams = new Map(); // sessionId -> { controller, cancelled }
 
-function createWebSession(title = 'Nova conversa') {
+function createWebSession(title = 'Nova conversa', mode = 'thinking') {
   const id = 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
   const session = {
     id,
     title,
+    mode,
     messages: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -321,8 +322,10 @@ const server = http.createServer((req, res) => {
 
       let session = sessionId ? getWebSession(sessionId) : null;
       if (!session) {
-        session = createWebSession(message.slice(0, 40));
+        session = createWebSession(message.slice(0, 40), mode);
       }
+      // Persist mode on session
+      session.mode = mode;
 
       // Add user message
       addMessageToSession(session.id, {
@@ -344,7 +347,7 @@ const server = http.createServer((req, res) => {
         const stream = luna.processMessageStream(message, {
           sessionId: session.id,
           userId: 'web-' + session.id,
-          mode: mode === 'instant' ? 'instant' : 'thinking',
+          mode: ['instant', 'thinking', 'agent', 'swarm'].includes(mode) ? mode : 'thinking',
         });
 
         for await (const ev of stream) {
@@ -358,6 +361,7 @@ const server = http.createServer((req, res) => {
               role: 'assistant',
               type: ev.type,
               content: ev.text || ev.fullResponse || '',
+              fullThinking: ev.fullThinking || undefined,
               tool: ev.tool,
               params: ev.params,
               result: ev.result,
@@ -420,24 +424,31 @@ const server = http.createServer((req, res) => {
       }
 
       // Send new messages as SSE events (including historical ones on first connect)
+      // v3.6-fix: Send ALL messages (user + assistant) so the frontend can show full history.
       const newMessages = currentSession.messages.slice(lastMsgIndex);
       for (const msg of newMessages) {
-        if (msg.role === 'assistant') {
-          // Convert stored message back to SSE event format
-          const eventData = {
-            type: msg.type,
-            sessionId,
-            timestamp: msg.timestamp,
-          };
-          if (msg.content) eventData.text = msg.content;
-          if (msg.content) eventData.fullResponse = msg.content;
-          if (msg.tool) eventData.tool = msg.tool;
-          if (msg.params) eventData.params = msg.params;
-          if (msg.result) eventData.result = msg.result;
-          if (msg.type === 'error') eventData.error = msg.content;
-
-          sendSSE(res, msg.type, eventData);
+        // Convert stored message back to SSE event format
+        const eventData = {
+          id: msg.id,
+          type: msg.type,
+          role: msg.role,
+          sessionId,
+          timestamp: msg.timestamp,
+        };
+        if (msg.content) eventData.text = msg.content;
+        if (msg.content) eventData.fullResponse = msg.content;
+        if (msg.content) eventData.response = msg.content;
+        if (msg.fullThinking) eventData.fullThinking = msg.fullThinking;
+        if (msg.tool) eventData.tool = msg.tool;
+        if (msg.params) eventData.params = msg.params;
+        if (msg.result) eventData.result = msg.result;
+        if (msg.type === 'error') eventData.error = msg.content;
+        // Include user message content for display
+        if (msg.role === 'user') {
+          eventData.content = msg.content;
         }
+
+        sendSSE(res, msg.type, eventData);
       }
       lastMsgIndex = currentSession.messages.length;
     }, 100);
@@ -457,11 +468,24 @@ const server = http.createServer((req, res) => {
       .map(s => ({
         id: s.id,
         title: s.title,
+        mode: s.mode || 'thinking',
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         messageCount: s.messages.length,
       }));
     sendJSON(res, 200, { ok: true, sessions });
+    return;
+  }
+
+  // GET /api/chat/session/:id/messages — fetch full message history
+  if (pathname.startsWith('/api/chat/session/') && pathname.endsWith('/messages') && req.method === 'GET') {
+    const sid = pathname.split('/')[4];
+    const session = getWebSession(sid);
+    if (!session) {
+      sendError(res, 404, 'Sessão não encontrada');
+      return;
+    }
+    sendJSON(res, 200, { ok: true, messages: session.messages });
     return;
   }
 

@@ -79,10 +79,77 @@ class TelegramLunaAdapter {
       await this._handleUserMessage(msg);
     });
 
+    // ── Callbacks inline (votações) ──
+    this.bot.on('callback_query', async (query) => {
+      await this._handleCallbackQuery(query);
+    });
+
     // ── Erros ──
     this.bot.on('polling_error', (err) => {
       console.warn('[TG] Polling error:', err.message || err);
     });
+  }
+
+  async _handleCallbackQuery(query) {
+    const data = query.data || '';
+    if (!data.startsWith('vote:')) return;
+
+    const parts = data.split(':');
+    if (parts.length !== 3) return;
+    const [, sessionId, voteValue] = parts;
+
+    // Mapear chatId para userId do dashboard
+    const chatId = String(query.from.id);
+    const voter = this._resolveVoterFromChatId(chatId);
+    if (!voter) {
+      await this.bot.answerCallbackQuery(query.id, { text: '❌ Usuário não mapeado para votação. Configure seu telegramId no dashboard.', show_alert: true });
+      return;
+    }
+
+    try {
+      const response = await fetch('http://localhost:3456/api/voting/telegram-vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, voter, vote: voteValue, secret: process.env.TELEGRAM_BOT_TOKEN })
+      });
+      const result = await response.json();
+
+      if (result.success) {
+        const session = result.session;
+        const emoji = voteValue === 'yes' ? '✅' : '❌';
+        await this.bot.answerCallbackQuery(query.id, { text: `${emoji} Voto registrado!` });
+        // Editar mensagem para remover botões se sessão fechou
+        if (session.status !== 'open' && session.status !== 'voting') {
+          try {
+            await this.bot.editMessageReplyMarkup(
+              { inline_keyboard: [] },
+              { chat_id: query.message.chat.id, message_id: query.message.message_id }
+            );
+          } catch (e) {
+            // ignorar erro de edição
+          }
+        }
+      } else {
+        await this.bot.answerCallbackQuery(query.id, { text: `⚠️ ${result.error || 'Erro ao votar'}`, show_alert: true });
+      }
+    } catch (err) {
+      console.error('[TG] Erro ao processar voto:', err.message);
+      await this.bot.answerCallbackQuery(query.id, { text: '❌ Erro ao processar voto. Tente pelo dashboard.', show_alert: true });
+    }
+  }
+
+  _resolveVoterFromChatId(chatId) {
+    try {
+      const usersFile = path.join(__dirname, '..', 'Documentos', 'NEXO_DASHBOARD_PRO', 'backend', 'data', 'users.json');
+      if (!fs.existsSync(usersFile)) return null;
+      const data = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+      for (const [userId, user] of Object.entries(data.users || {})) {
+        if (String(user.telegramId) === chatId) return userId;
+      }
+    } catch (e) {
+      console.error('[TG] Erro ao resolver voter:', e.message);
+    }
+    return null;
   }
 
   // ── COMANDOS ──

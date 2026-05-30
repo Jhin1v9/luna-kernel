@@ -1,6 +1,6 @@
 <script>
   export let text = '';
-  export let isExpanded = false;
+  export let isExpanded = true;
 
   $: displayText = text || '';
   $: lines = displayText.split('\n').filter(l => l.trim());

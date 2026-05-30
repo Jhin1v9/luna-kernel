@@ -56,8 +56,12 @@
         on:click|stopPropagation={() => showModeDropdown = !showModeDropdown}
         disabled={isStreaming}
       >
-        <span class="mode-icon">{mode === 'thinking' ? '⭐' : '⚡'}</span>
-        <span class="mode-text">{mode === 'thinking' ? 'thinking' : 'instant'}</span>
+        <span class="mode-icon">{
+          mode === 'thinking' ? '⭐' :
+          mode === 'agent' ? '🔍' :
+          mode === 'swarm' ? '🐝' : '⚡'
+        }</span>
+        <span class="mode-text">{mode}</span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <polyline points="6 9 12 15 18 9"/>
         </svg>
@@ -66,6 +70,12 @@
         <div class="mode-dropdown">
           <button class="mode-option" class:active={mode === 'thinking'} on:click={() => selectMode('thinking')}>
             ⭐ thinking
+          </button>
+          <button class="mode-option" class:active={mode === 'agent'} on:click={() => selectMode('agent')}>
+            🔍 agent
+          </button>
+          <button class="mode-option" class:active={mode === 'swarm'} on:click={() => selectMode('swarm')}>
+            🐝 swarm
           </button>
           <button class="mode-option" class:active={mode === 'instant'} on:click={() => selectMode('instant')}>
             ⚡ instant

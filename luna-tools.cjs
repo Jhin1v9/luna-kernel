@@ -930,6 +930,573 @@ async function dashboardListIdeas(params) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// DASHBOARD TOOLS EXPANSÃO v2.0
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── TAREFAS ──
+
+async function dashboardUpdateTask(params) {
+  const id = params.id || params.taskId;
+  if (!id) return { error: 'ID da tarefa obrigatório' };
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  await dashboardApi(`/tasks/${id}`, 'PUT', body);
+  return ok({ stdout: `✏️ Tarefa ${id} atualizada.` });
+}
+
+async function dashboardDeleteTask(params) {
+  const id = params.id || params.taskId;
+  if (!id) return { error: 'ID da tarefa obrigatório' };
+  await dashboardApi(`/tasks/${id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Tarefa ${id} excluída.` });
+}
+
+async function dashboardCompleteTask(params) {
+  const id = params.id || params.taskId;
+  if (!id) return { error: 'ID da tarefa obrigatório' };
+  await dashboardApi(`/tasks/${id}`, 'PUT', { status: 'completed' });
+  return ok({ stdout: `✅ Tarefa ${id} marcada como concluída.` });
+}
+
+async function dashboardAddComment(params) {
+  const id = params.id || params.taskId;
+  if (!id) return { error: 'ID da tarefa obrigatório' };
+  if (!params.comment && !params.text) return { error: 'Comentário obrigatório' };
+  await dashboardApi(`/tasks/${id}/comments`, 'POST', { text: params.comment || params.text });
+  return ok({ stdout: `💬 Comentário adicionado à tarefa ${id}.` });
+}
+
+// ── LEADS ──
+
+async function dashboardUpdateLead(params) {
+  const id = params.id || params.leadId;
+  if (!id) return { error: 'ID do lead obrigatório' };
+  const body = {};
+  if (params.name !== undefined) body.displayName = params.name;
+  if (params.email !== undefined) body.email = params.email;
+  if (params.phone !== undefined) body.phone = params.phone;
+  if (params.status !== undefined) body.pipelineStatus = params.status;
+  if (params.estimatedValue !== undefined) body.estimatedValue = params.estimatedValue;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.notes !== undefined) body.notes = params.notes;
+  await dashboardApi(`/leads/${id}`, 'PUT', body);
+  return ok({ stdout: `✏️ Lead ${id} atualizado.` });
+}
+
+async function dashboardConvertLead(params) {
+  const id = params.id || params.leadId;
+  if (!id) return { error: 'ID do lead obrigatório' };
+  await dashboardApi(`/leads/${id}/convert`, 'POST', {});
+  return ok({ stdout: `🔄 Lead ${id} convertido em cliente.` });
+}
+
+async function dashboardDeleteLead(params) {
+  const id = params.id || params.leadId;
+  if (!id) return { error: 'ID do lead obrigatório' };
+  await dashboardApi(`/leads/${id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Lead ${id} excluído.` });
+}
+
+// ── FINANCEIRO — RECEITAS / PAGAMENTOS ──
+
+async function dashboardCreatePayment(params) {
+  const body = {
+    amount: parseFloat(params.amount || params.valor || 0),
+    description: params.description || params.descricao || '',
+    from: params.from || params.de || params.cliente || '',
+    date: params.date || new Date().toISOString().split('T')[0],
+    status: params.status || 'pending',
+  };
+  const data = await dashboardApi('/payments', 'POST', body);
+  return ok({ stdout: `💰 Pagamento registrado: €${body.amount} — ${body.description}` });
+}
+
+async function dashboardListPayments(params) {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.from) query.set('from', params.from);
+  const data = await dashboardApi(`/payments?${query.toString()}`);
+  const items = data.payments || data || [];
+  const lines = items.map(p => `- ${p.status === 'received' ? '✅' : '⏳'} €${p.amount} — ${p.description} (${p.from || '?'})`).join('\n');
+  return ok({ stdout: `💰 ${items.length} pagamento(s):\n${lines || 'Nenhum pagamento.'}` });
+}
+
+async function dashboardUpdatePayment(params) {
+  const id = params.id || params.paymentId;
+  if (!id) return { error: 'ID do pagamento obrigatório' };
+  const body = {};
+  if (params.amount !== undefined) body.amount = parseFloat(params.amount);
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  await dashboardApi(`/payments/${id}`, 'PUT', body);
+  return ok({ stdout: `✏️ Pagamento ${id} atualizado.` });
+}
+
+async function dashboardDeletePayment(params) {
+  const id = params.id || params.paymentId;
+  if (!id) return { error: 'ID do pagamento obrigatório' };
+  await dashboardApi(`/payments/${id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Pagamento ${id} excluído.` });
+}
+
+async function dashboardReceiveSplit(params) {
+  const id = params.id || params.paymentId;
+  const personId = params.personId || params.person;
+  if (!id || !personId) return { error: 'paymentId e personId obrigatórios' };
+  await dashboardApi(`/payments/${id}/split/${personId}/receive`, 'POST', {});
+  return ok({ stdout: `💰 Split recebido para ${personId} no pagamento ${id}.` });
+}
+
+// ── FINANCEIRO — DESPESAS ──
+
+async function dashboardCreateExpense(params) {
+  const body = {
+    amount: parseFloat(params.amount || params.valor || 0),
+    description: params.description || params.descricao || '',
+    category: params.category || params.categoria || 'other',
+    to: params.to || params.para || '',
+    date: params.date || new Date().toISOString().split('T')[0],
+    status: params.status || 'pending',
+  };
+  if (params.splitAmong) body.splitAmong = params.splitAmong;
+  const data = await dashboardApi('/expenses', 'POST', body);
+  return ok({ stdout: `📤 Despesa registrada: €${body.amount} — ${body.description}` });
+}
+
+async function dashboardListExpenses(params) {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.category) query.set('category', params.category);
+  const data = await dashboardApi(`/expenses?${query.toString()}`);
+  const items = data.expenses || data || [];
+  const lines = items.map(e => `- ${e.status === 'paid' ? '✅' : '⏳'} €${e.amount} — ${e.description} (${e.category || '?'})`).join('\n');
+  return ok({ stdout: `📤 ${items.length} despesa(s):\n${lines || 'Nenhuma despesa.'}` });
+}
+
+async function dashboardUpdateExpense(params) {
+  const id = params.id || params.expenseId;
+  if (!id) return { error: 'ID da despesa obrigatório' };
+  const body = {};
+  if (params.amount !== undefined) body.amount = parseFloat(params.amount);
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.category !== undefined) body.category = params.category;
+  await dashboardApi(`/expenses/${id}`, 'PUT', body);
+  return ok({ stdout: `✏️ Despesa ${id} atualizada.` });
+}
+
+async function dashboardDeleteExpense(params) {
+  const id = params.id || params.expenseId;
+  if (!id) return { error: 'ID da despesa obrigatório' };
+  await dashboardApi(`/expenses/${id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Despesa ${id} excluída.` });
+}
+
+async function dashboardPayExpense(params) {
+  const id = params.id || params.expenseId;
+  if (!id) return { error: 'ID da despesa obrigatório' };
+  await dashboardApi(`/expenses/${id}/pay`, 'POST', {});
+  return ok({ stdout: `✅ Despesa ${id} marcada como paga.` });
+}
+
+async function dashboardCreateExpenseTemplate(params) {
+  const body = {
+    name: params.name || params.nome || 'Template',
+    amount: parseFloat(params.amount || 0),
+    description: params.description || '',
+    category: params.category || 'other',
+  };
+  await dashboardApi('/expenses/templates', 'POST', body);
+  return ok({ stdout: `📋 Template de despesa "${body.name}" criado.` });
+}
+
+async function dashboardQuickExpense(params) {
+  const body = {
+    amount: parseFloat(params.amount || params.valor || 0),
+    description: params.description || params.descricao || '',
+    category: params.category || 'other',
+  };
+  await dashboardApi('/expenses/quick', 'POST', body);
+  return ok({ stdout: `⚡ Despesa rápida: €${body.amount} — ${body.description}` });
+}
+
+// ── FINANCEIRO — CAIXA ──
+
+async function dashboardGetCashBox(params) {
+  const data = await dashboardApi('/cash-box');
+  return ok({ stdout: `💵 Caixa: €${data.balance?.value || data.balance || 0}\nÚltima atualização: ${data.lastUpdate || 'N/A'}` });
+}
+
+async function dashboardAddCashEntry(params) {
+  const body = {
+    type: params.type || params.tipo || 'income',
+    amount: parseFloat(params.amount || params.valor || 0),
+    description: params.description || params.descricao || '',
+    category: params.category || 'general',
+    date: params.date || new Date().toISOString().split('T')[0],
+  };
+  await dashboardApi('/cash-box/entries', 'POST', body);
+  return ok({ stdout: `💵 Entrada de caixa: €${body.amount} (${body.type}) — ${body.description}` });
+}
+
+async function dashboardListCashHistory(params) {
+  const query = new URLSearchParams();
+  if (params.limit) query.set('limit', String(params.limit));
+  const data = await dashboardApi(`/cash-box/history?${query.toString()}`);
+  const items = data.history || data.entries || data || [];
+  const lines = items.map(h => `- ${h.type === 'income' ? '📥' : '📤'} €${h.amount} — ${h.description}`).join('\n');
+  return ok({ stdout: `💵 Histórico do caixa (${items.length} itens):\n${lines || 'Vazio.'}` });
+}
+
+async function dashboardReconcileCashBox(params) {
+  const body = { actualBalance: parseFloat(params.actualBalance || params.balance || 0) };
+  await dashboardApi('/cash-box/reconcile', 'POST', body);
+  return ok({ stdout: `🔍 Caixa reconciliado com saldo real: €${body.actualBalance}` });
+}
+
+async function dashboardAdjustCashBox(params) {
+  const body = {
+    amount: parseFloat(params.amount || params.valor || 0),
+    reason: params.reason || params.motivo || 'Ajuste manual',
+  };
+  await dashboardApi('/cash-box/adjust', 'POST', body);
+  return ok({ stdout: `⚖️ Caixa ajustado em €${body.amount}: ${body.reason}` });
+}
+
+async function dashboardGetCashBoxProjection(params) {
+  const data = await dashboardApi('/cash-box/projection');
+  return ok({ stdout: `📈 Projeção do caixa: €${data.projectedBalance || data.balance || 'N/A'}` });
+}
+
+async function dashboardCreateCashPayment(params) {
+  const body = {
+    amount: parseFloat(params.amount || params.valor || 0),
+    description: params.description || params.descricao || '',
+    from: params.from || params.de || '',
+  };
+  await dashboardApi('/cash-box/payments', 'POST', body);
+  return ok({ stdout: `💰 Pagamento no caixa: €${body.amount} — ${body.description}` });
+}
+
+// ── ORÇAMENTOS ──
+
+async function dashboardCreateQuote(params) {
+  const body = {
+    clientName: params.clientName || params.client || 'Cliente',
+    projectName: params.projectName || params.project || 'Projeto',
+    totalAmount: parseFloat(params.totalAmount || params.value || params.valor || 0),
+    description: params.description || params.descricao || '',
+    status: params.status || 'draft',
+  };
+  await dashboardApi('/quotes', 'POST', body);
+  return ok({ stdout: `📄 Orçamento criado: "${body.projectName}" — €${body.totalAmount}` });
+}
+
+async function dashboardListQuotes(params) {
+  const data = await dashboardApi('/quotes');
+  const items = data.quotes || data || [];
+  const lines = items.map(q => `- [${q.status}] ${q.projectName || q.clientName} — €${q.totalAmount}`).join('\n');
+  return ok({ stdout: `📄 ${items.length} orçamento(s):\n${lines || 'Nenhum orçamento.'}` });
+}
+
+async function dashboardUpdateQuote(params) {
+  const id = params.id || params.quoteId;
+  if (!id) return { error: 'ID do orçamento obrigatório' };
+  const body = {};
+  if (params.totalAmount !== undefined) body.totalAmount = parseFloat(params.totalAmount);
+  if (params.status !== undefined) body.status = params.status;
+  if (params.description !== undefined) body.description = params.description;
+  await dashboardApi(`/quotes/${id}`, 'PUT', body);
+  return ok({ stdout: `✏️ Orçamento ${id} atualizado.` });
+}
+
+async function dashboardDeleteQuote(params) {
+  const id = params.id || params.quoteId;
+  if (!id) return { error: 'ID do orçamento obrigatório' };
+  await dashboardApi(`/quotes/${id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Orçamento ${id} excluído.` });
+}
+
+// ── PROJETOS ──
+
+async function dashboardListProjects(params) {
+  const data = await dashboardApi('/projects');
+  const items = data.projects || data || [];
+  const lines = items.map(p => `- ${p.name || p.title} (${p.status || '?'})`).join('\n');
+  return ok({ stdout: `📁 ${items.length} projeto(s):\n${lines || 'Nenhum projeto.'}` });
+}
+
+// ── CLIENTES ──
+
+async function dashboardListClients(params) {
+  const data = await dashboardApi('/schema/clients');
+  const items = data.clients || data || [];
+  const lines = items.map(c => `- ${c.displayName || c.name || c.id}`).join('\n');
+  return ok({ stdout: `👥 ${items.length} cliente(s):\n${lines || 'Nenhum cliente.'}` });
+}
+
+// ── LINKS ──
+
+async function dashboardAddLink(params) {
+  const body = {
+    url: params.url || params.link || '',
+    title: params.title || '',
+    description: params.description || params.contexto || '',
+    tags: params.tags || [],
+  };
+  if (!body.url) return { error: 'URL obrigatória' };
+  await dashboardApi('/links', 'POST', body);
+  return ok({ stdout: `🔗 Link adicionado: ${body.url}` });
+}
+
+async function dashboardListLinks(params) {
+  const query = new URLSearchParams();
+  if (params.platform) query.set('platform', params.platform);
+  if (params.search) query.set('search', params.search);
+  const data = await dashboardApi(`/links?${query.toString()}`);
+  const items = data.links || data || [];
+  const lines = items.map(l => `- ${l.title || l.url} (${l.platform || 'link'})`).join('\n');
+  return ok({ stdout: `🔗 ${items.length} link(s):\n${lines || 'Nenhum link.'}` });
+}
+
+async function dashboardDeleteLink(params) {
+  const id = params.id || params.linkId;
+  if (!id) return { error: 'ID do link obrigatório' };
+  await dashboardApi(`/links/${id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Link ${id} excluído.` });
+}
+
+async function dashboardEnrichLink(params) {
+  const id = params.id || params.linkId;
+  if (!id) return { error: 'ID do link obrigatório' };
+  await dashboardApi('/links/enrich', 'POST', { id });
+  return ok({ stdout: `✨ Link ${id} enriquecido.` });
+}
+
+async function dashboardSyncLinks(params) {
+  await dashboardApi('/links/sync', 'POST', {});
+  return ok({ stdout: `🔄 Links sincronizados.` });
+}
+
+async function dashboardGetLinksStats(params) {
+  const data = await dashboardApi('/links/stats');
+  return ok({ stdout: `🔗 Stats: ${data.total || 0} total, ${data.broken || 0} quebrados.` });
+}
+
+// ── EMAIL ──
+
+async function dashboardSendEmail(params) {
+  const body = {
+    to: params.to || params.para || '',
+    subject: params.subject || params.assunto || '',
+    body: params.body || params.text || params.mensagem || '',
+    cc: params.cc || '',
+    bcc: params.bcc || '',
+  };
+  if (!body.to || !body.subject) return { error: 'Destinatário e assunto obrigatórios' };
+  await dashboardApi('/emails/send', 'POST', body);
+  return ok({ stdout: `📧 Email enviado para ${body.to}: "${body.subject}"` });
+}
+
+async function dashboardListEmails(params) {
+  const query = new URLSearchParams();
+  if (params.folder) query.set('folder', params.folder);
+  if (params.limit) query.set('limit', String(params.limit));
+  const data = await dashboardApi(`/emails?${query.toString()}`);
+  const items = data.emails || data.messages || data || [];
+  const lines = items.map(e => `- ${e.read ? '✓' : '○'} ${e.subject} (${e.from || '?'})`).join('\n');
+  return ok({ stdout: `📧 ${items.length} email(s):\n${lines || 'Nenhum email.'}` });
+}
+
+async function dashboardSyncEmails(params) {
+  await dashboardApi('/emails/sync', 'POST', {});
+  return ok({ stdout: `🔄 Emails sincronizados.` });
+}
+
+// ── WHATSAPP ──
+
+async function dashboardSendWhatsApp(params) {
+  const body = {
+    phone: params.phone || params.number || params.numero || '',
+    message: params.message || params.text || params.mensagem || '',
+  };
+  if (!body.phone || !body.message) return { error: 'Número e mensagem obrigatórios' };
+  await dashboardApi('/whatsapp/send', 'POST', body);
+  return ok({ stdout: `💬 WhatsApp enviado para ${body.phone}.` });
+}
+
+async function dashboardGetWhatsAppHistory(params) {
+  const query = new URLSearchParams();
+  if (params.limit) query.set('limit', String(params.limit || 10));
+  if (params.chatId) query.set('chatId', params.chatId);
+  const data = await dashboardApi(`/whatsapp/history?${query.toString()}`);
+  const items = data.history || data.messages || data || [];
+  const lines = items.slice(0, 10).map(m => `- [${m.author || '?'}]: ${(m.body || m.text || '(mídia)').slice(0, 80)}`).join('\n');
+  return ok({ stdout: `💬 ${items.length} mensagem(s):\n${lines || 'Vazio.'}` });
+}
+
+async function dashboardScanWhatsApp(params) {
+  await dashboardApi('/whatsapp-agent/refresh', 'POST', {});
+  return ok({ stdout: `🔍 Scan do WhatsApp iniciado.` });
+}
+
+async function dashboardGetWhatsAppStatus(params) {
+  const data = await dashboardApi('/whatsapp-agent/status');
+  return ok({ stdout: `📱 WhatsApp: ${data.status || data.state || 'N/A'} | ${data.totalMessages || data.total || 0} msgs` });
+}
+
+async function dashboardGetWhatsAppClassifications(params) {
+  const data = await dashboardApi('/classifications/stats');
+  return ok({ stdout: `🏷️ Classificações: ${JSON.stringify(data, null, 2).slice(0, 400)}` });
+}
+
+// ── SISTEMA ──
+
+async function dashboardGetSystemStatus(params) {
+  const data = await dashboardApi('/system/status');
+  return ok({ stdout: `🖥️ Sistema: ${data.status || 'OK'} | Backend: ${data.backend || '?'} | Frontend: ${data.frontend || '?'}` });
+}
+
+async function dashboardGetSystemLogs(params) {
+  const query = new URLSearchParams();
+  if (params.service) query.set('service', params.service);
+  if (params.lines) query.set('lines', String(params.lines));
+  const data = await dashboardApi(`/system/logs?${query.toString()}`);
+  const lines = (data.logs || data || []).slice(-20).join('\n');
+  return ok({ stdout: `📝 Logs:\n${lines || 'Nenhum log.'}` });
+}
+
+async function dashboardControlService(params) {
+  const body = {
+    service: params.service || 'backend',
+    action: params.action || params.command || 'status',
+  };
+  await dashboardApi('/system/control', 'POST', body);
+  return ok({ stdout: `⚙️ ${body.service}: ${body.action}` });
+}
+
+// ── NOTIFICAÇÕES ──
+
+async function dashboardListNotifications(params) {
+  const data = await dashboardApi('/notifications');
+  const items = data.notifications || data || [];
+  const lines = items.map(n => `- ${n.read ? '✓' : '○'} ${n.title || n.message || 'Notificação'}`).join('\n');
+  return ok({ stdout: `🔔 ${items.length} notificação(ões):\n${lines || 'Nenhuma.'}` });
+}
+
+async function dashboardMarkNotificationRead(params) {
+  const id = params.id || params.notificationId;
+  if (!id) return { error: 'ID obrigatório' };
+  await dashboardApi(`/notifications/${id}/read`, 'POST', {});
+  return ok({ stdout: `✅ Notificação ${id} lida.` });
+}
+
+async function dashboardMarkAllNotificationsRead(params) {
+  await dashboardApi('/notifications/read-all', 'POST', {});
+  return ok({ stdout: `✅ Todas lidas.` });
+}
+
+// ── USUÁRIOS / MEMBROS ──
+
+async function dashboardListUsers(params) {
+  const data = await dashboardApi('/users');
+  const items = data.users || data || [];
+  const lines = items.map(u => `- ${u.name || u.username || u.id} (${u.role || 'user'})`).join('\n');
+  return ok({ stdout: `👤 ${items.length} usuário(s):\n${lines || 'Nenhum.'}` });
+}
+
+async function dashboardListMembers(params) {
+  const data = await dashboardApi('/members');
+  const items = data.members || data || [];
+  const lines = items.map(m => `- ${m.name || m.displayName || m.id} (${m.role || '?'})`).join('\n');
+  return ok({ stdout: `👥 ${items.length} membro(s):\n${lines || 'Nenhum.'}` });
+}
+
+// ── BUG DETECTOR ──
+
+async function dashboardListBugReports(params) {
+  const data = await dashboardApi('/bugdetector/reports');
+  const items = data.reports || data || [];
+  const lines = items.map(r => `- ${r.filename || r.id}: ${r.summary || r.title || 'Relatório'}`).join('\n');
+  return ok({ stdout: `🐛 ${items.length} relatório(s):\n${lines || 'Nenhum.'}` });
+}
+
+async function dashboardDeleteBugReport(params) {
+  const filename = params.filename || params.id;
+  if (!filename) return { error: 'Filename obrigatório' };
+  await dashboardApi(`/bugdetector/reports/${filename}`, 'DELETE');
+  return ok({ stdout: `🗑️ Relatório ${filename} excluído.` });
+}
+
+// ── GITHUB / VERCEL ──
+
+async function dashboardListGitHubRepos(params) {
+  const data = await dashboardApi('/github-repos');
+  const items = data.repos || data || [];
+  const lines = items.map(r => `- ${r.name || r.full_name || r.repo} (${r.language || '?'})`).join('\n');
+  return ok({ stdout: `🐙 ${items.length} repo(s):\n${lines || 'Nenhum.'}` });
+}
+
+async function dashboardListVercelProjects(params) {
+  const data = await dashboardApi('/vercel-projects');
+  const items = data.projects || data || [];
+  const lines = items.map(p => `- ${p.name || p.project} (${p.framework || '?'})`).join('\n');
+  return ok({ stdout: `▲ ${items.length} projeto(s):\n${lines || 'Nenhum.'}` });
+}
+
+// ── OPERAÇÕES ──
+
+async function dashboardListOpsAlerts(params) {
+  const data = await dashboardApi('/ops');
+  const items = data.alerts || data || [];
+  const lines = items.map(a => `- [${a.severity || '?'}] ${a.title || a.message || 'Alerta'}`).join('\n');
+  return ok({ stdout: `⚠️ ${items.length} alerta(s):\n${lines || 'Nenhum.'}` });
+}
+
+async function dashboardCreateOpsAlert(params) {
+  const body = {
+    title: params.title || 'Novo alerta',
+    message: params.message || params.descricao || '',
+    severity: params.severity || 'medium',
+  };
+  await dashboardApi('/ops/alerts', 'POST', body);
+  return ok({ stdout: `⚠️ Alerta: "${body.title}"` });
+}
+
+async function dashboardDeleteOpsAlert(params) {
+  const id = params.id || params.alertId;
+  if (!id) return { error: 'ID obrigatório' };
+  await dashboardApi(`/ops/alerts/${id}`, 'DELETE');
+  return ok({ stdout: `🗑️ Alerta ${id} excluído.` });
+}
+
+// ── TRANSAÇÕES / CONFIG / NEXO STATE ──
+
+async function dashboardListTransactions(params) {
+  const query = new URLSearchParams();
+  if (params.limit) query.set('limit', String(params.limit));
+  const data = await dashboardApi(`/transactions?${query.toString()}`);
+  const items = data.transactions || data || [];
+  const lines = items.map(t => `- ${t.type || '?'} €${t.amount} — ${t.description || ''}`).join('\n');
+  return ok({ stdout: `💳 ${items.length} transação(ões):\n${lines || 'Nenhuma.'}` });
+}
+
+async function dashboardGetNexoState(params) {
+  const data = await dashboardApi('/nexo-state');
+  return ok({ stdout: `🌐 NEXO State:\n${JSON.stringify(data, null, 2).slice(0, 500)}` });
+}
+
+async function dashboardGetConfig(params) {
+  const data = await dashboardApi('/config/dashboard');
+  return ok({ stdout: `⚙️ Config:\n${JSON.stringify(data, null, 2).slice(0, 500)}` });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -976,14 +1543,97 @@ module.exports = {
   readMediaFile,
   // Reasoning
   think,
-  // Dashboard
+  // Dashboard — Tarefas
   dashboardCreateTask,
   dashboardListTasks,
+  dashboardUpdateTask,
+  dashboardDeleteTask,
+  dashboardCompleteTask,
+  dashboardAddComment,
+  // Dashboard — Leads
   dashboardCreateLead,
   dashboardListLeads,
-  dashboardGetFinanceSummary,
+  dashboardUpdateLead,
+  dashboardConvertLead,
+  dashboardDeleteLead,
+  // Dashboard — Financeiro Receitas
+  dashboardCreatePayment,
+  dashboardListPayments,
+  dashboardUpdatePayment,
+  dashboardDeletePayment,
+  dashboardReceiveSplit,
+  // Dashboard — Financeiro Despesas
+  dashboardCreateExpense,
+  dashboardListExpenses,
+  dashboardUpdateExpense,
+  dashboardDeleteExpense,
+  dashboardPayExpense,
+  dashboardCreateExpenseTemplate,
+  dashboardQuickExpense,
+  // Dashboard — Financeiro Caixa
+  dashboardGetCashBox,
+  dashboardAddCashEntry,
+  dashboardListCashHistory,
+  dashboardReconcileCashBox,
+  dashboardAdjustCashBox,
+  dashboardGetCashBoxProjection,
+  dashboardCreateCashPayment,
+  // Dashboard — Orçamentos
+  dashboardCreateQuote,
+  dashboardListQuotes,
+  dashboardUpdateQuote,
+  dashboardDeleteQuote,
+  // Dashboard — Projetos
+  dashboardListProjects,
+  // Dashboard — Clientes
+  dashboardListClients,
+  // Dashboard — Ideias
   dashboardCreateIdea,
   dashboardListIdeas,
+  // Dashboard — Links
+  dashboardAddLink,
+  dashboardListLinks,
+  dashboardDeleteLink,
+  dashboardEnrichLink,
+  dashboardSyncLinks,
+  dashboardGetLinksStats,
+  // Dashboard — Email
+  dashboardSendEmail,
+  dashboardListEmails,
+  dashboardSyncEmails,
+  // Dashboard — WhatsApp
+  dashboardSendWhatsApp,
+  dashboardGetWhatsAppHistory,
+  dashboardScanWhatsApp,
+  dashboardGetWhatsAppStatus,
+  dashboardGetWhatsAppClassifications,
+  // Dashboard — Sistema
+  dashboardGetSystemStatus,
+  dashboardGetSystemLogs,
+  dashboardControlService,
+  // Dashboard — Notificações
+  dashboardListNotifications,
+  dashboardMarkNotificationRead,
+  dashboardMarkAllNotificationsRead,
+  // Dashboard — Usuários
+  dashboardListUsers,
+  dashboardListMembers,
+  // Dashboard — BugDetector
+  dashboardListBugReports,
+  dashboardDeleteBugReport,
+  // Dashboard — GitHub/Vercel
+  dashboardListGitHubRepos,
+  dashboardListVercelProjects,
+  // Dashboard — Operações
+  dashboardListOpsAlerts,
+  dashboardCreateOpsAlert,
+  dashboardDeleteOpsAlert,
+  // Dashboard — Transações/Config
+  dashboardListTransactions,
+  dashboardGetNexoState,
+  dashboardGetConfig,
+  // Dashboard — Finance Summary
+  dashboardGetFinanceSummary,
   // System
   getCurrentDirectory,
   // Project Validation
