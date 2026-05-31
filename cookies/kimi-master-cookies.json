@@ -1,7 +1,5 @@
 {
-  "savedAt": "2026-05-30T22:35:37.915Z",
-  "totalCookies": 65,
-  "kimiCookies": 14,
+  "savedAt": "2026-05-30T23:16:30.988Z",
   "cookies": [
     {
       "name": "SID",
@@ -98,7 +96,7 @@
       "value": "light",
       "domain": "www.kimi.com",
       "path": "/",
-      "expires": 1811715955,
+      "expires": 1811717558,
       "httpOnly": false,
       "secure": false,
       "sameSite": "Strict"
@@ -108,7 +106,7 @@
       "value": "GA1.1.356830996.1780179667",
       "domain": ".kimi.com",
       "path": "/",
-      "expires": 1814739955.086057,
+      "expires": 1814741558.550856,
       "httpOnly": false,
       "secure": false,
       "sameSite": "Lax"
@@ -139,36 +137,6 @@
       "domain": "www.kimi.com",
       "path": "/",
       "expires": 1795731674,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
-      "name": "Hm_lvt_358cae4815e85d48f7e8ab7f3680a74b",
-      "value": "1780175815,1780179667,1780179737,1780179873",
-      "domain": ".www.kimi.com",
-      "path": "/",
-      "expires": 1811715872,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
-      "name": "Hm_lpvt_358cae4815e85d48f7e8ab7f3680a74b",
-      "value": "1780179873",
-      "domain": ".www.kimi.com",
-      "path": "/",
-      "expires": -1,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
-      "name": "HMACCOUNT",
-      "value": "21E1557D991C575B",
-      "domain": ".www.kimi.com",
-      "path": "/",
-      "expires": -1,
       "httpOnly": false,
       "secure": false,
       "sameSite": "Lax"
@@ -564,46 +532,6 @@
       "sameSite": "Lax"
     },
     {
-      "name": "SIDCC",
-      "value": "AKEyXzUUdHWz4OJwcXz1d3fsIaIfKMj2IO2dBQvqgRHtn3UR4h0ffcWJSA4OMrCeuTV_4sM7",
-      "domain": ".google.com",
-      "path": "/",
-      "expires": 1811715953.525445,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
-      "name": "__Secure-1PSIDCC",
-      "value": "AKEyXzVL7nzkAZcj-NChQ03YISQDt_H8WsrAVvPMle6T5vwpvHNI09Yal26HQenJdqn3sHgR",
-      "domain": ".google.com",
-      "path": "/",
-      "expires": 1811715953.525827,
-      "httpOnly": true,
-      "secure": true,
-      "sameSite": "Lax"
-    },
-    {
-      "name": "__Secure-3PSIDCC",
-      "value": "AKEyXzXfxYC8iyNwAmMSsOuX0yEMVuJM8dBRICtphOdvC9tMsZMEtvcYviRiY6wlBUWljOqOxQ",
-      "domain": ".google.com",
-      "path": "/",
-      "expires": 1811715953.526037,
-      "httpOnly": true,
-      "secure": true,
-      "sameSite": "None"
-    },
-    {
-      "name": "_ga_YXD8W70SZP",
-      "value": "GS2.1.s1780179666$o1$g1$t1780179955$j59$l0$h0",
-      "domain": ".kimi.com",
-      "path": "/",
-      "expires": 1814739955.096108,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
       "name": "kimi-auth",
       "value": "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ1c2VyLWNlbnRlciIsImV4cCI6MTc4Mjc3MTk1NSwiaWF0IjoxNzgwMTc5OTU1LCJqdGkiOiJkOGRtN3Nva28zZzJ0bmVycjgzMCIsInR5cCI6ImFjY2VzcyIsImFwcF9pZCI6ImtpbWkiLCJzdWIiOiJkN3Y0NG0xZzZpOHFiZGo2cmJ0ZyIsInNwYWNlX2lkIjoiZDd2NDRscGc2aThxYmRqNnI4OTAiLCJhYnN0cmFjdF91c2VyX2lkIjoiZDd2NDRscGc2aThxYmRqNnI4OGciLCJzc2lkIjoiMTczMTczOTYwOTg1MjEyNjkwOSIsImRldmljZV9pZCI6Ijc2NDU3OTY3ODYyOTYwNjYwNjIiLCJyZWdpb24iOiJvdmVyc2VhcyIsIm1lbWJlcnNoaXAiOnsibGV2ZWwiOjI1fX0.5aS0b_ixjjIFEH-K5nlMcFQ_3xdkxo5BIBaa2VRDIK1otcc5cjWPyDEK-qClVTX44o3jwDqsY82bzWsj4E4DpQ",
       "domain": "www.kimi.com",
@@ -614,31 +542,11 @@
       "sameSite": "Strict"
     },
     {
-      "name": "__cf_bm",
-      "value": "ArdAQ9h_TmsgiLR3VPnTLIsHh74OnXydIfT7cQe.fKs-1780179956.7884984-1.0.1.1-LpgK39RNRATVYaPizDwiv2xSr4nREbkbZPMp3lsED6DuTf1lxuLumM6Gta2RJgK.8rvKLXVLqGPJBH4rTh1ycKqDnC8tNlU7cLV7ceJ8qGtSC7bVA9dzdZ4naaPK0PHy",
-      "domain": ".kimi.com",
-      "path": "/",
-      "expires": 1780181757.689742,
-      "httpOnly": true,
-      "secure": true,
-      "sameSite": "None"
-    },
-    {
-      "name": "intercom-session-qhdj3uun",
-      "value": "TDRTb1hmZ1ZEaVAwbWtKTGtZSVRvY2xmT3ZKK2tjZGpkRDJ2em00L2xXYnZNVExhQlJqM2JHa2MwQzhNQVFoUmxHYjQ1WWl6YUd0eTU5bFhud0ZuZ2FaRUI5Zmh2TDlXYWVtQUtrbzV4czVKb1M1eTZGTlB3Y05CSkNtZ2pGemJhc1JmakhwN0lFZm5jZEpseUFVckFTZkJjRWN1bXVzeGR1alVqTVMvSCtGSlN1Vm9mVktPY1dXL1hCdXc2ZUNkL2ZVUU5vaTRWM2xYL2dUN0daWlREanpmVUFxdFg5dGZ4eTAvUjZBNE1PYz0tLVVWamppajVXYlRWSFpBem40aG5vM3c9PQ==--4618b17c1dfb90b5f4ed88f6ea13e9ab387ece6a",
-      "domain": ".kimi.com",
-      "path": "/",
-      "expires": 1780784759,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
       "name": "intercom-device-id-qhdj3uun",
       "value": "ab9bd52b-b567-4f8d-883a-cc9d7492521d",
       "domain": ".kimi.com",
       "path": "/",
-      "expires": 1803509959,
+      "expires": 1803511559,
       "httpOnly": false,
       "secure": false,
       "sameSite": "Lax"
@@ -652,6 +560,106 @@
       "httpOnly": false,
       "secure": false,
       "sameSite": "Lax"
+    },
+    {
+      "name": "HMACCOUNT_BFESS",
+      "value": "7D1146EC45248DEE",
+      "domain": ".hm.baidu.com",
+      "path": "/",
+      "expires": 1814741198.660574,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "HMACCOUNT",
+      "value": "7D1146EC45248DEE",
+      "domain": ".www.kimi.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "Hm_lvt_358cae4815e85d48f7e8ab7f3680a74b",
+      "value": "1780179667,1780179737,1780179873,1780181199",
+      "domain": ".www.kimi.com",
+      "path": "/",
+      "expires": 1811717558,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_ga_YXD8W70SZP",
+      "value": "GS2.1.s1780179666$o1$g1$t1780181558$j59$l0$h0",
+      "domain": ".kimi.com",
+      "path": "/",
+      "expires": 1814741558.565004,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "Hm_lpvt_358cae4815e85d48f7e8ab7f3680a74b",
+      "value": "1780181559",
+      "domain": ".www.kimi.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "intercom-session-qhdj3uun",
+      "value": "eFFKVUtreDE3WWtpckNrdEF5b1pvSTVRVUJRbHJIb0x6Q2J1UU45S0NsMGlLVmZRYVd6QjdnWHd2VkFxbElleURDR21XaStQNGt2N1dpNjl3ZkRud2hOdVl3Z1MreGdtTTVvNHN1U2E4ekZpWDlXVEdlQ2MzRWRzRmhiSnZEN1lyazBNNm53Qzd0b2YwUm0rdlhjdDZ0YnR1VFpUM1pQMWx5MlNzSm8yM2phRGt5R1kwRStjbUZtMWJTektEbGNkKzNsSk1YN2xDQVYyc01LaERlV1BTSHRNSDBlK1lqL1h2QTVpdENKb0RoST0tLWQwNjJ4T3dRa1Vnc0VGdnhrZUNqTEE9PQ==--6002c5a6930ae0b4d86cec59a55ed34976571b35",
+      "domain": ".kimi.com",
+      "path": "/",
+      "expires": 1780786359,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "__cf_bm",
+      "value": "sEcZ_.XsiMTHCSsNcY3WyI0vgKbIcboWFyBBSYjzBZ0-1780181560.5436969-1.0.1.1-P0J9xOlqoo9rR4WFwnk.5.VIKJk9LiCt3RAuLRmaZeRyQMZqn4.QITb1J6adXIg1UcIyfWIG3F_l.v9d2zsnqU8x.PVmxvY.1OB97M.0WYC0mugp_rgu1QKNXAwdP4nc",
+      "domain": ".kimi.com",
+      "path": "/",
+      "expires": 1780183360.921999,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "SIDCC",
+      "value": "AKEyXzXbTzxnXV7SgozQTG1IvdPoXRKy5sb6hlQmnznS0KglgGy4hyamkC73TSs59dBWOLRm",
+      "domain": ".google.com",
+      "path": "/",
+      "expires": 1811718779.672438,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "__Secure-1PSIDCC",
+      "value": "AKEyXzWdoB1EEwgHQA_4UZfF1xYtR08KUsOWUby1Wth_sZJ8UaycmxVBqIDatyZhjQwS3lHU",
+      "domain": ".google.com",
+      "path": "/",
+      "expires": 1811718779.67255,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "__Secure-3PSIDCC",
+      "value": "AKEyXzV8pd2nt-AeBk22b5pqlmweYOjJOs-mDbTMlqvOt7xA6EOiPkkjVfvu9KWmzY4BwaHmbA",
+      "domain": ".google.com",
+      "path": "/",
+      "expires": 1811718779.672658,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
     }
   ]
 }

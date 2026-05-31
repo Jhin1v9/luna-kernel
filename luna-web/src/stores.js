@@ -83,3 +83,15 @@ export const themeColors = derived(
   currentMode,
   ($mode) => MODE_COLORS[$mode] || MODE_COLORS.thinking
 );
+
+// Action event store for triggering starfield effects when tools/actions execute
+export const actionEvent = writable(null);
+
+// Voice state store
+export const voiceState = writable({
+  active: false,
+  status: 'idle', // 'idle' | 'listening' | 'processing'
+});
+
+// Real-time audio frequency data (Uint8Array, 64 bins)
+export const voiceAudioData = writable(new Uint8Array(64));

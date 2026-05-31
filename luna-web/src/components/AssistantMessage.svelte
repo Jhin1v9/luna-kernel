@@ -76,6 +76,18 @@
 
   function renderMarkdown(text) {
     if (!text) return '';
+    // v3.9-fix: Extract JSON response if present (Kimi returns {"response": "..."})
+    const trimmed = text.trim();
+    const codeBlockMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)```\s*$/);
+    const jsonText = codeBlockMatch ? codeBlockMatch[1].trim() : trimmed;
+    if (jsonText.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(jsonText);
+        if (parsed.response && typeof parsed.response === 'string') {
+          text = parsed.response;
+        }
+      } catch {}
+    }
     let html = text
       .replace(/^### (.*$)/gim, '<h3 class="md-h3">$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="md-h2">$1</h2>')

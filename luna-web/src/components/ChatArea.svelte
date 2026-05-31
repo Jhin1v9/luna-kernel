@@ -34,12 +34,20 @@
       case 'user': {
         // v3.6-fix: Handle user messages from SSE history sync
         messages.update(msgs => {
-          // Avoid duplicates
+          // Avoid duplicates by ID
           if (msgs.some(m => m.id === event.id)) return msgs;
+          // Avoid duplicates by content (same message sent locally + via SSE)
+          const content = event.content || event.text || '';
+          const recentDuplicate = msgs.some(m =>
+            m.type === 'user' &&
+            m.content === content &&
+            Date.now() - new Date(m.timestamp).getTime() < 5000
+          );
+          if (recentDuplicate) return msgs;
           return [...msgs, {
             id: event.id || 'user-' + Date.now(),
             type: 'user',
-            content: event.content || event.text || '',
+            content: content,
             files: event.files || [],
             timestamp: event.timestamp || new Date().toISOString()
           }];

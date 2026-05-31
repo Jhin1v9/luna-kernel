@@ -1,142 +1,386 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { currentMode, isStreaming } from '../stores.js';
+  import { currentMode, isStreaming, actionEvent, voiceState, voiceAudioData } from '../stores.js';
   import {
     BRIGHT_STARS,
     CONSTELLATION_LINES,
     getValidLines,
     buildStarIndex,
   } from '../lib/starData.js';
+  import {
+    createStarState,
+    createBgStarState,
+    projectStar,
+    projectBgStar,
+    assignOrbits,
+    orbitPosition,
+    clearOrbits,
+    initClusters,
+    updateClusters,
+    ShootingStar,
+    drawAtmosphericBg,
+    buildDynamicLines,
+    lerpColor,
+    lerp,
+    rgbToString,
+    voiceWavePosition,
+    voicePulseRadius,
+    MODE_COLORS,
+    MODE_SHIFT_INTENSITY,
+    MODE_BEHAVIOR,
+  } from '../lib/starAnimations.js';
 
   let canvas;
   let ctx;
   let animId;
   let w, h;
-  let stars = [];        // bright named stars
-  let bgStars = [];      // random background stars
-  let allStars = [];     // combined for dynamic connections
-  let lines = [];        // constellation line indices
-  let dynLines = [];     // dynamic proximity lines
-  let starIndex = {};
-  let time = 0;
 
-  const BG_STAR_COUNT = 400;
+  // ─── Star collections ──────────────────────────────────────
+  let stars = [];           // bright named stars (~130)
+  let bgStarsFar = [];      // background layer: far  (300)
+  let bgStarsMid = [];      // background layer: mid  (120)
+  let bgStarsNear = [];     // background layer: near (30)
+  let allBgStars = [];      // combined bg stars
+  let allStars = [];        // combined for dynamic lines
+
+  let lines = [];           // constellation line indices
+  let dynLines = [];        // dynamic proximity lines
+  let starIndex = {};
+
+  // ─── Animation state ───────────────────────────────────────
+  let time = 0;
+  let lastTime = 0;
+  let dt = 16;
+
+  // ─── Mode state ────────────────────────────────────────────
+  let lastMode = 'thinking';
+  let targetMode = 'thinking';
+  let modeTransition = 0;       // 0 = fully in lastMode, 1 = fully in targetMode
+  let modeTransitionSpeed = 0.015;
+  let streamingActive = false;
+  let isLoading = false;        // true when thinking + streaming
+
+  // ─── Clusters (swarm mode) ─────────────────────────────────
+  let clusters = [];
+  let clustersInitialized = false;
+
+  // ─── Shooting stars ────────────────────────────────────────
+  let shootingStars = [];
+  let shootingStarChance = 0.008; // per frame when idle
+
+  // ─── Tool action effect ────────────────────────────────────
+  let toolEffectActive = false;
+  let toolEffectStart = 0;
+  let toolEffectDuration = 2500;
+
+  // ─── Voice state ───────────────────────────────────────────
+  let voiceStatus = 'idle'; // 'idle' | 'listening' | 'processing'
+  let audioBins = new Uint8Array(64);
+  let prevVoiceStatus = 'idle';
+
+  // ─── Config ────────────────────────────────────────────────
+  const BG_FAR_COUNT = 300;
+  const BG_MID_COUNT = 120;
+  const BG_NEAR_COUNT = 30;
   const DYN_CONNECT_DIST = 90;
   const MAX_DYN_PER_STAR = 3;
 
-  // ─── Helpers ───────────────────────────────────────────────
-
-  function hexToRgb(hex) {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result
-      ? [parseInt(result[1], 16), parseInt(result[2], 16), parseInt(result[3], 16)]
-      : [255, 255, 255];
-  }
-
-  // ─── Mode behaviour ────────────────────────────────────────
-
-  const MODE_BEHAVIOR = {
-    instant:  { twinkleMult: 1.6, brightnessMult: 1.25, drift: false, speed: 0 },
-    thinking: { twinkleMult: 1.0, brightnessMult: 1.00, drift: false, speed: 0 },
-    agent:    { twinkleMult: 1.1, brightnessMult: 1.05, drift: true,  speed: 0.4 },
-    swarm:    { twinkleMult: 1.9, brightnessMult: 1.20, drift: true,  speed: 1.0 },
-  };
-
-  // ─── Init ──────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  INIT
+  // ═══════════════════════════════════════════════════════════
 
   function initStars() {
     starIndex = buildStarIndex(BRIGHT_STARS);
     const validLines = getValidLines(BRIGHT_STARS, CONSTELLATION_LINES);
     lines = validLines.map(([a, b]) => [starIndex[a], starIndex[b]]);
 
-    // Bright stars from real catalogue
-    stars = BRIGHT_STARS.map((s) => ({
-      ...s,
-      x: 0,
-      y: 0,
-      phase: Math.random() * Math.PI * 2,
-      twinkleSpeed: Math.random() * 0.4 + 0.4,
-      baseRadius: Math.max(0.5, (6.2 - s.mag) * 0.62),
-      baseOpacity: Math.max(0.25, Math.min(0.9, (6.5 - s.mag) * 0.16)),
-      rgb: hexToRgb(s.color),
-    }));
+    // Bright stars with full state
+    stars = BRIGHT_STARS.map(s => createStarState(s, w, h));
+    stars.forEach(s => projectStar(s, w, h));
 
-    // Background filler stars
-    bgStars = [];
-    for (let i = 0; i < BG_STAR_COUNT; i++) {
-      const mag = Math.random() * 2.8 + 3.8;
-      bgStars.push({
-        nx: Math.random(),
-        ny: Math.random(),
-        phase: Math.random() * Math.PI * 2,
-        twinkleSpeed: Math.random() * 0.25 + 0.15,
-        baseRadius: Math.max(0.25, (6.8 - mag) * 0.32),
-        baseOpacity: Math.random() * 0.08 + 0.04,
-        rgb: [210 + Math.random() * 40, 220 + Math.random() * 30, 255],
-        driftVx: (Math.random() - 0.5) * 0.015,
-      });
-    }
+    // Background stars — 3 parallax layers
+    bgStarsFar = Array.from({ length: BG_FAR_COUNT }, () => createBgStarState('far', w, h));
+    bgStarsMid = Array.from({ length: BG_MID_COUNT }, () => createBgStarState('mid', w, h));
+    bgStarsNear = Array.from({ length: BG_NEAR_COUNT }, () => createBgStarState('near', w, h));
 
-    projectStars();
-    buildDynamicLines();
+    allBgStars = [...bgStarsFar, ...bgStarsMid, ...bgStarsNear];
+    allBgStars.forEach(s => projectBgStar(s, w, h));
+
+    // Combined for dynamic lines (bright stars + bg mid + bg near)
+    allStars = [...stars, ...bgStarsMid, ...bgStarsNear];
+
+    buildDynamicLines(allStars);
+
+    // Initialize clusters for swarm mode
+    clusters = initClusters(stars, 4, w, h);
+    clustersInitialized = true;
   }
 
-  function projectStars() {
-    for (const s of stars) {
-      s.x = (s.ra / 24) * w;
-      s.y = ((90 - s.dec) / 180) * h;
-    }
-    for (const s of bgStars) {
-      s.x = s.nx * w;
-      s.y = s.ny * h;
-    }
-    // Combined list for dynamic connections
-    allStars = [...stars, ...bgStars];
+  function rebuildDynamicLines() {
+    dynLines = buildDynamicLines(allStars, DYN_CONNECT_DIST, MAX_DYN_PER_STAR);
   }
 
-  function buildDynamicLines() {
-    dynLines = [];
-    const maxSq = DYN_CONNECT_DIST * DYN_CONNECT_DIST;
-    for (let i = 0; i < allStars.length; i++) {
-      let count = 0;
-      for (let j = i + 1; j < allStars.length; j++) {
-        const dx = allStars[i].x - allStars[j].x;
-        const dy = allStars[i].y - allStars[j].y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq < maxSq && count < MAX_DYN_PER_STAR) {
-          dynLines.push({
-            i,
-            j,
-            dist: Math.sqrt(distSq),
-            phase: Math.random() * Math.PI * 2,
-            speed: Math.random() * 0.3 + 0.2,
-          });
-          count++;
+  // ═══════════════════════════════════════════════════════════
+  //  MODE TRANSITION
+  // ═══════════════════════════════════════════════════════════
+
+  function updateModeState() {
+    // Voice has highest priority
+    let effectiveTarget;
+    if (voiceStatus === 'listening') {
+      effectiveTarget = 'voice-listening';
+    } else if (voiceStatus === 'processing') {
+      effectiveTarget = 'voice-processing';
+    } else {
+      // Detect loading state
+      const newIsLoading = lastMode === 'thinking' && streamingActive;
+      if (newIsLoading) {
+        effectiveTarget = 'thinking-loading';
+      } else {
+        effectiveTarget = lastMode;
+      }
+    }
+
+    // If target changed, start transition
+    if (effectiveTarget !== targetMode) {
+      targetMode = effectiveTarget;
+      modeTransition = 0;
+
+      // Setup mode-specific initial states
+      if (targetMode === 'thinking-loading' || targetMode === 'voice-processing') {
+        assignOrbits(stars, w / 2, h / 2, 0.32);
+      } else if (targetMode === 'swarm' && !clustersInitialized) {
+        clusters = initClusters(stars, 4, w, h);
+        clustersInitialized = true;
+      }
+
+      if (targetMode !== 'thinking-loading' && targetMode !== 'voice-processing') {
+        clearOrbits(stars);
+      }
+    }
+
+    // Progress transition
+    if (modeTransition < 1) {
+      modeTransition = Math.min(1, modeTransition + modeTransitionSpeed);
+    }
+
+    isLoading = (lastMode === 'thinking' && streamingActive);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  STAR UPDATE PER MODE
+  // ═══════════════════════════════════════════════════════════
+
+  function getTargetPosition(s, idx, mode, timeMs) {
+    const centerX = w / 2;
+    const centerY = h / 2;
+
+    switch (mode) {
+      case 'thinking-loading': {
+        if (s.orbitActive) {
+          const orb = orbitPosition(s, timeMs);
+          return { x: orb.x, y: orb.y };
         }
+        return { x: s.homeX, y: s.homeY };
+      }
+
+      case 'instant': {
+        // Warp speed — stars drift horizontally with parallax
+        const driftX = s.driftBaseVx * 3.5;
+        const driftY = s.driftBaseVy * 1.5;
+        let tx = s.homeX + driftX;
+        let ty = s.homeY + driftY;
+        // Wrap around
+        if (tx > w + 50) tx -= w + 100;
+        if (tx < -50) tx += w + 100;
+        return { x: tx, y: ty };
+      }
+
+      case 'agent': {
+        const t = timeMs * 0.001;
+        const waveX = Math.sin(t * s.twinkleSpeed + s.phase) * 12;
+        const waveY = Math.cos(t * s.twinkleSpeed * 0.7 + s.phase) * 8;
+        const driftX = s.driftBaseVx * 0.5;
+        const driftY = s.driftBaseVy * 0.5;
+        return {
+          x: s.homeX + waveX + driftX,
+          y: s.homeY + waveY + driftY,
+        };
+      }
+
+      case 'swarm': {
+        if (s.clusterId >= 0 && clusters[s.clusterId]) {
+          const c = clusters[s.clusterId];
+          return {
+            x: c.x + s.clusterOffsetX,
+            y: c.y + s.clusterOffsetY,
+          };
+        }
+        return { x: s.homeX, y: s.homeY };
+      }
+
+      case 'tool': {
+        // Subtle pulse outward from center
+        const dx = s.homeX - centerX;
+        const dy = s.homeY - centerY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const pulseStrength = Math.max(0, 1 - dist / 250) * 20;
+        return {
+          x: s.homeX + (dx / (dist + 1)) * pulseStrength,
+          y: s.homeY + (dy / (dist + 1)) * pulseStrength,
+        };
+      }
+
+      case 'voice-listening': {
+        const wave = voiceWavePosition(s, idx, stars.length, audioBins, w, h, timeMs);
+        return { x: wave.x, y: wave.y };
+      }
+
+      case 'voice-processing': {
+        if (s.orbitActive) {
+          const orb = orbitPosition(s, timeMs);
+          return { x: orb.x, y: orb.y };
+        }
+        return { x: s.homeX, y: s.homeY };
+      }
+
+      default: // thinking / idle
+        return { x: s.homeX, y: s.homeY };
+    }
+  }
+
+  function updateStars(timeMs) {
+    const behavior = MODE_BEHAVIOR[targetMode] || MODE_BEHAVIOR.thinking;
+
+    // Update bright stars
+    stars.forEach((s, idx) => {
+      // Calculate target position for current mode
+      const target = getTargetPosition(s, idx, targetMode, timeMs);
+
+      // Also calculate target for last mode (for transition blending)
+      const lastTarget = getTargetPosition(s, idx, lastMode, timeMs);
+
+      // Blend between last mode and target mode
+      const tx = lerp(lastTarget.x, target.x, modeTransition);
+      const ty = lerp(lastTarget.y, target.y, modeTransition);
+
+      // Lerp factor varies by distance from center (wave effect)
+      const dx = s.currentX - w / 2;
+      const dy = s.currentY - h / 2;
+      const distFromCenter = Math.sqrt(dx * dx + dy * dy);
+      const maxDist = Math.min(w, h) * 0.5;
+      const lerpFactor = 0.02 + 0.04 * (1 - distFromCenter / maxDist);
+
+      s.currentX += (tx - s.currentX) * lerpFactor;
+      s.currentY += (ty - s.currentY) * lerpFactor;
+
+      // Update orbit angle continuously even if not fully in orbit mode
+      if (s.orbitActive) {
+        s.orbitAngle += s.orbitSpeed * dt;
+      }
+
+      // Color interpolation
+      const modeColor = MODE_COLORS[targetMode] || MODE_COLORS.thinking;
+      const lastModeColor = MODE_COLORS[lastMode] || MODE_COLORS.thinking;
+      const blendedModeColor = lerpColor(lastModeColor, modeColor, modeTransition);
+      const shiftStrength = s.brightness * (MODE_SHIFT_INTENSITY[targetMode] || 0);
+      s.currentColor = lerpColor(s.baseColor, blendedModeColor, shiftStrength);
+
+      // Tool action pulse
+      if (toolEffectActive) {
+        const elapsed = timeMs - toolEffectStart;
+        const progress = elapsed / toolEffectDuration;
+        if (progress < 1) {
+          const pulseT = Math.sin(progress * Math.PI * 4) * Math.exp(-progress * 3);
+          const distFromCenter = Math.sqrt(
+            (s.currentX - w / 2) ** 2 + (s.currentY - h / 2) ** 2
+          );
+          if (distFromCenter < 200) {
+            s.pulseRadiusMult = 1 + pulseT * 0.5;
+            s.pulseColorShift = [pulseT * 30, pulseT * 20, pulseT * 50];
+          } else {
+            s.pulseRadiusMult = 1;
+            s.pulseColorShift = [0, 0, 0];
+          }
+        } else {
+          s.pulseRadiusMult = 1;
+          s.pulseColorShift = [0, 0, 0];
+        }
+      } else {
+        s.pulseRadiusMult = 1;
+        s.pulseColorShift = [0, 0, 0];
+      }
+    });
+
+    // Update background stars (parallax drift)
+    const layers = [
+      { stars: bgStarsFar, speedMult: 0.3 },
+      { stars: bgStarsMid, speedMult: 0.7 },
+      { stars: bgStarsNear, speedMult: 1.5 },
+    ];
+
+    for (const layer of layers) {
+      for (const s of layer.stars) {
+        if (behavior.drift) {
+          s.nx += s.driftVx * behavior.speed * layer.speedMult * 0.008;
+          s.ny += s.driftVy * behavior.speed * layer.speedMult * 0.008;
+        }
+        // Always wrap
+        if (s.nx < 0) s.nx += 1;
+        if (s.nx > 1) s.nx -= 1;
+        if (s.ny < 0) s.ny += 1;
+        if (s.ny > 1) s.ny -= 1;
+
+        s.x = s.nx * w;
+        s.y = s.ny * h;
+        s.currentX = s.x;
+        s.currentY = s.y;
       }
     }
   }
 
-  // ─── Draw ──────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  SHOOTING STAR UPDATE
+  // ═══════════════════════════════════════════════════════════
 
-  function getAccent() {
-    try {
-      return (
-        getComputedStyle(document.documentElement)
-          .getPropertyValue('--luna-accent')
-          .trim() || '#a855f7'
-      );
-    } catch {
-      return '#a855f7';
+  function updateShootingStars() {
+    // Spawn random shooting star
+    if (shootingStars.length < 2 && Math.random() < shootingStarChance) {
+      const side = Math.floor(Math.random() * 4);
+      let sx, sy, angle;
+      switch (side) {
+        case 0: sx = Math.random() * w; sy = -20; angle = Math.PI * 0.3 + Math.random() * 0.4; break;
+        case 1: sx = w + 20; sy = Math.random() * h; angle = Math.PI * 0.8 + Math.random() * 0.4; break;
+        case 2: sx = Math.random() * w; sy = h + 20; angle = -Math.PI * 0.7 + Math.random() * 0.4; break;
+        default: sx = -20; sy = Math.random() * h; angle = -Math.PI * 0.3 + Math.random() * 0.4; break;
+      }
+      shootingStars.push(new ShootingStar(sx, sy, angle));
+    }
+
+    // Update existing
+    for (let i = shootingStars.length - 1; i >= 0; i--) {
+      shootingStars[i].update();
+      if (shootingStars[i].dead) {
+        shootingStars.splice(i, 1);
+      }
     }
   }
 
+  function spawnToolShootingStar() {
+    const angle = Math.random() * Math.PI * 2;
+    shootingStars.push(new ShootingStar(w / 2, h / 2, angle, 5 + Math.random() * 3));
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  DRAW
+  // ═══════════════════════════════════════════════════════════
+
   function drawSoftGlow(x, y, radius, opacity, rgb) {
-    // Soft radial glow — same style for all stars, just scaled by brightness
-    const glowR = radius * 7;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(radius) || radius <= 0) return;
+    const glowR = radius * 6;
     const grad = ctx.createRadialGradient(x, y, 0, x, y, glowR);
-    grad.addColorStop(0, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${opacity * 0.45})`);
-    grad.addColorStop(0.4, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${opacity * 0.1})`);
+    grad.addColorStop(0, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${opacity * 0.35})`);
+    grad.addColorStop(0.35, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${opacity * 0.08})`);
     grad.addColorStop(1, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
     ctx.fillStyle = grad;
     ctx.globalAlpha = 1;
@@ -148,82 +392,66 @@
   function draw() {
     if (!ctx) return;
 
-    // Deep space background with subtle blue tint
-    const spaceGrad = ctx.createLinearGradient(0, 0, 0, h);
-    spaceGrad.addColorStop(0, '#080816');
-    spaceGrad.addColorStop(1, '#020208');
-    ctx.fillStyle = spaceGrad;
-    ctx.fillRect(0, 0, w, h);
-
-    const accent = getAccent();
-    const behavior = MODE_BEHAVIOR[lastMode] || MODE_BEHAVIOR.thinking;
     const t = time * 0.001;
-
-    const streamBoost = streamingActive ? 1.2 : 1.0;
+    const behavior = MODE_BEHAVIOR[targetMode] || MODE_BEHAVIOR.thinking;
     const twinkleMult = behavior.twinkleMult;
-    const brightnessMult = behavior.brightnessMult * streamBoost;
-    const driftEnabled = behavior.drift;
-    const driftSpeed = behavior.speed;
+    const brightnessMult = behavior.brightnessMult * (streamingActive ? 1.15 : 1.0);
 
-    // ── Subtle nebula-like background gradient ──
-    const bgGrad = ctx.createRadialGradient(w * 0.5, h * 0.4, 0, w * 0.5, h * 0.4, h * 0.9);
-    bgGrad.addColorStop(0, 'rgba(25, 20, 50, 0.35)');
-    bgGrad.addColorStop(0.5, 'rgba(15, 12, 30, 0.18)');
-    bgGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, w, h);
+    // ── Background ──
+    drawAtmosphericBg(ctx, w, h, targetMode, time);
 
-    // ── Dynamic proximity lines (the "web" effect) ──
+    // ── Dynamic proximity lines ──
     ctx.lineCap = 'round';
+    const modeColor = MODE_COLORS[targetMode] || MODE_COLORS.thinking;
+    const accent = `rgb(${modeColor[0]},${modeColor[1]},${modeColor[2]})`;
+
     for (const dl of dynLines) {
       const a = allStars[dl.i];
       const b = allStars[dl.j];
       if (!a || !b) continue;
+
       const pulse = Math.sin(t * dl.speed * twinkleMult + dl.phase) * 0.5 + 0.5;
-      const alpha = (1 - dl.dist / DYN_CONNECT_DIST) * 0.06 * pulse * brightnessMult;
-      if (alpha < 0.005) continue;
+      const alpha = (1 - dl.dist / DYN_CONNECT_DIST) * 0.05 * pulse * brightnessMult;
+      if (alpha < 0.003) continue;
 
       ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
+      ctx.moveTo(a.currentX || a.x, a.currentY || a.y);
+      ctx.lineTo(b.currentX || b.x, b.currentY || b.y);
       ctx.strokeStyle = accent;
       ctx.globalAlpha = alpha;
-      ctx.lineWidth = 0.4;
+      ctx.lineWidth = 0.35;
       ctx.stroke();
     }
 
-    // ── Constellation lines (fixed, more visible) ──
+    // ── Constellation lines (fixed, more visible in idle/thinking) ──
+    const constLineOpacity = targetMode === 'thinking-loading' ? 0.06 : 0.12;
     ctx.lineWidth = 1.0;
     ctx.lineCap = 'round';
     ctx.shadowColor = accent;
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 6;
+
     for (const [i, j] of lines) {
       const a = stars[i];
       const b = stars[j];
-      const dx = a.x - b.x;
-      const dy = a.y - b.y;
+      if (!a || !b) continue;
+
+      const dx = a.currentX - b.currentX;
+      const dy = a.currentY - b.currentY;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < Math.max(w, h) * 0.28) {
+      if (dist < Math.max(w, h) * 0.32) {
         const pulse = Math.sin(t * 0.7 + i * 0.5) * 0.15 + 0.85;
         ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
+        ctx.moveTo(a.currentX, a.currentY);
+        ctx.lineTo(b.currentX, b.currentY);
         ctx.strokeStyle = accent;
-        ctx.globalAlpha = 0.1 * pulse * brightnessMult;
+        ctx.globalAlpha = constLineOpacity * pulse * brightnessMult;
         ctx.stroke();
       }
     }
     ctx.shadowBlur = 0;
 
     // ── Background stars ──
-    for (const s of bgStars) {
-      if (driftEnabled) {
-        s.nx += s.driftVx * driftSpeed * 0.008;
-        if (s.nx < 0) s.nx += 1;
-        if (s.nx > 1) s.nx -= 1;
-        s.x = s.nx * w;
-      }
-
+    for (const s of allBgStars) {
       const pulse = Math.sin(t * s.twinkleSpeed * twinkleMult + s.phase);
       const opacity = s.baseOpacity * (0.5 + 0.5 * pulse) * brightnessMult;
       const radius = s.baseRadius * (0.8 + 0.2 * pulse);
@@ -231,51 +459,85 @@
       ctx.globalAlpha = Math.max(0, opacity);
       ctx.fillStyle = `rgb(${s.rgb[0]},${s.rgb[1]},${s.rgb[2]})`;
       ctx.beginPath();
-      ctx.arc(s.x, s.y, Math.max(0.2, radius), 0, Math.PI * 2);
+      ctx.arc(s.x, s.y, Math.max(0.15, radius), 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // ── Bright stars with soft glow (no circles, no crosses) ──
-    for (const s of stars) {
+    // ── Bright stars with soft glow ──
+    stars.forEach((s, starIdx) => {
       const pulse = Math.sin(t * s.twinkleSpeed * twinkleMult + s.phase);
       const opacity = s.baseOpacity * (0.55 + 0.45 * pulse) * brightnessMult;
-      const radius = s.baseRadius * (0.92 + 0.08 * pulse);
-      const [r, g, b] = s.rgb;
 
-      // Soft glow — same gentle style for all stars
-      drawSoftGlow(s.x, s.y, radius, opacity, s.rgb);
+      let radius;
+      if (targetMode === 'voice-listening') {
+        const audioIndex = Math.floor((starIdx / stars.length) * audioBins.length) % audioBins.length;
+        const amplitude = audioBins[audioIndex] / 255;
+        radius = voicePulseRadius(s.baseRadius, amplitude, s.brightness) * (0.92 + 0.08 * pulse) * s.pulseRadiusMult;
+      } else {
+        radius = s.baseRadius * (0.92 + 0.08 * pulse) * s.pulseRadiusMult;
+      }
+
+      const r = Math.min(255, s.currentColor[0] + s.pulseColorShift[0]);
+      const g = Math.min(255, s.currentColor[1] + s.pulseColorShift[1]);
+      const b = Math.min(255, s.currentColor[2] + s.pulseColorShift[2]);
+
+      // Soft glow
+      drawSoftGlow(s.currentX, s.currentY, radius, opacity, [r, g, b]);
 
       // Star core
       ctx.globalAlpha = Math.max(0, opacity);
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.beginPath();
-      ctx.arc(s.x, s.y, Math.max(0.35, radius), 0, Math.PI * 2);
+      ctx.arc(s.currentX, s.currentY, Math.max(0.3, radius), 0, Math.PI * 2);
       ctx.fill();
 
       // Extra hot white core for very bright stars
       if (s.mag < 1.2) {
-        ctx.globalAlpha = opacity * 0.9;
+        ctx.globalAlpha = opacity * 0.85;
         ctx.fillStyle = '#ffffff';
         ctx.beginPath();
-        ctx.arc(s.x, s.y, Math.max(0.15, radius * 0.35), 0, Math.PI * 2);
+        ctx.arc(s.currentX, s.currentY, Math.max(0.12, radius * 0.3), 0, Math.PI * 2);
         ctx.fill();
       }
+    });
+
+    // ── Shooting stars ──
+    for (const ss of shootingStars) {
+      ss.draw(ctx);
     }
 
+    // Reset
     ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
     ctx.lineCap = 'butt';
   }
 
-  // ─── Animation loop ────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  ANIMATION LOOP
+  // ═══════════════════════════════════════════════════════════
 
   function loop(now) {
+    dt = Math.min(now - lastTime, 50); // cap at 50ms
+    lastTime = now;
     time = now;
+
+    updateModeState();
+    updateStars(now);
+
+    if (targetMode === 'swarm') {
+      updateClusters(clusters, w, h, dt);
+    }
+
+    updateShootingStars();
+
     draw();
+
     animId = requestAnimationFrame(loop);
   }
 
-  // ─── Resize ────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  RESIZE
+  // ═══════════════════════════════════════════════════════════
 
   function resize() {
     w = window.innerWidth;
@@ -288,29 +550,89 @@
       canvas.style.height = h + 'px';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
-    projectStars();
-    buildDynamicLines();
+
+    // Re-project all stars
+    stars.forEach(s => projectStar(s, w, h));
+    allBgStars.forEach(s => projectBgStar(s, w, h));
+
+    // Re-assign orbits if in loading mode
+    if (targetMode === 'thinking-loading') {
+      assignOrbits(stars, w / 2, h / 2, 0.32);
+    }
+
+    // Re-init clusters
+    clusters = initClusters(stars, 4, w, h);
+
+    rebuildDynamicLines();
   }
 
-  // ─── Lifecycle ─────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  LIFECYCLE
+  // ═══════════════════════════════════════════════════════════
 
-  let lastMode = 'thinking';
-  let streamingActive = false;
   let modeUnsub;
   let streamUnsub;
+  let actionUnsub;
+  let voiceStateUnsub;
+  let voiceAudioUnsub;
 
   onMount(() => {
-    ctx = canvas.getContext('2d');
+    ctx = canvas.getContext('2d', { willReadFrequently: false });
     resize();
     initStars();
     window.addEventListener('resize', resize);
 
     modeUnsub = currentMode.subscribe((m) => {
-      lastMode = m;
+      if (m !== lastMode) {
+        targetMode = m;
+        modeTransition = 0;
+        lastMode = m;
+
+        // Setup for new mode
+        if (m === 'thinking-loading' || (m === 'thinking' && streamingActive)) {
+          assignOrbits(stars, w / 2, h / 2, 0.32);
+        } else {
+          clearOrbits(stars);
+        }
+      }
     });
 
     streamUnsub = isStreaming.subscribe((s) => {
       streamingActive = s;
+      // Will be handled in updateModeState
+    });
+
+    actionUnsub = actionEvent.subscribe((event) => {
+      if (event) {
+        toolEffectActive = true;
+        toolEffectStart = performance.now();
+        spawnToolShootingStar();
+        setTimeout(() => {
+          toolEffectActive = false;
+        }, toolEffectDuration);
+        // Reset store so subsequent events can fire
+        actionEvent.set(null);
+      }
+    });
+
+    voiceStateUnsub = voiceState.subscribe((state) => {
+      if (state.status !== prevVoiceStatus) {
+        prevVoiceStatus = state.status;
+        voiceStatus = state.status;
+        modeTransition = 0;
+
+        if (voiceStatus === 'voice-processing') {
+          assignOrbits(stars, w / 2, h / 2, 0.32);
+        } else if (voiceStatus === 'idle') {
+          clearOrbits(stars);
+        }
+      }
+    });
+
+    voiceAudioUnsub = voiceAudioData.subscribe((bins) => {
+      if (bins && bins.length === audioBins.length) {
+        audioBins.set(bins);
+      }
     });
 
     animId = requestAnimationFrame(loop);
@@ -321,6 +643,9 @@
     window.removeEventListener('resize', resize);
     if (modeUnsub) modeUnsub();
     if (streamUnsub) streamUnsub();
+    if (actionUnsub) actionUnsub();
+    if (voiceStateUnsub) voiceStateUnsub();
+    if (voiceAudioUnsub) voiceAudioUnsub();
   });
 </script>
 

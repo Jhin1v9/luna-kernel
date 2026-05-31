@@ -581,8 +581,14 @@ ${masterPrompt || '(master prompt não carregado — verifique ~/.luna-kernel/LU
 function parseKimiResponse(text) {
   if (!text) return null;
 
-  // Strategy 1: Remove markdown code blocks
+  // Strategy 0: Remove DOM-extracted code block headers that the Kimi Web extractor sometimes includes
+  // e.g. "JSON\nCopy\n{...}" or "json\nCopy\n{...}"
   let cleaned = text
+    .replace(/^[\s]*JSON[\s]*\n[\s]*Copy[\s]*\n/i, '')
+    .replace(/^[\s]*json[\s]*\n[\s]*Copy[\s]*\n/i, '');
+
+  // Strategy 1: Remove markdown code blocks
+  cleaned = cleaned
     .replace(/```json\s*/gi, '')
     .replace(/```\s*$/gm, '')
     .replace(/```/g, '');

@@ -1,7 +1,8 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { planModeState } from '../stores.js';
-  import { Search, FileSearch, Shield, Eye } from 'lucide-svelte';
+  import { planModeState, voiceState, voiceAudioData } from '../stores.js';
+  import { Search, FileSearch, Shield, Eye, Mic, MicOff } from 'lucide-svelte';
+  import { voiceService } from '../lib/voiceService.js';
 
   export let onSend = () => {};
   export let onCancel = () => {};
@@ -14,6 +15,12 @@
   let files = [];
   let isDragging = false;
   let fileInputEl;
+
+  // Voice
+  let voiceActive = false;
+  let voiceError = null;
+  let micRipple = 0;
+  let micRaf = null;
 
   // Slash commands
   const COMMANDS = [
@@ -101,6 +108,66 @@
       handleSend();
     } else if (e.key === 'Escape' && disabled) {
       handleCancel();
+    }
+  }
+
+  // ─── Voice Control ─────────────────────────────────────────
+
+  function animateMic() {
+    micRipple = (micRipple + 1) % 360;
+    if (voiceActive) micRaf = requestAnimationFrame(animateMic);
+  }
+
+  async function toggleVoice() {
+    if (!voiceService.isSupported()) {
+      voiceError = 'Seu navegador não suporta reconhecimento de voz';
+      return;
+    }
+
+    if (voiceService.isListening()) {
+      voiceService.stop();
+      voiceActive = false;
+      if (micRaf) cancelAnimationFrame(micRaf);
+      return;
+    }
+
+    voiceError = null;
+    voiceActive = true;
+    micRaf = requestAnimationFrame(animateMic);
+
+    try {
+      await voiceService.start({
+        onTranscript: ({ final, interim }) => {
+          if (final) {
+            text = (text + ' ' + final).trim();
+            tick().then(() => {
+              autoResize();
+              textareaEl?.focus();
+            });
+          } else if (interim) {
+            // Show interim in placeholder style
+            // For now just update text in real-time
+            const base = text.replace(/\s*\.\.\.$/, '');
+            text = (base + ' ' + interim).trim();
+            tick().then(() => autoResize());
+          }
+        },
+        onAudioData: (bins) => {
+          voiceAudioData.set(bins);
+        },
+        onStateChange: (status) => {
+          voiceState.set({ active: status !== 'idle', status });
+        },
+        onError: (err) => {
+          voiceError = err;
+          voiceActive = false;
+          voiceState.set({ active: false, status: 'idle' });
+        },
+      });
+    } catch (err) {
+      voiceActive = false;
+      voiceError = err.message;
+      voiceState.set({ active: false, status: 'idle' });
     }
   }
 
@@ -258,6 +325,25 @@
       </svg>
     </button>
 
+    <button
+      class="mic-btn"
+      class:active={voiceActive}
+      class:error={!!voiceError}
+      on:click={toggleVoice}
+      title={voiceActive ? 'Desligar microfone' : voiceError ? voiceError : 'Falar (microfone)'}
+      aria-label={voiceActive ? 'Desligar microfone' : 'Ligar microfone'}
+      disabled={disabled}
+    >
+      {#if voiceActive}
+        <div class="mic-pulse" style="transform: scale({1 + Math.sin(micRipple * 0.05) * 0.15})">
+          <Mic size={18} />
+        </div>
+        <div class="mic-ring"></div>
+      {:else}
+        <MicOff size={18} />
+      {/if}
+    </button>
+
     <textarea
       bind:this={textareaEl}
       bind:value={text}
@@ -409,6 +495,56 @@
     opacity: 0.4;
     cursor: not-allowed;
   }
+  .mic-btn {
+    background: none;
+    border: none;
+    color: var(--luna-text-secondary);
+    cursor: pointer;
+    padding: 10px;
+    border-radius: 10px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    min-width: 44px;
+    min-height: 44px;
+    position: relative;
+  }
+  .mic-btn:hover:not(:disabled) {
+    color: var(--luna-accent);
+    background: rgba(255,255,255,0.04);
+  }
+  .mic-btn.active {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+  }
+  .mic-btn.active:hover {
+    background: rgba(239, 68, 68, 0.2);
+  }
+  .mic-btn.error {
+    color: #fca5a5;
+  }
+  .mic-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .mic-pulse {
+    transition: transform 0.1s;
+  }
+  .mic-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 10px;
+    border: 1.5px solid rgba(239, 68, 68, 0.5);
+    animation: micRingPulse 1.2s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes micRingPulse {
+    0%, 100% { transform: scale(1); opacity: 0.6; }
+    50% { transform: scale(1.15); opacity: 0; }
+  }
+
   .chat-textarea {
     flex: 1;
     background: var(--luna-bg);

@@ -48,10 +48,10 @@ process.on('unhandledRejection', (reason) => {
 const CDP_PORTS = [9222, 9223, 9224, 9225];
 const DEFAULT_TIMEOUT = parseInt(process.env.KIMI_TIMEOUT, 10) || 120000;
 const KIMI_MODE_URLS = {
-  instant: 'https://kimi.com/?chat_enter_method=new_chat',
-  thinking: 'https://kimi.com/?chat_enter_method=new_chat',
-  agent: 'https://kimi.com/agent',
-  swarm: 'https://kimi.com/agent-swarm',
+  instant: 'https://www.kimi.com/?chat_enter_method=new_chat',
+  thinking: 'https://www.kimi.com/?chat_enter_method=new_chat',
+  agent: 'https://www.kimi.com/agent',
+  swarm: 'https://www.kimi.com/agent-swarm',
 };
 const MAX_CONCURRENT_PAGES = parseInt(process.env.KIMI_MAX_PAGES, 10) || 5;
 const IDLE_TIMEOUT_MS = parseInt(process.env.KIMI_IDLE_TIMEOUT, 10) || 10 * 60 * 1000;
@@ -347,6 +347,44 @@ class KimiBridge {
     this.defaultContext = contexts[0];
     log.success(`Connected! Using default context with ${this.defaultContext.pages().length} existing page(s)`);
 
+    // v3.9-fix: Inject MASTER cookies into defaultContext so all new user contexts
+    // inherit login state, even when Chrome was just started with an empty profile.
+    try {
+      const masterPath = path.join(__dirname, 'cookies', 'kimi-master-cookies.json');
+      if (fs.existsSync(masterPath)) {
+        const masterData = JSON.parse(fs.readFileSync(masterPath, 'utf8'));
+        const masterCookies = masterData.cookies || [];
+        if (masterCookies.length > 0) {
+          await this.defaultContext.addCookies(masterCookies);
+          log.info(`Injected ${masterCookies.length} MASTER cookies into defaultContext`);
+        }
+      }
+    } catch (e) {
+      log.warn(`Failed to inject MASTER cookies into defaultContext: ${e.message}`);
+    }
+
+    // v3.9-fix: Also inject localStorage into defaultContext pages
+    try {
+      const masterLsPath = path.join(__dirname, 'cookies', 'kimi-master-localstorage.json');
+      if (fs.existsSync(masterLsPath)) {
+        const masterLsData = JSON.parse(fs.readFileSync(masterLsPath, 'utf8'));
+        const lsData = masterLsData.data || {};
+        const keys = Object.keys(lsData);
+        if (keys.length > 0) {
+          for (const page of this.defaultContext.pages()) {
+            await page.evaluate((items) => {
+              for (const [key, value] of Object.entries(items)) {
+                try { localStorage.setItem(key, value); } catch (e) {}
+              }
+            }, lsData).catch(() => {});
+          }
+          log.info(`Injected ${keys.length} localStorage items into defaultContext pages`);
+        }
+      }
+    } catch (e) {
+      log.warn(`Failed to inject MASTER localStorage into defaultContext: ${e.message}`);
+    }
+
     // Register crash/disconnect listeners
     this.browser.on('disconnected', () => {
       log.warn('Browser disconnected via CDP');
@@ -435,6 +473,21 @@ class KimiBridge {
 
     const existing = this.userContexts.get(userId);
     if (existing) {
+      // Even for existing contexts, re-inject MASTER cookies to ensure they stay logged in
+      // This fixes cases where the context was created before cookies were saved
+      try {
+        const masterPath = path.join(__dirname, 'cookies', 'kimi-master-cookies.json');
+        if (fs.existsSync(masterPath)) {
+          const masterData = JSON.parse(fs.readFileSync(masterPath, 'utf8'));
+          const masterCookies = masterData.cookies || [];
+          if (masterCookies.length > 0) {
+            await existing.addCookies(masterCookies);
+            log.info(`Re-injected ${masterCookies.length} MASTER cookies into existing context for user ${hashUserId(userId)}`);
+          }
+        }
+      } catch (e) {
+        log.warn(`Failed to re-inject MASTER cookies for existing context ${hashUserId(userId)}: ${e.message}`);
+      }
       return existing;
     }
 
@@ -515,7 +568,7 @@ class KimiBridge {
 
     // Restore previous chat URL from store if available
     const stored = this.store.getUser(userId);
-    const chatUrl = stored?.chatUrl || 'https://kimi.com/?chat_enter_method=new_chat';
+    const chatUrl = stored?.chatUrl || 'https://www.kimi.com/?chat_enter_method=new_chat';
 
     let page = null;
     try {
@@ -544,6 +597,51 @@ class KimiBridge {
       await this._injectDomObserverEvaluate(page);
       // v3.7-fix: Also re-inject stream interceptor for current page
       await this._injectStreamInterceptorEvaluate(page);
+
+      // v3.9-fix: Inject localStorage tokens (access_token, refresh_token etc)
+      // These are REQUIRED for Kimi login state in addition to cookies
+      await this._injectMasterLocalStorage(page);
+
+      // v3.9-fix: Verify login state after navigation. If logged out, re-inject cookies
+      // and reload. This fixes stale contexts created before master cookies were saved.
+      const isLoggedIn = await page.evaluate(() => {
+        const hasLoginForm = !!(document.querySelector('form[action*="login"]') || document.querySelector('input[type="password"]'));
+        const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container'));
+        return !hasLoginForm && hasAppContent;
+      }).catch(() => false);
+
+      if (!isLoggedIn) {
+        log.warn(`Page opened logged-out for ${hashUserId(userId)} — attempting cookie restore + reload...`);
+        try {
+          const masterPath = path.join(__dirname, 'cookies', 'kimi-master-cookies.json');
+          if (fs.existsSync(masterPath)) {
+            const masterData = JSON.parse(fs.readFileSync(masterPath, 'utf8'));
+            const masterCookies = masterData.cookies || [];
+            if (masterCookies.length > 0) {
+              await userCtx.addCookies(masterCookies);
+              log.info(`Injected ${masterCookies.length} MASTER cookies before reload`);
+            }
+          }
+        } catch (e) {
+          log.warn(`Cookie restore before reload failed: ${e.message}`);
+        }
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(2000);
+        // Re-inject localStorage after reload
+        await this._injectMasterLocalStorage(page);
+
+        const stillLoggedOut = await page.evaluate(() => {
+          const hasLoginForm = !!(document.querySelector('form[action*="login"]') || document.querySelector('input[type="password"]'));
+          const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container'));
+          return !hasLoginForm && !hasAppContent;
+        }).catch(() => true);
+
+        if (stillLoggedOut) {
+          log.warn(`Still logged out after cookie reload — will try _autoLogin on next message`);
+        } else {
+          log.success(`Cookie restore + reload worked! User ${hashUserId(userId)} is now logged in.`);
+        }
+      }
     } catch (e) {
       log.warn(`Navigation failed for ${hashUserId(userId)}: ${e.message}`);
       if (page && !page.isClosed()) {
@@ -1067,8 +1165,8 @@ class KimiBridge {
   async _detectActualMode(page) {
     try {
       const url = page.url();
-      if (url.includes('kimi.com/agent-swarm')) return 'swarm';
-      if (url.includes('kimi.com/agent')) return 'agent';
+      if (url.includes('www.kimi.com/agent-swarm')) return 'swarm';
+      if (url.includes('www.kimi.com/agent')) return 'agent';
       const label = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 5000 });
       if (label.includes('Instant')) return 'instant';
       if (label.includes('Thinking')) return 'thinking';
@@ -1350,7 +1448,7 @@ class KimiBridge {
 
     // Step 3: If still no new tab, fallback to direct navigation
     if (!newPage) {
-      await page.goto('https://kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded', timeout: 0 });
+      await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2500);
       targetPage = page;
     } else {
@@ -1466,7 +1564,7 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        await page.goto('https://kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
         session.chatUrl = page.url();
         this._saveChatUrl(userId, session.chatUrl);
@@ -1640,7 +1738,7 @@ class KimiBridge {
 
       // Handle newChat option (only for instant/thinking modes)
       if (options.newChat && !isAgentOrSwarm) {
-        await page.goto('https://kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
         session.chatUrl = page.url();
         this._saveChatUrl(userId, session.chatUrl);
@@ -1992,7 +2090,7 @@ class KimiBridge {
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
-        'https://kimi.com/',
+        'https://www.kimi.com/',
       ], { detached: true, stdio: 'ignore', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
       proc.unref();
 
@@ -2059,11 +2157,11 @@ class KimiBridge {
     // Not logged in — navigate to kimi.com and bring to front
     log.info(`User not logged in, navigating to Kimi login page`);
     try {
-      await page.goto('https://kimi.com/', { waitUntil: 'domcontentloaded', timeout: 0 });
+      await page.goto('https://www.kimi.com/', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(1500);
       await page.bringToFront().catch(() => {});
     } catch (e) {
-      log.warn(`Navigation to kimi.com failed: ${e.message}`);
+      log.warn(`Navigation to www.kimi.com failed: ${e.message}`);
       // Try again with a fresh page
       try {
         const session = this.userSessions.get(userId);
@@ -2087,7 +2185,7 @@ class KimiBridge {
 
     return {
       loggedIn: false,
-      message: 'Naveguei para kimi.com. Por favor, faça login manualmente no navegador que abriu.',
+      message: 'Naveguei para www.kimi.com. Por favor, faça login manualmente no navegador que abriu.',
       action: 'login_required',
       url: state2.url,
     };
@@ -2485,6 +2583,38 @@ class KimiBridge {
       });
     } catch (e) {
       log.warn(`DOM observer evaluate injection failed: ${e.message}`);
+    }
+  }
+
+  /**
+   * v3.9-fix: Inject master localStorage data into page.
+   * Kimi uses localStorage tokens (access_token, refresh_token) in addition
+   * to cookies. Without these, the page appears logged-out even with cookies.
+   */
+  async _injectMasterLocalStorage(page) {
+    try {
+      const masterPath = path.join(__dirname, 'cookies', 'kimi-master-localstorage.json');
+      if (!fs.existsSync(masterPath)) {
+        log.warn('No master localStorage file found');
+        return false;
+      }
+      const masterData = JSON.parse(fs.readFileSync(masterPath, 'utf8'));
+      const data = masterData.data || {};
+      const keys = Object.keys(data);
+      if (keys.length === 0) {
+        log.warn('Master localStorage file is empty');
+        return false;
+      }
+      await page.evaluate((items) => {
+        for (const [key, value] of Object.entries(items)) {
+          try { localStorage.setItem(key, value); } catch (e) {}
+        }
+      }, data);
+      log.info(`Injected ${keys.length} localStorage items into page`);
+      return true;
+    } catch (e) {
+      log.warn(`Failed to inject master localStorage: ${e.message}`);
+      return false;
     }
   }
 
@@ -3392,7 +3522,7 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        await page.goto('https://kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
         session.chatUrl = page.url();
         this._saveChatUrl(userId, session.chatUrl);
@@ -3652,7 +3782,15 @@ class KimiBridge {
             log.warn(`_extractResponse INCOMPLETE (${extracted.length} vs ${lastResponse.length}, ratio=${ratio.toFixed(2)}) — using lastResponse to avoid cutting off actions`);
           }
         } else if (extracted) {
-          log.warn(`_extractResponse very short (${extracted.length}), using lastResponse`);
+          // v3.9-fix: If lastResponse is empty but extracted has content (even short),
+          // use extracted. This fixes cases where Kimi responds with a short JSON
+          // like {"response": "ok"} that DOM polling never captures.
+          if (lastResponse.length === 0) {
+            finalResponse = extracted.trim();
+            log.info(`_extractResponse short but lastResponse empty — using extracted (${extracted.length} chars)`);
+          } else {
+            log.warn(`_extractResponse very short (${extracted.length}), using lastResponse`);
+          }
         }
       } catch (e) {
         log.warn(`_extractResponse failed: ${e.message}, using lastResponse as fallback`);
@@ -3797,8 +3935,8 @@ class KimiBridge {
       page = await ctx.newPage();
 
       // Navigate to Kimi
-      log.info('[anonymousConsult] Navigating to kimi.com...');
-      await page.goto('https://kimi.com', { waitUntil: 'domcontentloaded', timeout: 0 });
+      log.info('[anonymousConsult] Navigating to www.kimi.com...');
+      await page.goto('https://www.kimi.com', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2000);
 
       // Dismiss cookie/terms modals if present
