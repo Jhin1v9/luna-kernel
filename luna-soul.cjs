@@ -1894,6 +1894,23 @@ class LunaSoul extends EventEmitter {
       timestamp: new Date().toISOString(),
     });
 
+    // ── SLASH COMMANDS — executados localmente, sem enviar à Kimi ──
+    const trimmedInput = input.trim();
+    if (trimmedInput === '/debug' || trimmedInput.startsWith('/debug ')) {
+      const args = trimmedInput.slice(7).trim();
+      const params = {};
+      if (args) {
+        const parts = args.split(/\s+/);
+        if (parts[0]) params.process = parts[0];
+        if (parts[1] && !isNaN(parts[1])) params.lines = parseInt(parts[1]);
+      }
+      this.emit('progress', { type: 'thinking', message: 'Abrindo terminal de debug...', sessionId });
+      const result = lunaTools.openDebugTerminal(params);
+      this.emit('progress', { type: 'action_start', tool: 'openDebugTerminal', params, sessionId });
+      this.emit('progress', { type: 'action_end', tool: 'openDebugTerminal', result, sessionId });
+      return { success: true, mode: 'CHAT', response: result.message || JSON.stringify(result), sessionId };
+    }
+
     // Emit thinking event
     this.emit('progress', { type: 'thinking', message: '🧠 Analisando...', sessionId });
 
@@ -1951,6 +1968,26 @@ class LunaSoul extends EventEmitter {
       content: input,
       timestamp: new Date().toISOString(),
     });
+
+    // ── SLASH COMMANDS — executados localmente, sem enviar à Kimi ──
+    const trimmedInput = input.trim();
+    if (trimmedInput === '/debug' || trimmedInput.startsWith('/debug ')) {
+      const args = trimmedInput.slice(7).trim();
+      const params = {};
+      if (args) {
+        const parts = args.split(/\s+/);
+        if (parts[0]) params.process = parts[0];
+        if (parts[1] && !isNaN(parts[1])) params.lines = parseInt(parts[1]);
+      }
+      yield { type: 'thinking_start', sessionId };
+      yield { type: 'thinking_delta', text: 'Abrindo terminal de debug...', fullThinking: 'Abrindo terminal de debug...', sessionId };
+      const result = lunaTools.openDebugTerminal(params);
+      yield { type: 'action_start', tool: 'openDebugTerminal', params, sessionId };
+      yield { type: 'action_end', tool: 'openDebugTerminal', result, sessionId };
+      yield { type: 'response_done', response: result.message || JSON.stringify(result), thinking: '', sessionId };
+      yield { type: 'done', result: { success: true, mode: 'CHAT', response: result.message || JSON.stringify(result), sessionId }, sessionId };
+      return;
+    }
 
     // ── SMART COMPACTION ──
     // If context is too large, auto-compact before sending to Kimi.
@@ -3060,6 +3097,7 @@ FERRAMENTAS LUNA: readFile, writeFile, replaceInFile, executeShell, executeScrip
               case 'clipboardWrite': return lunaTools.clipboardWrite(p.text || p.content);
               case 'readMediaFile': return lunaTools.readMediaFile(p.path || p.filePath);
               case 'getCurrentDirectory': return lunaTools.getCurrentDirectory();
+              case 'openDebugTerminal': return lunaTools.openDebugTerminal(p);
               case 'think': return lunaTools.think(p.thought || p.reasoning || p.text);
               case 'dashboardCreateTask': return lunaTools.dashboardCreateTask(p);
               case 'dashboardListTasks': return lunaTools.dashboardListTasks(p);

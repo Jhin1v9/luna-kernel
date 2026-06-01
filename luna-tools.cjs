@@ -838,6 +838,58 @@ function think(thought) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 12. DEBUG TOOLS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function openDebugTerminal(params = {}) {
+  const { process: targetProcess = 'luna-server', lines = 50, follow = true } = params;
+  const { spawn } = require('child_process');
+  const os = require('os');
+
+  // Detect available terminal emulator
+  const terminals = [
+    { cmd: 'gnome-terminal', args: (command) => ['--', 'bash', '-c', command] },
+    { cmd: 'konsole', args: (command) => ['-e', 'bash', '-c', command] },
+    { cmd: 'xfce4-terminal', args: (command) => ['-e', 'bash', '-c', command] },
+    { cmd: 'xterm', args: (command) => ['-e', 'bash', '-c', command] },
+    { cmd: 'terminator', args: (command) => ['-e', 'bash', '-c', command] },
+    { cmd: 'alacritty', args: (command) => ['-e', 'bash', '-c', command] },
+    { cmd: 'kitty', args: (command) => ['bash', '-c', command] },
+  ];
+
+  let detected = null;
+  for (const term of terminals) {
+    try {
+      execSync(`which ${term.cmd}`, { stdio: 'ignore' });
+      detected = term;
+      break;
+    } catch {
+      continue;
+    }
+  }
+
+  if (!detected) {
+    return { success: false, error: 'Nenhum terminal gráfico encontrado. Instale gnome-terminal, konsole, xterm, etc.' };
+  }
+
+  const followFlag = follow ? '--lines 100 --timestamp' : `--lines ${lines}`;
+  const command = `echo "🚀 Luna Debug Terminal — ${targetProcess}" && echo "========================================" && pm2 logs ${targetProcess} ${followFlag}; echo; echo "[Pressione ENTER para fechar]"; read`;
+
+  const child = spawn(detected.cmd, detected.args(command), {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+
+  return ok({
+    terminal: detected.cmd,
+    target: targetProcess,
+    message: `✅ Terminal de debug aberto: ${detected.cmd}\n📋 Processo: ${targetProcess}\n💡 Comando: pm2 logs ${targetProcess} ${followFlag}\n🖥️  PID: ${child.pid}`,
+    pid: child.pid,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 11. DASHBOARD TOOLS (API REST localhost:3456)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1794,6 +1846,8 @@ module.exports = {
   dashboardCreateReviewVote,
   // System
   getCurrentDirectory,
+  // Debug
+  openDebugTerminal,
   // Project Validation
   validateProject: (projectPath) => {
     const { validateProject } = require('./luna-code-validator.cjs');
