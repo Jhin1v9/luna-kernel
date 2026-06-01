@@ -290,6 +290,11 @@ class ResponseStreamParser extends EventEmitter {
       // Validate braces are balanced before emitting
       if (isBalancedBraces(trimmed)) {
         const parsed = safeJsonParse(trimmed);
+        // v4.1: Support {"response":...} as chat response format
+        if (parsed && parsed.response !== undefined && !parsed.tool && !parsed.action && !parsed.type) {
+          this._emitResponseDelta(parsed.response, true);
+          return;
+        }
         if (parsed && (parsed.tool || parsed.action || parsed.type)) {
           this._emitAction(parsed, "codeblock");
           return;

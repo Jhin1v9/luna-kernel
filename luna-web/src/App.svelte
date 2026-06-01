@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS } from './stores.js';
+  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState } from './stores.js';
 
   // Update CSS theme variables when mode changes
   $: {
@@ -26,10 +26,14 @@
   import StatusBar from './components/StatusBar.svelte';
   import ParticleBackground from './components/ParticleBackground.svelte';
   import WelcomeScreen from './components/WelcomeScreen.svelte';
+  import LunaStage from './components/LunaStage.svelte';
 
   let configOpen = false;
   let mobileSidebarOpen = false;
   let authChecked = false;
+
+  // Quando não há sessão ativa, Luna vai dormir 💤
+  $: if (!$currentSessionId) mascotState.set('sleep');
 
   async function handleNewSession() {
     const res = await sessionAction('create', null, 'Nova Sessão');
@@ -52,12 +56,29 @@
   }
 
   async function handleSaveConfig(cfg) {
+    // v5.0-fix: send env and systemPrompt separately as backend expects
+    const env = {};
+    const systemPrompt = cfg.SYSTEM_PROMPT;
+    for (const [key, value] of Object.entries(cfg)) {
+      if (key === 'SYSTEM_PROMPT') continue;
+      if (value !== undefined && value !== '') env[key] = value;
+    }
     await fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg)
+      body: JSON.stringify({ env, systemPrompt })
     });
     lunaConfig.set(cfg);
+  }
+
+  async function handleRestartLuna() {
+    try {
+      const res = await fetch('/api/system/restart', { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || 'Reiniciando...');
+    } catch (e) {
+      alert('Erro ao reiniciar: ' + e.message);
+    }
   }
 
   onMount(async () => {
@@ -100,52 +121,58 @@
 
 {#if $user}
   <ParticleBackground />
-  <div class="app-container">
-    <Sidebar
-      sessions={$sessions}
-      currentId={$currentSessionId}
-      onSelect={(id) => {
-        const sess = $sessions.find(s => s.id === id);
-        if (sess?.mode) currentMode.set(sess.mode);
-        currentSessionId.set(id);
-      }}
-      onNew={handleNewSession}
-      onRename={handleRename}
-      onDelete={handleDelete}
+  <div class="app-layout">
+    <div class="app-body">
+      <Sidebar
+        sessions={$sessions}
+        currentId={$currentSessionId}
+        onSelect={(id) => {
+          const sess = $sessions.find(s => s.id === id);
+          if (sess?.mode) currentMode.set(sess.mode);
+          currentSessionId.set(id);
+        }}
+        onNew={handleNewSession}
+        onRename={handleRename}
+        onDelete={handleDelete}
+        onOpenConfig={() => configOpen = true}
+        bind:mobileOpen={mobileSidebarOpen}
+      />
+
+      <main class="main-content">
+        {#if $currentSessionId}
+          <ChatArea
+            sessionId={$currentSessionId}
+          />
+        {:else}
+          <WelcomeScreen
+            sessions={$sessions}
+            onNewSession={handleNewSession}
+            onSelectSession={(id) => {
+              const sess = $sessions.find(s => s.id === id);
+              if (sess?.mode) currentMode.set(sess.mode);
+              currentSessionId.set(id);
+            }}
+          />
+        {/if}
+      </main>
+
+      <ConfigDrawer
+        open={configOpen}
+        config={$lunaConfig}
+        onSave={handleSaveConfig}
+        onClose={() => configOpen = false}
+        onRestart={handleRestartLuna}
+      />
+    </div>
+
+    <StatusBar
+      status={$connectionStatus}
       onOpenConfig={() => configOpen = true}
-      bind:mobileOpen={mobileSidebarOpen}
     />
 
-    <main class="main-content">
-      {#if $currentSessionId}
-        <ChatArea
-          sessionId={$currentSessionId}
-        />
-      {:else}
-        <WelcomeScreen
-          sessions={$sessions}
-          onNewSession={handleNewSession}
-          onSelectSession={(id) => {
-            const sess = $sessions.find(s => s.id === id);
-            if (sess?.mode) currentMode.set(sess.mode);
-            currentSessionId.set(id);
-          }}
-        />
-      {/if}
-    </main>
-
-    <ConfigDrawer
-      open={configOpen}
-      config={$lunaConfig}
-      onSave={handleSaveConfig}
-      onClose={() => configOpen = false}
-    />
+    <!-- 🏠 CASA DA LUNA — Footer Stage -->
+    <LunaStage />
   </div>
-
-  <StatusBar
-    status={$connectionStatus}
-    onOpenConfig={() => configOpen = true}
-  />
 {:else if authChecked}
   <LoginPage />
 {:else}
@@ -157,11 +184,18 @@
 {/if}
 
 <style>
-  .app-container {
+  .app-layout {
     display: flex;
+    flex-direction: column;
     height: 100vh;
     height: 100dvh;
     background: transparent;
+    overflow: hidden;
+  }
+  .app-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
   }
   .main-content {
@@ -201,7 +235,7 @@
     50% { opacity: 1; transform: scale(1.1); }
   }
   @media (max-width: 768px) {
-    .app-container {
+    .app-body {
       flex-direction: column;
     }
   }

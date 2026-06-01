@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte';
   import { planModeState, voiceState, voiceAudioData } from '../stores.js';
-  import { Search, FileSearch, Shield, Eye, Mic, MicOff } from 'lucide-svelte';
+  import { Search, FileSearch, Shield, Eye, Mic, MicOff, RotateCcw, Power, PowerOff, Activity, HeartPulse, FileText } from 'lucide-svelte';
   import { voiceService } from '../lib/voiceService.js';
 
   export let onSend = () => {};
@@ -22,17 +22,10 @@
   let micRipple = 0;
   let micRaf = null;
 
-  // Slash commands
-  const COMMANDS = [
-    { cmd: '/plan', desc: 'Modo Detetive — planejar antes de executar', icon: 'search', lucide: Search },
-    { cmd: '/tarefa', desc: 'Criar tarefa', icon: '📋' },
-    { cmd: '/lead', desc: 'Criar lead', icon: '👤' },
-    { cmd: '/caixa', desc: 'Consultar caixa', icon: '💰' },
-    { cmd: '/modo', desc: 'Trocar modo (instant/thinking/agent/swarm)', icon: '⚡' },
-    { cmd: '/limpar', desc: 'Limpar chat', icon: '🗑️' },
-    { cmd: '/nova', desc: 'Nova sessão', icon: '✨' },
-    { cmd: '/ajuda', desc: 'Mostrar ajuda', icon: '❓' },
-  ];
+  import { SLASH_COMMANDS } from '../lib/slashCommands.js';
+
+  // Slash commands — expanded registry from luna-tools.cjs
+  const COMMANDS = SLASH_COMMANDS;
 
   let showCommands = false;
   let filteredCommands = [];
@@ -388,7 +381,9 @@
 
 <style>
   .chat-input-container {
-    background: var(--luna-surface);
+    background: rgba(18, 18, 31, 0.75);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-top: 1px solid var(--luna-border);
     padding: 12px 16px;
     flex-shrink: 0;

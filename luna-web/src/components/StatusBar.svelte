@@ -59,6 +59,8 @@
     color: var(--luna-text-secondary);
     font-family: 'JetBrains Mono', monospace;
     flex-shrink: 0;
+    position: relative;
+    z-index: 30;
   }
   .status-left {
     display: flex;

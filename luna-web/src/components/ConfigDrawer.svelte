@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { downloadFile, parseEnvFile, generateEnvFile } from '../utils.js';
+  import { testConnection, downloadSelfHost, systemStatus } from '../api.js';
 
   export let open = false;
   export let config = {};
@@ -14,16 +15,25 @@
   let importInputEl;
   let showPasswordToken = false;
   let showPasswordApi = false;
+  let showPasswordJwt = false;
   let charCount = 0;
   let lineCount = 0;
   let showTutorial = false;
   let confirmDialog = null;
   let originalSystemPrompt = '';
 
+  // Real-time status
+  let serviceStatus = {};
+  let statusLoading = false;
+  let testResults = {};
+  let testLoading = {};
+  let downloadLoading = false;
+
   $: if (open) {
     localConfig = { ...config };
     updateCounts();
     document.body.style.overflow = 'hidden';
+    fetchServiceStatus();
   } else {
     if (typeof document !== 'undefined') document.body.style.overflow = '';
   }
@@ -94,6 +104,42 @@
     };
   }
 
+  async function fetchServiceStatus() {
+    statusLoading = true;
+    try {
+      const data = await systemStatus();
+      if (data.ok) serviceStatus = data.status || {};
+    } catch (e) {
+      console.error('Status fetch error:', e);
+    }
+    statusLoading = false;
+  }
+
+  async function handleTestConnection(type) {
+    testLoading[type] = true;
+    testResults[type] = null;
+    try {
+      let token;
+      if (type === 'telegram') token = localConfig.TELEGRAM_BOT_TOKEN;
+      if (type === 'dashboard') token = localConfig.INTERNAL_API_TOKEN;
+      const result = await testConnection(type, token);
+      testResults[type] = result;
+    } catch (e) {
+      testResults[type] = { ok: false, error: e.message };
+    }
+    testLoading[type] = false;
+  }
+
+  async function handleDownloadSelfHost() {
+    downloadLoading = true;
+    try {
+      await downloadSelfHost();
+    } catch (e) {
+      alert('Erro ao baixar: ' + e.message);
+    }
+    downloadLoading = false;
+  }
+
   function handleKeydown(e) {
     if (e.key === 'Escape') {
       if (confirmDialog) {
@@ -122,8 +168,15 @@
     { key: 'kimi', icon: '🧠', title: 'Kimi Bridge' },
     { key: 'advanced', icon: '⚡', title: 'Avancado' },
     { key: 'prompt', icon: '🧬', title: 'System Prompt' },
+    { key: 'selfhost', icon: '💻', title: 'Self-Host Local' },
     { key: 'tutorial', icon: '📖', title: 'Tutorial' },
   ];
+
+  function statusBadge(status) {
+    if (status === 'running' || status === 'connected') return { text: 'Online', class: 'badge-online' };
+    if (status === 'stopped' || status === 'disconnected') return { text: 'Offline', class: 'badge-offline' };
+    return { text: 'Desconhecido', class: 'badge-unknown' };
+  }
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
@@ -171,21 +224,9 @@
               <label class="field-label" for="telegram-token">TELEGRAM_BOT_TOKEN</label>
               <div class="password-field">
                 {#if showPasswordToken}
-                  <input
-                    id="telegram-token"
-                    type="text"
-                    class="field-input"
-                    bind:value={localConfig.TELEGRAM_BOT_TOKEN}
-                    placeholder="Seu token do BotFather"
-                  />
+                  <input id="telegram-token" type="text" class="field-input" bind:value={localConfig.TELEGRAM_BOT_TOKEN} placeholder="Seu token do BotFather" />
                 {:else}
-                  <input
-                    id="telegram-token"
-                    type="password"
-                    class="field-input"
-                    bind:value={localConfig.TELEGRAM_BOT_TOKEN}
-                    placeholder="Seu token do BotFather"
-                  />
+                  <input id="telegram-token" type="password" class="field-input" bind:value={localConfig.TELEGRAM_BOT_TOKEN} placeholder="Seu token do BotFather" />
                 {/if}
                 <button class="toggle-password" on:click={() => showPasswordToken = !showPasswordToken}>
                   {showPasswordToken ? '🙈' : '👁'}
@@ -193,10 +234,26 @@
               </div>
             </div>
             <div class="field-row">
-              <span class="status-indicator online">●</span>
-              <span class="status-text">Conectado</span>
+              {#if statusLoading}
+                <span class="status-indicator">⏳</span>
+                <span class="status-text">Verificando...</span>
+              {:else}
+                {@const badge = statusBadge(serviceStatus['telegram-bot']?.status)}
+                <span class="status-badge {badge.class}">{badge.text}</span>
+                {#if serviceStatus['telegram-bot']?.pid}
+                  <span class="status-detail">PID {serviceStatus['telegram-bot'].pid} · {serviceStatus['telegram-bot'].uptime}</span>
+                {/if}
+              {/if}
               <a href="https://t.me/BotFather" target="_blank" rel="noopener" class="field-link">@BotFather</a>
             </div>
+            <button class="test-btn" on:click={() => handleTestConnection('telegram')} disabled={testLoading['telegram']}>
+              {testLoading['telegram'] ? '⏳ Testando...' : '🔌 Testar Conexao'}
+            </button>
+            {#if testResults['telegram']}
+              <div class="test-result {testResults['telegram'].ok ? 'test-success' : 'test-error'}">
+                {testResults['telegram'].ok ? '✅ ' + (testResults['telegram'].bot?.username || 'Conectado') : '❌ ' + (testResults['telegram'].error || 'Falha')}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -215,30 +272,35 @@
               <label class="field-label" for="api-token">INTERNAL_API_TOKEN</label>
               <div class="password-field">
                 {#if showPasswordApi}
-                  <input
-                    id="api-token"
-                    type="text"
-                    class="field-input"
-                    bind:value={localConfig.INTERNAL_API_TOKEN}
-                    placeholder="Token da API interna"
-                  />
+                  <input id="api-token" type="text" class="field-input" bind:value={localConfig.INTERNAL_API_TOKEN} placeholder="Token da API interna" />
                 {:else}
-                  <input
-                    id="api-token"
-                    type="password"
-                    class="field-input"
-                    bind:value={localConfig.INTERNAL_API_TOKEN}
-                    placeholder="Token da API interna"
-                  />
+                  <input id="api-token" type="password" class="field-input" bind:value={localConfig.INTERNAL_API_TOKEN} placeholder="Token da API interna" />
                 {/if}
                 <button class="toggle-password" on:click={() => showPasswordApi = !showPasswordApi}>
                   {showPasswordApi ? '🙈' : '👁'}
                 </button>
               </div>
             </div>
-            <button class="test-btn" on:click={() => alert('Teste de conexao ainda nao implementado')}>
-              Testar Conexao
+            <div class="field-row">
+              {#if statusLoading}
+                <span class="status-indicator">⏳</span>
+                <span class="status-text">Verificando...</span>
+              {:else}
+                {@const badge = statusBadge(serviceStatus['nexo-dashboard']?.status)}
+                <span class="status-badge {badge.class}">{badge.text}</span>
+                {#if serviceStatus['nexo-dashboard']?.port}
+                  <span class="status-detail">Porta {serviceStatus['nexo-dashboard'].port}</span>
+                {/if}
+              {/if}
+            </div>
+            <button class="test-btn" on:click={() => handleTestConnection('dashboard')} disabled={testLoading['dashboard']}>
+              {testLoading['dashboard'] ? '⏳ Testando...' : '🔌 Testar Token'}
             </button>
+            {#if testResults['dashboard']}
+              <div class="test-result {testResults['dashboard'].ok ? 'test-success' : 'test-error'}">
+                {testResults['dashboard'].ok ? '✅ Token válido' : '❌ ' + (testResults['dashboard'].error || 'Token inválido')}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -269,6 +331,26 @@
               <label class="field-label" for="kimi-cooldown">KIMI_COOLDOWN_MS (ms)</label>
               <input id="kimi-cooldown" type="number" class="field-input" bind:value={localConfig.KIMI_COOLDOWN_MS} placeholder="5000" />
             </div>
+            <div class="field-row">
+              {#if statusLoading}
+                <span class="status-indicator">⏳</span>
+                <span class="status-text">Verificando...</span>
+              {:else}
+                {@const badge = statusBadge(serviceStatus['kimi-bridge']?.status)}
+                <span class="status-badge {badge.class}">{badge.text}</span>
+                {#if serviceStatus['kimi-bridge']?.pages !== undefined}
+                  <span class="status-detail">{serviceStatus['kimi-bridge'].pages} paginas · {serviceStatus['kimi-bridge'].contexts} contexts</span>
+                {/if}
+              {/if}
+            </div>
+            <button class="test-btn" on:click={() => handleTestConnection('kimi')} disabled={testLoading['kimi']}>
+              {testLoading['kimi'] ? '⏳ Testando...' : '🔌 Testar Chrome'}
+            </button>
+            {#if testResults['kimi']}
+              <div class="test-result {testResults['kimi'].ok ? 'test-success' : 'test-error'}">
+                {testResults['kimi'].ok ? '✅ Chrome conectado (' + (testResults['kimi'].pages || 0) + ' paginas)' : '❌ ' + (testResults['kimi'].error || 'Desconectado')}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -290,6 +372,23 @@
             <div class="field">
               <label class="field-label" for="chrome-path">LUNA_CHROME_PATH</label>
               <input id="chrome-path" type="text" class="field-input" bind:value={localConfig.LUNA_CHROME_PATH} placeholder="/usr/bin/google-chrome" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="jwt-secret">JWT_SECRET</label>
+              <div class="password-field">
+                {#if showPasswordJwt}
+                  <input id="jwt-secret" type="text" class="field-input" bind:value={localConfig.JWT_SECRET} placeholder="Chave secreta para tokens JWT" />
+                {:else}
+                  <input id="jwt-secret" type="password" class="field-input" bind:value={localConfig.JWT_SECRET} placeholder="Chave secreta para tokens JWT" />
+                {/if}
+                <button class="toggle-password" on:click={() => showPasswordJwt = !showPasswordJwt}>
+                  {showPasswordJwt ? '🙈' : '👁'}
+                </button>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="config-port">LUNA_CONFIG_PORT</label>
+              <input id="config-port" type="number" class="field-input" bind:value={localConfig.LUNA_CONFIG_PORT} placeholder="3458" />
             </div>
             <div class="field checkbox-field">
               <label class="checkbox-label">
@@ -315,19 +414,43 @@
               <span>⚠️</span>
               <span>Alterar o system prompt pode afetar o comportamento da Luna.</span>
             </div>
-            <textarea
-              class="prompt-textarea"
-              rows="20"
-              value={systemPromptValue}
-              on:input={handleSystemPromptChange}
-              placeholder="Digite o system prompt aqui..."
-            />
+            <textarea class="prompt-textarea" rows="20" value={systemPromptValue} on:input={handleSystemPromptChange} placeholder="Digite o system prompt aqui..." />
             <div class="prompt-stats">
               {charCount.toLocaleString()} caracteres, {lineCount} linhas
             </div>
             <div class="prompt-actions">
               <button class="btn-secondary" on:click={handleResetPrompt}>🔄 Reset Original</button>
               <button class="btn-primary" on:click={handleSave}>💾 Salvar</button>
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <!-- 💻 Self-Host -->
+      <div class="section">
+        <button class="section-header" on:click={() => setSection('selfhost')}>
+          <span>💻 Self-Host Local</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'selfhost'}>
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        {#if activeSection === 'selfhost'}
+          <div class="section-body" transition:slideExpand>
+            <div class="selfhost-info">
+              <p>🚀 Baixe a Luna completa para rodar no seu PC.</p>
+              <p>O pacote inclui:</p>
+              <ul>
+                <li>✅ Script de instalacao automatico</li>
+                <li>✅ .env pre-configurado com seus tokens</li>
+                <li>✅ Web interface + Telegram bot</li>
+                <li>✅ Kimi Bridge com Chrome</li>
+              </ul>
+            </div>
+            <button class="btn-primary btn-wide" on:click={handleDownloadSelfHost} disabled={downloadLoading}>
+              {downloadLoading ? '⏳ Gerando pacote...' : '📥 Baixar Luna Local'}
+            </button>
+            <div class="selfhost-note">
+              Requer: Node.js v20+, Git, Google Chrome
             </div>
           </div>
         {/if}
@@ -363,6 +486,10 @@
               <h4>Modos de resposta</h4>
               <p><strong>⭐ thinking</strong> — A Luna pensa antes de responder (mais preciso)</p>
               <p><strong>⚡ instant</strong> — Resposta rapida sem thinking</p>
+              <p><strong>🤖 agent</strong> — Modo agente com multi-step actions</p>
+              <p><strong>🐝 swarm</strong> — Multi-agente coordenado</p>
+              <h4>Self-Host</h4>
+              <p>Va em <strong>Configuracoes → Self-Host Local</strong> para baixar a Luna completa e rodar no seu PC.</p>
             </div>
           </div>
         {/if}
@@ -371,13 +498,7 @@
 
     <!-- Footer Actions -->
     <div class="drawer-footer">
-      <input
-        type="file"
-        accept=".env"
-        bind:this={importInputEl}
-        on:change={processImport}
-        class="hidden-input"
-      />
+      <input type="file" accept=".env" bind:this={importInputEl} on:change={processImport} class="hidden-input" />
       <div class="footer-row">
         <button class="btn-secondary btn-small" on:click={handleExportEnv}>📥 Exportar .env</button>
         <button class="btn-secondary btn-small" on:click={handleImportEnv}>📤 Importar .env</button>
@@ -422,7 +543,7 @@
     top: 0;
     right: 0;
     bottom: 0;
-    width: 420px;
+    width: 460px;
     max-width: 100vw;
     background: var(--luna-elevated);
     border-left: 1px solid var(--luna-border);
@@ -556,15 +677,37 @@
     gap: 8px;
     font-size: 13px;
     padding: 4px 0;
+    flex-wrap: wrap;
   }
   .status-indicator {
     font-size: 14px;
   }
-  .status-indicator.online {
-    color: #22c55e;
-  }
   .status-text {
     color: var(--luna-text-secondary);
+  }
+  .status-badge {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge-online {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+  }
+  .badge-offline {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+  }
+  .badge-unknown {
+    background: rgba(156, 163, 175, 0.15);
+    color: #9ca3af;
+  }
+  .status-detail {
+    color: var(--luna-text-secondary);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
   }
   .field-link {
     color: var(--luna-primary);
@@ -602,10 +745,32 @@
     cursor: pointer;
     transition: all 0.15s;
     font-weight: 500;
+    margin-top: 8px;
   }
   .test-btn:hover {
     background: var(--luna-elevated);
     border-color: rgba(255,255,255,0.1);
+  }
+  .test-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .test-result {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .test-success {
+    background: rgba(34, 197, 94, 0.1);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.2);
+  }
+  .test-error {
+    background: rgba(239, 68, 68, 0.1);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.2);
   }
   .prompt-warning {
     display: flex;
@@ -647,6 +812,28 @@
     display: flex;
     gap: 8px;
     margin-top: 12px;
+  }
+  .selfhost-info {
+    font-size: 13px;
+    color: var(--luna-text);
+    line-height: 1.7;
+    margin-bottom: 16px;
+  }
+  .selfhost-info p {
+    margin: 0 0 8px;
+  }
+  .selfhost-info ul {
+    margin: 0 0 12px 20px;
+    color: var(--luna-text-secondary);
+  }
+  .selfhost-info li {
+    margin-bottom: 4px;
+  }
+  .selfhost-note {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--luna-text-secondary);
+    text-align: center;
   }
   .tutorial-content {
     font-size: 13px;
@@ -705,6 +892,14 @@
   }
   .btn-primary:hover {
     background: var(--luna-primary-hover);
+  }
+  .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-primary.btn-wide {
+    width: 100%;
+    text-align: center;
   }
   .btn-secondary {
     padding: 10px 16px;

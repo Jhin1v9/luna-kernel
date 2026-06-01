@@ -1,8 +1,9 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { formatTime } from '../utils.js';
-  import { user } from '../stores.js';
+  import { user, mascotState } from '../stores.js';
   import { logout } from '../api.js';
+  import LunaMascot from './LunaMascot.svelte';
 
   export let sessions = [];
   export let currentId = null;
@@ -87,13 +88,10 @@
 {/if}
 
 <aside class="sidebar" class:mobile-open={mobileOpen} bind:this={sidebarEl}>
-  <!-- Logo -->
+  <!-- Logo minimal no topo — so o texto -->
   <div class="logo-area">
-    <div class="logo">
-      <span class="logo-icon">🌙</span>
-      <span class="logo-text">Luna Web</span>
-      <span class="logo-version">v5.0</span>
-    </div>
+    <span class="logo-text-top">Luna Web</span>
+    <span class="logo-version-top">v5.0</span>
   </div>
 
   <!-- New Session Button -->
@@ -192,10 +190,29 @@
       </svg>
       Configuracoes
     </button>
-    <div class="footer-status">
-      <span class="footer-dot"></span>
-      <span>Conectado</span>
-      <span class="footer-version">v5.0</span>
+    <!-- Luna Mascot + Moon Phase -->
+    <div class="footer-luna-row">
+      <div class="footer-mascot-avatar">
+        <LunaMascot size={55} floating={false} />
+      </div>
+      <div class="footer-mascot-info">
+        <span class="footer-mascot-name">Luna</span>
+        <span class="footer-mascot-status" data-state={$mascotState}>
+          {$mascotState === 'sleep' ? '💤 Dormindo' :
+           $mascotState === 'thinking' ? '🤔 Pensando' :
+           $mascotState === 'working' ? '⚡ Trabalhando' :
+           $mascotState === 'error' ? '❌ Erro' : '🟢 Online'}
+        </span>
+      </div>
+      <div class="footer-moon-wrapper">
+        <span class="moon-phase" aria-label="Fases da Lua"></span>
+        <span class="moon-atmosphere"></span>
+        <span class="moon-stars">
+          <span class="star s1"></span>
+          <span class="star s2"></span>
+          <span class="star s3"></span>
+        </span>
+      </div>
     </div>
   </div>
 </aside>
@@ -228,28 +245,26 @@
     border-bottom: 1px solid var(--luna-border);
     flex-shrink: 0;
   }
-  .logo {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+
+  .logo-area {
+    padding: 16px;
+    border-bottom: 1px solid var(--luna-border);
+    flex-shrink: 0;
+    position: relative;
   }
-  .logo-icon { font-size: 20px; }
-  .logo-text {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--luna-text);
-    letter-spacing: -0.3px;
+  .logo-area::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 30% 50%, rgba(255,215,0,0.06) 0%, transparent 60%);
+    animation: logoGlow 4s ease-in-out infinite;
+    pointer-events: none;
   }
-  .logo-version {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--luna-text-secondary);
-    background: var(--luna-elevated);
-    padding: 2px 6px;
-    border-radius: 4px;
-    margin-left: auto;
-    font-family: 'JetBrains Mono', monospace;
+  @keyframes logoGlow {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
   }
+
   .new-session-btn {
     margin: 12px 16px;
     padding: 10px 16px;
@@ -424,25 +439,153 @@
     background: rgba(255,255,255,0.04);
     color: var(--luna-text);
   }
-  .footer-status {
+  .footer-luna-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.04);
+    margin-top: 4px;
+    position: relative;
+  }
+  .footer-mascot-avatar {
+    flex-shrink: 0;
+    position: relative;
+  }
+  .footer-mascot-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+  .footer-mascot-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--luna-text);
+    letter-spacing: -0.2px;
+  }
+  .footer-mascot-status {
     font-size: 11px;
-    color: var(--luna-text-secondary);
+    font-weight: 500;
     font-family: 'JetBrains Mono', monospace;
-    padding: 0 12px;
+    transition: color 0.4s ease;
   }
-  .footer-dot {
-    width: 6px;
-    height: 6px;
+  .footer-mascot-status[data-state="idle"] { color: #4ECDC4; }
+  .footer-mascot-status[data-state="thinking"] { color: #FFD93D; }
+  .footer-mascot-status[data-state="working"] { color: #9B59B6; }
+  .footer-mascot-status[data-state="sleep"] { color: #5D8AA8; }
+  .footer-mascot-status[data-state="error"] { color: #E74C3C; }
+
+  /* Lua animada no footer */
+  .footer-moon-wrapper {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .footer-moon-wrapper .moon-phase {
+    width: 22px;
+    height: 22px;
     border-radius: 50%;
-    background: #22c55e;
+    background:
+      radial-gradient(circle at 30% 30%, rgba(255,235,128,0.9) 0%, transparent 25%),
+      radial-gradient(circle at 70% 55%, rgba(200,170,0,0.4) 0%, transparent 20%),
+      radial-gradient(circle at 45% 75%, rgba(200,170,0,0.3) 0%, transparent 18%),
+      radial-gradient(circle at 60% 25%, rgba(200,170,0,0.25) 0%, transparent 15%),
+      #ffd700;
+    position: relative;
+    z-index: 2;
+    animation: moonPhase 60s linear infinite;
+    will-change: box-shadow;
   }
-  .footer-version {
-    margin-left: auto;
-    opacity: 0.6;
+  .footer-moon-wrapper .moon-phase::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    animation: moonPhaseShadow 60s linear infinite;
+    will-change: box-shadow;
   }
+  .footer-moon-wrapper .moon-atmosphere {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    z-index: 1;
+    animation: moonAtmosphere 60s linear infinite;
+    pointer-events: none;
+  }
+  .footer-moon-wrapper .moon-stars {
+    position: absolute;
+    inset: -8px;
+    z-index: 0;
+    pointer-events: none;
+  }
+  .footer-moon-wrapper .moon-stars .star {
+    position: absolute;
+    border-radius: 50%;
+    background: #fff;
+  }
+  .footer-moon-wrapper .moon-stars .star.s1 {
+    width: 2px; height: 2px;
+    top: 2px; right: 4px;
+    animation: starTwinkle 2.1s ease-in-out infinite;
+  }
+  .footer-moon-wrapper .moon-stars .star.s2 {
+    width: 1.5px; height: 1.5px;
+    bottom: 3px; left: 2px;
+    animation: starTwinkle 2.8s ease-in-out infinite 0.7s;
+  }
+  .footer-moon-wrapper .moon-stars .star.s3 {
+    width: 1px; height: 1px;
+    top: 8px; left: -2px;
+    animation: starTwinkle 3.5s ease-in-out infinite 1.4s;
+  }
+
+  @keyframes moonPhaseShadow {
+    0%   { box-shadow: inset -22px 0 0 0 rgba(15,15,26,0.85); }
+    12%  { box-shadow: inset -11px 0 0 0 rgba(15,15,26,0.85); }
+    25%  { box-shadow: inset 0px 0 0 0 rgba(15,15,26,0.85); }
+    38%  { box-shadow: inset 11px 0 0 0 rgba(15,15,26,0.85); }
+    50%  { box-shadow: inset 22px 0 0 0 rgba(15,15,26,0.85); }
+    62%  { box-shadow: inset 11px 0 0 0 rgba(15,15,26,0.85); }
+    75%  { box-shadow: inset 0px 0 0 0 rgba(15,15,26,0.85); }
+    88%  { box-shadow: inset -11px 0 0 0 rgba(15,15,26,0.85); }
+    100% { box-shadow: inset -22px 0 0 0 rgba(15,15,26,0.85); }
+  }
+  @keyframes moonPhase {
+    0%   { box-shadow: 0 0 6px rgba(255,215,0,0.35), 0 0 12px rgba(255,215,0,0.1); }
+    12%  { box-shadow: 0 0 8px rgba(255,215,0,0.5), 0 0 16px rgba(255,215,0,0.15); }
+    25%  { box-shadow: 0 0 4px rgba(255,215,0,0.15), 0 0 8px rgba(255,215,0,0.05); }
+    38%  { box-shadow: 0 0 8px rgba(255,215,0,0.5), 0 0 16px rgba(255,215,0,0.15); }
+    50%  { box-shadow: 0 0 6px rgba(255,215,0,0.35), 0 0 12px rgba(255,215,0,0.1); }
+    62%  { box-shadow: 0 0 8px rgba(255,215,0,0.5), 0 0 16px rgba(255,215,0,0.15); }
+    75%  { box-shadow: 0 0 4px rgba(255,215,0,0.15), 0 0 8px rgba(255,215,0,0.05); }
+    88%  { box-shadow: 0 0 8px rgba(255,215,0,0.5), 0 0 16px rgba(255,215,0,0.15); }
+    100% { box-shadow: 0 0 6px rgba(255,215,0,0.35), 0 0 12px rgba(255,215,0,0.1); }
+  }
+  @keyframes moonAtmosphere {
+    0%   { box-shadow: 0 0 0 0 rgba(255,215,0,0); }
+    12%  { box-shadow: 0 0 8px 2px rgba(255,215,0,0.15); }
+    25%  { box-shadow: 0 0 0 0 rgba(255,215,0,0); }
+    38%  { box-shadow: 0 0 8px 2px rgba(255,215,0,0.15); }
+    50%  { box-shadow: 0 0 0 0 rgba(255,215,0,0); }
+    62%  { box-shadow: 0 0 8px 2px rgba(255,215,0,0.15); }
+    75%  { box-shadow: 0 0 0 0 rgba(255,215,0,0); }
+    88%  { box-shadow: 0 0 8px 2px rgba(255,215,0,0.15); }
+    100% { box-shadow: 0 0 0 0 rgba(255,215,0,0); }
+  }
+  @keyframes starTwinkle {
+    0%, 100% { opacity: 0.2; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); box-shadow: 0 0 4px rgba(255,255,255,0.5); }
+  }
+
   .user-bar {
     display: flex;
     align-items: center;

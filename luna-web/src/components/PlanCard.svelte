@@ -113,7 +113,9 @@
 
 <style>
   .plan-card {
-    background: linear-gradient(135deg, #1a1a2e 0%, #0f0f1a 100%);
+    background: linear-gradient(135deg, rgba(26, 26, 46, 0.75) 0%, rgba(15, 15, 26, 0.75) 100%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     border: 1px solid rgba(201,162,39,0.25);
     border-radius: 16px;
     padding: 20px;

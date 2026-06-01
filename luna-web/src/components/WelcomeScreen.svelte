@@ -1,6 +1,9 @@
 <script>
   import { currentMode, MODE_COLORS } from '../stores.js';
   import { onMount } from 'svelte';
+  import ToolsPanel from './ToolsPanel.svelte';
+  import LeadDashboardModal from './LeadDashboardModal.svelte';
+  import TaskDashboardModal from './TaskDashboardModal.svelte';
 
   export let sessions = [];
   export let onNewSession = () => {};
@@ -12,11 +15,20 @@
   ).slice(0, 6);
 
   let mounted = false;
+  let showLeadsModal = false;
+  let showTasksModal = false;
+
   onMount(() => { mounted = true; });
 </script>
 
 <div class="welcome-screen" style="--accent: {theme.primary}; --glow: {theme.glow}">
   <div class="welcome-content" class:mounted>
+    <!-- Tools Panel -->
+    <ToolsPanel 
+      onLeads={() => showLeadsModal = true}
+      onTasks={() => showTasksModal = true}
+    />
+
     <!-- Logo -->
     <div class="welcome-logo">
       <span class="logo-moon">🌙</span>
@@ -80,16 +92,32 @@
   </div>
 </div>
 
+<!-- Modals - rendered outside welcome-content to avoid transform context breaking position:fixed -->
+<LeadDashboardModal open={showLeadsModal} onClose={() => showLeadsModal = false} />
+<TaskDashboardModal open={showTasksModal} onClose={() => showTasksModal = false} />
+
 <style>
   .welcome-screen {
     flex: 1;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     padding: 24px;
     overflow-y: auto;
     background: transparent;
     position: relative;
+  }
+  .welcome-screen::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at 50% 30%, rgba(168,85,247,0.08) 0%, transparent 60%);
+    animation: welcomeGlow 8s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes welcomeGlow {
+    0%, 100% { opacity: 0.5; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.1); }
   }
 
   .welcome-content {
@@ -100,12 +128,10 @@
     align-items: center;
     gap: 28px;
     opacity: 0;
-    transform: translateY(16px);
-    transition: opacity 0.6s ease, transform 0.6s ease;
+    transition: opacity 0.6s ease;
   }
   .welcome-content.mounted {
     opacity: 1;
-    transform: translateY(0);
   }
 
   .welcome-logo {
@@ -258,6 +284,13 @@
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 10px;
     transition: all 0.15s ease;
+    animation: tipFloat 6s ease-in-out infinite;
+  }
+  .tip-card:nth-child(2) { animation-delay: -2s; }
+  .tip-card:nth-child(3) { animation-delay: -4s; }
+  @keyframes tipFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
   }
   .tip-card:hover {
     border-color: var(--accent);

@@ -38,7 +38,25 @@
 
 html, body, #app {
   height: 100%;
+  min-height: 100dvh;
   width: 100%;
+  overflow: hidden;
+}
+
+html {
+  background-color: #0a0a1a;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Prevent zoom on inputs in iOS Safari */
+input, textarea, select {
+  font-size: 16px;
+}
+
+/* Prevent double-tap zoom */
+button, a, [role="button"] {
+  touch-action: manipulation;
 }
 
 body {
@@ -58,23 +76,15 @@ input:focus, textarea:focus, button:focus, select:focus {
   border-color: var(--luna-accent) !important;
 }
 
-/* Scrollbar */
+/* Scrollbar — invisible but functional (premium feel) */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
+  width: 0px;
+  height: 0px;
   background: transparent;
 }
-
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 /* Selection */

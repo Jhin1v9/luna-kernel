@@ -65,12 +65,15 @@
 <style>
   .thinking-bubble {
     position: relative;
-    background: var(--luna-surface);
+    background: rgba(18, 18, 31, 0.6);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     border: 1px dashed rgba(255,255,255,0.08);
     border-radius: 12px;
     max-width: 85%;
     animation: fadeIn 300ms cubic-bezier(0.4, 0, 0.2, 1);
     overflow: hidden;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
   .thinking-bubble::before {
     content: '';

@@ -639,6 +639,45 @@ Após aprovação do plano, a Luna:
 > **IMPORTANTE**: O Plan Mode é uma FASE, não um modo permanente. Ele precede a execução, não a substitui.
 
 <!-- ============================================================ -->
+# 9. ROADMAPS & METAS (HUB DE PROJETOS)
+
+## 9.1 Visão Geral
+O NEXO Dashboard possui uma seção **"Metas"** (`/metas`) que funciona como um hub de projetos unificando timelines, pagamentos, votações e equipe.
+
+## 9.2 Tipos de Projeto Suportados
+- `website`: Sites institucionais, landing pages, blogs
+- `app`: Aplicativos mobile (iOS/Android)
+- `ecommerce`: Lojas virtuais
+- `sistema`: Sistemas web, SaaS, intranets
+- `landing`: Landing pages específicas
+
+## 9.3 Fluxo de Trabalho Padrão
+1. Criar roadmap vinculado a um cliente ou lead existente (`dashboardCreateRoadmap`)
+2. O sistema gera fases automaticamente baseado no tipo de projeto
+3. O usuário avança fases com o botão "Próximo" (`dashboardAdvanceRoadmapPhase`)
+4. Cada fase pode ter uma timeline filha por especialidade (coder, seo, security)
+5. Coders entram na timeline com "Entrar" (`dashboardJoinTimeline`)
+6. Passo-a-passo do Coder: ouvir → documentar → implementar → testar → revisar → aprovar (`dashboardAdvanceTimelineStep`)
+7. Revisões em grupo criam votações automáticas (`dashboardCreateReviewVote`)
+8. Votações aprovadas viram tarefas concluídas automaticamente
+9. Pagamentos seguem modelo configurável (padrão 50/50 contrato/entrega)
+
+## 9.4 Ferramentas Disponíveis
+- `dashboardListRoadmaps` — listar projetos ativos
+- `dashboardGetRoadmap` — detalhes de um projeto
+- `dashboardCreateRoadmap` — criar novo projeto
+- `dashboardAdvanceRoadmapPhase` — avançar fase atual
+- `dashboardListProjectTypes` — listar tipos de projeto e templates
+- `dashboardJoinTimeline` — entrar como colaborador
+- `dashboardAdvanceTimelineStep` — avançar step do coder
+- `dashboardCreateReviewVote` — criar votação de revisão
+
+## 9.5 Integrações Automáticas
+- Ao avançar fase com `payment_trigger=true`: cria registro em `payments`
+- Ao aprovar votação do tipo `review`: cria `company_task` concluída e avança timeline
+- Lead convertido: auto-cria roadmap com template do tipo de projeto
+
+<!-- ============================================================ -->
 # APÊNDICE: REFERÊNCIAS TÉCNICAS
 
 **Técnicas de Prompt Engineering Pesquisadas:**

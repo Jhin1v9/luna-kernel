@@ -41,7 +41,9 @@
     {/if}
   </div>
   {#if timestamp}
-    <div class="message-time">{formatTime(timestamp)}</div>
+    <div class="message-time" title={new Date(timestamp).toLocaleString('pt-BR')}>
+      {formatTime(timestamp)}
+    </div>
   {/if}
 </div>
 
@@ -55,7 +57,9 @@
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
   .user-message {
-    background: var(--luna-elevated);
+    background: rgba(26, 26, 46, 0.65);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-radius: 12px;
     border-top-right-radius: 4px;
     padding: 12px 16px;
@@ -64,6 +68,8 @@
     line-height: 1.6;
     word-wrap: break-word;
     min-width: 0;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
   .message-content {
     white-space: pre-wrap;

@@ -90,9 +90,9 @@
             <PlanCard
               plan={message.content}
               status={message.status || 'awaiting_approval'}
-              onApprove={onApprovePlan}
-              onReject={onRejectPlan}
-              onRevise={onRevisePlan}
+              on:approve={onApprovePlan}
+              on:reject={onRejectPlan}
+              on:revise={(e) => onRevisePlan(e.detail)}
             />
           {:else if message.type === 'system' || message.type === 'error'}
             <div class="system-banner" class:error={message.type === 'error'}>
@@ -117,6 +117,9 @@
       Novas mensagens
     </button>
   {/if}
+
+  <!-- Bottom spacer to prevent last message being hidden behind input -->
+  <div class="messages-bottom-spacer" aria-hidden="true"></div>
 </div>
 
 <style>
@@ -135,6 +138,11 @@
     max-width: 900px;
     margin: 0 auto;
     width: 100%;
+    padding-bottom: 8px;
+  }
+  .messages-bottom-spacer {
+    height: 12px;
+    flex-shrink: 0;
   }
   @media (max-width: 640px) {
     .messages-list {
@@ -191,7 +199,9 @@
   }
   .suggestion {
     padding: 12px 16px;
-    background: var(--luna-surface);
+    background: rgba(18, 18, 31, 0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     border: 1px solid var(--luna-border);
     border-radius: 10px;
     color: var(--luna-text);
@@ -201,7 +211,7 @@
     transition: all 0.2s;
   }
   .suggestion:hover {
-    background: var(--luna-elevated);
+    background: rgba(26, 26, 46, 0.75);
     border-color: rgba(255,255,255,0.1);
     transform: translateY(-1px);
   }
@@ -244,13 +254,14 @@
   }
   .new-messages-badge {
     position: absolute;
-    bottom: 16px;
-    left: 50%;
-    transform: translateX(-50%);
+    bottom: 80px;
+    right: 24px;
     padding: 8px 16px;
-    background: var(--luna-accent);
+    background: rgba(233, 69, 96, 0.9);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     color: white;
-    border: none;
+    border: 1px solid rgba(255,255,255,0.1);
     border-radius: 20px;
     font-size: 13px;
     font-weight: 500;
@@ -258,12 +269,14 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    box-shadow: 0 4px 16px rgba(233, 69, 96, 0.4);
+    box-shadow: 0 4px 24px rgba(233, 69, 96, 0.3), 0 0 0 1px rgba(255,255,255,0.05);
     animation: fadeIn 200ms ease;
     z-index: 10;
-    transition: transform 0.15s;
+    transition: all 0.2s ease;
   }
   .new-messages-badge:hover {
-    transform: translateX(-50%) translateY(-2px);
+    transform: translateY(-2px);
+    background: rgba(233, 69, 96, 1);
+    box-shadow: 0 6px 28px rgba(233, 69, 96, 0.4), 0 0 0 1px rgba(255,255,255,0.08);
   }
 </style>

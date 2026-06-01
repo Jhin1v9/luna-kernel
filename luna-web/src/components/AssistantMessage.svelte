@@ -76,10 +76,26 @@
 
   function renderMarkdown(text) {
     if (!text) return '';
-    // v3.9-fix: Extract JSON response if present (Kimi returns {"response": "..."})
+    // v4.1-fix: Extract JSON response if present (Kimi returns {"response": "..."})
+    // Handles formats like: JSON\nCopy\n```json\n{...}\n```
     const trimmed = text.trim();
-    const codeBlockMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)```\s*$/);
-    const jsonText = codeBlockMatch ? codeBlockMatch[1].trim() : trimmed;
+    // Try code block first
+    let codeBlockMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)```\s*$/m);
+    // Also try extracting from "JSON\nCopy\n```...```" pattern
+    if (!codeBlockMatch) {
+      codeBlockMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+    }
+    // Try extracting raw JSON object from anywhere in the text
+    let jsonText = codeBlockMatch ? codeBlockMatch[1].trim() : trimmed;
+    
+    // If jsonText doesn't start with {, try to find a JSON object in the text
+    if (!jsonText.startsWith('{')) {
+      const jsonObjMatch = trimmed.match(/\{[\s\S]*"response"\s*:[\s\S]*\}/);
+      if (jsonObjMatch) {
+        jsonText = jsonObjMatch[0];
+      }
+    }
+    
     if (jsonText.startsWith('{')) {
       try {
         const parsed = JSON.parse(jsonText);
@@ -175,7 +191,9 @@
     </div>
     <div class="message-footer">
       {#if timestamp}
-        <span class="message-time">{formatTime(timestamp)}</span>
+        <span class="message-time" title={new Date(timestamp).toLocaleString('pt-BR')}>
+          {formatTime(timestamp)}
+        </span>
       {/if}
       <div class="feedback-buttons">
         <button class="feedback-btn" on:click={() => onFeedback('up')} title="Boa resposta" aria-label="Gostei">
@@ -205,13 +223,16 @@
   }
   .assistant-message {
     position: relative;
-    background: var(--luna-surface);
+    background: rgba(18, 18, 31, 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-radius: 12px;
     border-top-left-radius: 4px;
     padding: 14px 18px;
     color: var(--luna-text);
     font-size: 15px;
     line-height: 1.6;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
   .assistant-message::before {
     content: '';

@@ -1560,6 +1560,86 @@ async function dashboardDeleteVotingSession(params) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// DASHBOARD TOOLS — ROADMAPS & METAS
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function dashboardListRoadmaps(params) {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.client_id) query.set('client_id', params.client_id);
+  if (params.project_type) query.set('project_type', params.project_type);
+  const data = await dashboardApi(`/roadmaps?${query.toString()}`);
+  const roadmaps = data.roadmaps || [];
+  const lines = roadmaps.map(r => {
+    const phases = r.phases || [];
+    const progress = phases.length ? Math.round((phases.filter(p => p.status === 'completed').length / phases.length) * 100) : 0;
+    return `- [${r.status}] ${r.title} (${r.project_type}, ${progress}%) — €${r.total_value || 0}`;
+  }).join('\n');
+  return ok({ stdout: `🎯 ${roadmaps.length} projeto(s):\n${lines || 'Nenhum projeto encontrado.'}` });
+}
+
+async function dashboardGetRoadmap(params) {
+  const data = await dashboardApi(`/roadmaps/${params.id}`);
+  const phases = data.phases || [];
+  const current = data.current_phase_index || 0;
+  const phaseLines = phases.map((p, i) => `  ${i + 1}. [${p.status}] ${p.title}${i === current ? ' ← ATUAL' : ''}`).join('\n');
+  return ok({ stdout: `🎯 ${data.title} [${data.status}]\nTipo: ${data.project_type}\nValor: €${data.total_value || 0}\nFase atual: ${current + 1}/${phases.length}\n\nFases:\n${phaseLines}` });
+}
+
+async function dashboardCreateRoadmap(params) {
+  const body = {
+    title: params.title,
+    client_id: params.clientId || params.client_id || null,
+    lead_id: params.leadId || params.lead_id || null,
+    project_type: params.projectType || params.project_type || 'website',
+    total_value: params.totalValue || params.total_value || 0,
+    currency: params.currency || 'EUR',
+    start_date: params.startDate || params.start_date || new Date().toISOString().split('T')[0],
+    github_repo: params.githubRepo || params.github_repo || null,
+    subdomain: params.subdomain || null,
+    onboarding_answers: params.onboardingAnswers || params.onboarding_answers || {}
+  };
+  const data = await dashboardApi('/roadmaps', 'POST', body);
+  return ok({ stdout: `🎯 Projeto criado: "${data.title}" (ID: ${data.id}, tipo: ${data.project_type})` });
+}
+
+async function dashboardAdvanceRoadmapPhase(params) {
+  const data = await dashboardApi(`/roadmaps/${params.id}/advance`, 'POST', { reason: params.reason || 'Avanço de fase' });
+  return ok({ stdout: `➡️ Fase avançada! Agora na fase ${data.current_phase_index + 1}` });
+}
+
+async function dashboardListProjectTypes(params) {
+  const data = await dashboardApi('/roadmaps/project-templates');
+  const templates = data.templates || [];
+  const lines = templates.map(t => `- ${t.project_type}: ${t.name} (${(t.default_phases || []).length} fases padrão)`).join('\n');
+  return ok({ stdout: `📋 ${templates.length} tipo(s) de projeto:\n${lines || 'Nenhum template encontrado.'}` });
+}
+
+async function dashboardJoinTimeline(params) {
+  const data = await dashboardApi(`/roadmaps/timelines/${params.timelineId}/join`, 'POST');
+  return ok({ stdout: `👤 Entrou na timeline. Colaboradores ativos: ${data.collaborators?.length || 0}` });
+}
+
+async function dashboardAdvanceTimelineStep(params) {
+  const data = await dashboardApi(`/roadmaps/timelines/${params.timelineId}/advance-step`, 'POST');
+  return ok({ stdout: `➡️ Step avançado! Timeline: ${data.timeline?.title || params.timelineId}` });
+}
+
+async function dashboardCreateReviewVote(params) {
+  const body = {
+    title: params.title || `Revisão: ${params.phaseTitle || 'Fase'}`,
+    description: params.description || '',
+    type: 'review',
+    quorumRequired: params.quorumRequired || 3,
+    linkedTimelineId: params.linkedTimelineId || null,
+    linkedRoadmapId: params.linkedRoadmapId || null,
+    reviewMeetingAt: params.reviewMeetingAt || null
+  };
+  const data = await dashboardApi('/voting/sessions', 'POST', body);
+  return ok({ stdout: `🗳️ Votação de revisão criada: "${data.title}" (ID: ${data.id})` });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1703,6 +1783,15 @@ module.exports = {
   dashboardCreateVotingSession,
   dashboardVoteInSession,
   dashboardDeleteVotingSession,
+  // Dashboard — Roadmaps & Metas
+  dashboardListRoadmaps,
+  dashboardGetRoadmap,
+  dashboardCreateRoadmap,
+  dashboardAdvanceRoadmapPhase,
+  dashboardListProjectTypes,
+  dashboardJoinTimeline,
+  dashboardAdvanceTimelineStep,
+  dashboardCreateReviewVote,
   // System
   getCurrentDirectory,
   // Project Validation

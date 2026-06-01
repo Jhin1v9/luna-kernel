@@ -150,10 +150,13 @@
     height: 56px;
     min-height: 56px;
     padding: 0 16px;
-    background: var(--luna-surface);
+    background: rgba(18, 18, 31, 0.75);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--luna-border);
     flex-shrink: 0;
-    z-index: 10;
+    z-index: 50;
+    position: relative;
   }
   .header-left {
     display: flex;

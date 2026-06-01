@@ -3617,7 +3617,7 @@ class KimiBridge {
       // FALLBACK: if text is stable for 15s without buttons, force completion to avoid infinite loops.
       let textStableSince = 0;
       let lastTextChangeTime = Date.now();
-      const FORCE_COMPLETE_NO_BUTTONS_MS = 45000; // 45s fallback — Kimi sandbox tools (python/web) can take 30-60s
+      const FORCE_COMPLETE_NO_BUTTONS_MS = 300000; // [DONO ABSOLUTO] 5min fallback — tarefas longas podem demorar
       const FORCE_COMPLETE_ABSOLUTE_MS = 999999999;  // [DONO ABSOLUTO] sem limite
       const streamStartTime = Date.now();
 
@@ -3637,13 +3637,19 @@ class KimiBridge {
           if (delta) {
             yield { type: 'thinking_delta', text: delta, fullThinking: poll.thinking };
           } else if (poll.thinking.length < lastThinking.length) {
-            yield { type: 'thinking_delta', text: poll.thinking, fullThinking: poll.thinking };
+            // v4.2-fix: DOM shrunk — don't repeat, just update tracking
+            log.info(`[stream] thinking DOM shrank ${lastThinking.length} -> ${poll.thinking.length}, skipping repeat`);
           }
           lastThinking = poll.thinking;
         }
 
+        // v4.0-fix: Enhanced response detection with detailed logging
+        const hasResponse = poll.response && poll.response !== lastResponse;
+        const hasThinking = poll.thinking && poll.thinking !== lastThinking;
+        log.info(`[stream] poll: thinking=${poll.thinking?.length||0} response=${poll.response?.length||0} source=${poll.source||'unknown'} canSteer=${poll.canSteer} isGen=${poll.isGenerating}`);
+
         // Yield response deltas
-        if (poll.response && poll.response !== lastResponse) {
+        if (hasResponse) {
           const delta = poll.response.slice(lastResponse.length);
           log.info(`[stream] response changed: last=${lastResponse.length} -> new=${poll.response.length}, delta=${delta?.length || 0}`);
           if (delta) {
@@ -3652,8 +3658,22 @@ class KimiBridge {
             yield { type: 'response_delta', text: poll.response };
           }
           lastResponse = poll.response;
-        } else {
-          log.info(`[stream] response unchanged: len=${poll.response?.length || 0}`);
+        }
+
+        // v4.0-fix: Fallback — if no response but thinking contains JSON response format, treat thinking as response
+        // This happens when Kimi returns content as reasoning instead of content
+        if (!hasResponse && hasThinking && poll.thinking.length > 10) {
+          const thinkingPreview = poll.thinking.slice(0, 100);
+          const looksLikeResponse = poll.thinking.includes('{"response"') || poll.thinking.includes('[[response]]') || !poll.thinking.includes('vou pensar');
+          log.info(`[stream] response empty, thinking=${poll.thinking.length}, looksLikeResponse=${looksLikeResponse}, preview=${thinkingPreview}`);
+          if (looksLikeResponse && lastResponse !== poll.thinking) {
+            const delta = poll.thinking.slice(lastResponse.length);
+            if (delta) {
+              log.info(`[stream] FALLBACK: yielding thinking as response_delta, delta=${delta.length}`);
+              yield { type: 'response_delta', text: delta };
+              lastResponse = poll.thinking;
+            }
+          }
         }
 
         // Yield steer availability
@@ -3762,38 +3782,28 @@ class KimiBridge {
         await new Promise(r => setTimeout(r, pollInterval));
       }
 
-      // Final extraction for clean response
-      // CRITICAL FIX: _extractResponse can return INCOMPLETE text (e.g., 234 chars vs 3674).
-      // This happens when React Fiber extracts a partially rendered message.
-      // We must NOT prefer extracted if it's significantly shorter than lastResponse,
-      // or we risk cutting off [[action]] tags and failing to execute tools.
-      let finalResponse = lastResponse;
+      // v4.2-fix: Final extraction — ALWAYS try _extractResponse FIRST
+      // before any fallback. This prevents thinking text from poisoning lastResponse.
+      let finalResponse = '';
       try {
         const extracted = await this._extractResponse(page);
-        if (extracted && extracted.trim().length > 50) {
-          const ratio = lastResponse.length > 0 ? extracted.length / lastResponse.length : 1;
-          // Only trust extracted if it's at least 50% of lastResponse OR lastResponse is tiny
-          if (ratio >= 0.5 || lastResponse.length < 200) {
-            finalResponse = extracted.trim();
-            if (ratio < 0.7) {
-              log.info(`_extractResponse clean text (${extracted.length} vs ${lastResponse.length}, ratio=${ratio.toFixed(2)})`);
-            }
-          } else {
-            log.warn(`_extractResponse INCOMPLETE (${extracted.length} vs ${lastResponse.length}, ratio=${ratio.toFixed(2)}) — using lastResponse to avoid cutting off actions`);
-          }
-        } else if (extracted) {
-          // v3.9-fix: If lastResponse is empty but extracted has content (even short),
-          // use extracted. This fixes cases where Kimi responds with a short JSON
-          // like {"response": "ok"} that DOM polling never captures.
-          if (lastResponse.length === 0) {
-            finalResponse = extracted.trim();
-            log.info(`_extractResponse short but lastResponse empty — using extracted (${extracted.length} chars)`);
-          } else {
-            log.warn(`_extractResponse very short (${extracted.length}), using lastResponse`);
-          }
+        if (extracted && extracted.trim().length > 0) {
+          finalResponse = extracted.trim();
+          log.info(`[sendMessageStream] _extractResponse success: ${finalResponse.length} chars`);
         }
       } catch (e) {
-        log.warn(`_extractResponse failed: ${e.message}, using lastResponse as fallback`);
+        log.warn(`_extractResponse failed: ${e.message}`);
+      }
+
+      // Only fallback to lastResponse/lastThinking if _extractResponse returned empty
+      if (!finalResponse) {
+        if (lastResponse && lastResponse.length > 0) {
+          finalResponse = lastResponse;
+          log.info(`[sendMessageStream] using lastResponse (${finalResponse.length} chars)`);
+        } else if (lastThinking && lastThinking.length > 10) {
+          finalResponse = lastThinking;
+          log.info(`[sendMessageStream] lastResponse empty, using lastThinking as response (${finalResponse.length} chars)`);
+        }
       }
       
       const hasActionTag = finalResponse.includes('[[action]]');
@@ -3995,7 +4005,7 @@ class KimiBridge {
 
       // Stream until complete
       let lastTextChangeTime = Date.now();
-      const FORCE_COMPLETE_NO_BUTTONS_MS = 45000; // 45s fallback — Kimi sandbox tools can take 30-60s
+      const FORCE_COMPLETE_NO_BUTTONS_MS = 300000; // [DONO ABSOLUTO] 5min fallback — tarefas longas podem demorar
       const FORCE_COMPLETE_ABSOLUTE_MS = 999999999;  // [DONO ABSOLUTO] sem limite
       const streamStartTime = Date.now();
 

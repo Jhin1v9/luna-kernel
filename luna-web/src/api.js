@@ -11,6 +11,7 @@ export class SSEManager {
     this.gracefulClose = false;
     this.statusDebounceTimer = null;
     this.lastStatus = null;
+    this.currentSessionId = null;
   }
 
   _setStatus(status) {
@@ -27,8 +28,20 @@ export class SSEManager {
   }
 
   connect(sessionId, onEvent) {
+    // v4.1-fix: Prevent duplicate connections for same session
+    if (this.eventSource && this.currentSessionId === sessionId) {
+      console.log(`[SSE] Already connected to session ${sessionId}, skipping`);
+      return;
+    }
+    // Disconnect any existing connection before creating new one
+    if (this.eventSource) {
+      console.log('[SSE] Disconnecting existing connection before reconnect');
+      this.disconnect();
+    }
+    this.currentSessionId = sessionId;
     this.isIntentionallyClosed = false;
     this.gracefulClose = false;
+    this.reconnectAttempts = 0;
     const url = `/api/chat/stream?sessionId=${encodeURIComponent(sessionId)}`;
     this.eventSource = new EventSource(url);
 
@@ -73,6 +86,7 @@ export class SSEManager {
   disconnect() {
     this.isIntentionallyClosed = true;
     this.gracefulClose = true;
+    this.currentSessionId = null;
     if (this.statusDebounceTimer) clearTimeout(this.statusDebounceTimer);
     if (this.eventSource) {
       this.eventSource.close();
@@ -136,6 +150,31 @@ export async function sessionAction(action, sessionId, title) {
     body: JSON.stringify(body)
   });
   return res.json();
+}
+
+export async function exportSessions(sessionIds, format = 'json') {
+  const res = await fetch('/api/chat/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionIds, format })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erro ao exportar' }));
+    throw new Error(err.error || 'Erro ao exportar');
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match ? match[1] : `luna-export.${format === 'markdown' ? 'md' : format}`;
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+  return { ok: true };
 }
 
 export async function fetchSessionMessages(sessionId) {
@@ -233,4 +272,74 @@ export async function submitRevision(sessionId, revisedPlan) {
     body: JSON.stringify({ sessionId, revisedPlan })
   });
   return res.json();
+}
+
+// ============================================================
+// System Commands API
+// ============================================================
+
+export async function systemRestart() {
+  const res = await fetch('/api/system/restart', { method: 'POST' });
+  return res.json();
+}
+
+export async function systemStop() {
+  const res = await fetch('/api/system/stop', { method: 'POST' });
+  return res.json();
+}
+
+export async function systemStart() {
+  const res = await fetch('/api/system/start', { method: 'POST' });
+  return res.json();
+}
+
+export async function systemStatus() {
+  const res = await fetch('/api/system/status');
+  return res.json();
+}
+
+export async function systemHealth() {
+  const res = await fetch('/api/system/health');
+  return res.json();
+}
+
+export async function systemLogs(lines = 50) {
+  const res = await fetch(`/api/system/logs?lines=${lines}`);
+  return res.json();
+}
+
+export async function testConnection(type, token) {
+  const res = await fetch('/api/system/test-connection', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, token }),
+  });
+  return res.json();
+}
+
+export async function executeLunaTool(tool, params = {}) {
+  const res = await fetch('/api/luna/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool, params }),
+  });
+  return res.json();
+}
+
+export async function downloadSelfHost() {
+  const res = await fetch('/api/selfhost/download', { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
+    throw new Error(err.error || 'Erro ao baixar pacote');
+  }
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'luna-selfhost.zip';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+  return { ok: true };
 }

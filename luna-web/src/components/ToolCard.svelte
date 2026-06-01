@@ -28,6 +28,7 @@
   $: color = TOOL_COLORS[tool] || '#6b7280';
   $: icon = TOOL_ICONS[tool] || '🔧';
   $: displayPath = params?.path || params?.file || params?.dir || params?.url || '';
+  $: displayCommand = params?.command || params?.code || params?.script || '';
   $: truncatedOutput = result?.output
     ? result.output.length > 500
       ? result.output.slice(0, 500) + '...'
@@ -85,6 +86,13 @@
     <code class="tool-path">{displayPath}</code>
   {/if}
 
+  {#if displayCommand}
+    <details class="tool-command-details">
+      <summary>Ver comando</summary>
+      <pre class="command-content">{displayCommand}</pre>
+    </details>
+  {/if}
+
   {#if status === 'running'}
     <div class="progress-bar">
       <div class="progress-fill"></div>
@@ -105,7 +113,9 @@
 
 <style>
   .tool-card {
-    background: var(--luna-surface);
+    background: rgba(18, 18, 31, 0.65);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     border: 1px solid rgba(255,255,255,0.06);
     border-left: 3px solid var(--tool-color);
     border-radius: 10px;
@@ -291,5 +301,32 @@
     font-size: 12px;
     font-family: 'JetBrains Mono', monospace;
     word-break: break-word;
+  }
+  .tool-command-details {
+    margin: 6px 0;
+    font-size: 12px;
+  }
+  .tool-command-details summary {
+    cursor: pointer;
+    color: var(--luna-text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    user-select: none;
+  }
+  .tool-command-details summary:hover {
+    color: var(--luna-accent);
+  }
+  .command-content {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: rgba(0,0,0,0.25);
+    border-radius: 6px;
+    color: var(--luna-primary-hover);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
   }
 </style>

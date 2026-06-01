@@ -1,6 +1,8 @@
 import { writable, derived } from 'svelte/store';
 
 export const sessions = writable([]);
+export const selectedSessionIds = writable(new Set());
+export const selectionMode = writable(false);
 
 // Persistent session store with 30-min idle timeout
 function createPersistentSessionStore() {
@@ -60,6 +62,10 @@ export const MODE_COLORS = {
   agent:    { primary: '#f59e0b', glow: 'rgba(245,158,11,0.3)', border: 'rgba(245,158,11,0.15)', name: 'Agent' },
   swarm:    { primary: '#4ade80', glow: 'rgba(74,222,128,0.3)', border: 'rgba(74,222,128,0.15)', name: 'Swarm' },
 };
+
+// ── Mascote Luna ──
+export const mascotState = writable('sleep'); // sleep | idle | thinking | working
+export const mascotMessage = writable(null); // Mensagem contextual temporária
 
 export const PLAN_MODE_COLORS = {
   primary: '#c9a227',

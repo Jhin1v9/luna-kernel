@@ -2106,6 +2106,11 @@ class LunaSoul extends EventEmitter {
         yield { type: 'warning', message: '⚠️ Resposta não reconhecida, tratando como chat', sessionId };
         parsed = { mode: 'CHAT', response: fullResponse };
       }
+      // v4.0-fix: If parsed exists but response is empty, use fullResponse as fallback
+      // This happens when Kimi returns content as reasoning instead of content
+      if (parsed && !parsed.response && fullResponse) {
+        parsed.response = fullResponse;
+      }
 
       // v3.4: Auto-healing — detect incomplete responses and auto-continue
       if (isIncompleteResponse(fullResponse) && autoContinues < MAX_AUTO_CONTINUES) {
@@ -2125,9 +2130,19 @@ class LunaSoul extends EventEmitter {
         yield ev;
       }
 
-      // If Kimi said CHAT or DONE, we're finished — show the friendly response
-      // EXCEPT if we have DOM-extracted actions that need auto-continue
-      if ((parsed.mode === 'CHAT' || parsed.mode === 'DONE') && domActionResults.length === 0) {
+      // v4.0-fix: If Kimi said CHAT or DONE, we're finished.
+      // For thinking/instant mode (simple chat), ignore DOM actions to prevent infinite loops.
+      // For agent/swarm mode, DOM actions are fed back for multi-step execution.
+      const isSimpleChatMode = ['thinking', 'instant'].includes(mode);
+      if ((parsed.mode === 'CHAT' || parsed.mode === 'DONE') && (domActionResults.length === 0 || isSimpleChatMode)) {
+        // [DONO ABSOLUTO] Em modo agent/swarm, NUNCA parar — continuar até o contexto acabar
+        if (['agent', 'swarm'].includes(mode)) {
+          yield { type: 'done', result: { success: true, mode: parsed.mode, response: parsed.response, sessionId }, sessionId };
+          // Pergunta ao Kimi se há mais ações pendentes — continua indefinidamente
+          loopInput = '[CHECK] A resposta acima foi entregue ao usuário. Verifique se há mais ações pendentes para completar a tarefa original. Se houver, execute-as agora. Se não houver, confirme que tudo está concluído.';
+          loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+          continue; // Continua o loop — nunca para em agent/swarm
+        }
         yield { type: 'done', result: { success: true, mode: parsed.mode, response: parsed.response, sessionId }, sessionId };
         return;
       }
@@ -2168,8 +2183,11 @@ ${outputText}`;
         continue;
       }
 
-      // No output or unrecognized mode — break to avoid infinite loop
-      break;
+      // [DONO ABSOLUTO] Sem break — sempre continua até o contexto acabar ou dar erro
+      // Se não houve output, pede ao Kimi para verificar o estado e continuar
+      loopInput = '[CHECK] Nenhuma ação foi executada no último ciclo. Verifique se há algo pendente para fazer. Se a tarefa estiver completa, confirme. Se não, execute a próxima ação.';
+      loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+      continue;
     }
 
     if (safety >= MAX_LOOPS) {
@@ -2276,36 +2294,50 @@ ${outputText}`;
 
   /** Build the special system prompt for Plan Mode (read-only investigation) */
   _buildPlanModePrompt(userInput) {
-    return `[SYSTEM: MODO DETETIVE — INVESTIGAÇÃO READ-ONLY]
+    return `[SYSTEM: MODO DETETIVE]
 
-Você é Sherlock Holmes investigando um caso. Sua missão é analisar o problema, examinar o codebase, e escrever um plano detalhado de ação.
+Você é Sherlock Holmes. O cliente pediu: "${userInput}"
 
-REGRAS ABSOLUTAS:
-1. Você pode APENAS usar ferramentas READ-ONLY (ler arquivos, pesquisar, listar)
-2. É PROIBIDO modificar, criar ou excluir arquivos
-3. É PROIBIDO executar comandos no shell
-4. Ao final, você DEVE escrever um plano em markdown com:
-   - Resumo do problema
-   - Análise do codebase (arquivos relevantes)
-   - Passos de implementação numerados
-   - Arquivos que serão modificados
-   - Riscos e considerações
+Sua missão: INVESTIGAR o projeto antes de propor qualquer solução. Você tem acesso a um terminal Python seguro (ipython) para examinar arquivos.
 
-FERRAMENTAS PERMITIDAS (read-only):
-- readFile, glob, grep, searchFiles
-- viewDirectory, listFiles, getFileInfo
-- searchWeb, fetchURL
-- gitStatus, gitDiff, gitLog
-- dashboardListTasks, dashboardListLeads, dashboardGetFinanceSummary
-- think
+COMO FUNCIONA:
+1. Você escreve código Python em blocos ipython
+2. O sistema executa e retorna o resultado
+3. Você analisa e escreve mais código se necessário
+4. SÓ DEPOIS de investigar, você escreve o plano
 
-FERRAMENTAS PROIBIDAS:
-- writeFile, appendFile, replaceInFile, deleteFile
-- executeShell, executeScript
-- gitCommit, applyPatch
-- Qualquer dashboardCreate*/dashboardUpdate*/dashboardDelete*
+EXEMPLO — comece assim:
+\`\`\`python
+import os
+# Liste o diretório do projeto
+for root, dirs, files in os.walk('/home/jhin/NEXO_DASHBOARD_PRO'):
+    level = root.replace('/home/jhin/NEXO_DASHBOARD_PRO', '').count(os.sep)
+    indent = ' ' * 2 * level
+    print(f'{indent}{os.path.basename(root)}/')
+    subindent = ' ' * 2 * (level + 1)
+    for file in files[:5]:
+        print(f'{subindent}{file}')
+    if len(files) > 5:
+        print(f'{subindent}... e mais {len(files)-5} arquivos')
+    if level >= 2:
+        del dirs[:]
+\`\`\`
 
-FORMATO OBRIGATÓRIO DO PLANO:
+Depois do resultado, continue investigando:
+\`\`\`python
+# Leia arquivos relevantes
+with open('/home/jhin/NEXO_DASHBOARD_PRO/package.json') as f:
+    print(f.read())
+\`\`\`
+
+REGRAS:
+- Use APENAS leitura (open, os.listdir, glob, etc.)
+- NUNCA escreva, delete ou execute comandos de sistema (os.system, subprocess)
+- Se não souber o caminho exato, use glob ou os.walk para encontrar
+- SEMPRE investigue antes de propor soluções
+
+QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
+
 # Plano de Ação: [Título]
 
 ## Resumo Executivo
@@ -2314,28 +2346,19 @@ FORMATO OBRIGATÓRIO DO PLANO:
 ## Análise do Codebase
 - \`caminho/arquivo.ext\`: [relevância]
 
-## Dependências e Impacto
-[O que pode quebrar]
-
 ## Passos de Implementação
 1. **[Arquivo]**: [Ação específica]
 2. **[Arquivo]**: [Ação específica]
-...
 
 ## Riscos Identificados
 - [Risco e mitigação]
 
-## Critérios de Sucesso
-[Como verificar]
-
 ## Estimativa
 [X passos | Y arquivos | ~Z minutos]
 
-MENSAGEM DO USUÁRIO:
-${userInput}
+⚠️ IMPORTANTE: NÃO inclua no plano opções como "Aprovar", "Rejeitar", "Revisar" ou pedidos para o usuário escolher A/B/C. O sistema Luna já mostra botões de aprovação automaticamente. Foque apenas no conteúdo do plano.
 
-Responda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]].
-Se precisar investigar arquivos, use ferramentas read-only via code blocks JSON.`;
+➡️ COMECE INVESTIGANDO AGORA usando Python.`;
   }
 
   /** Stream-aware mode processor */
@@ -2830,6 +2853,7 @@ FERRAMENTAS LUNA: readFile, writeFile, replaceInFile, executeShell, executeScrip
         'dashboardListUsers', 'dashboardListGitHubRepos', 'dashboardListVercelProjects',
         'dashboardListBugReports', 'dashboardListEmails', 'dashboardListLinks',
         'think', 'getCurrentDirectory', 'clipboardRead', 'readMediaFile',
+        'ipython', 'python', 'code', 'executePython',
       ];
       const DASHBOARD_READ_ONLY_PATTERN = /^dashboard(List|Get)/;
       const isReadOnly = READ_ONLY_TOOLS.includes(tool) || DASHBOARD_READ_ONLY_PATTERN.test(tool);
@@ -3668,8 +3692,11 @@ FERRAMENTAS LUNA: readFile, writeFile, replaceInFile, executeShell, executeScrip
         includeDesktop: true,
       });
 
+      // [DONO ABSOLUTO] Nunca parar em DONE ou CHAT — continuar até o contexto acabar
       if (result.mode === 'DONE') {
-        return { success: true, message: result.response, sessionId };
+        taskDescription = '[CHECK] A tarefa parece concluída. Verifique se há mais alguma ação pendente. Se houver, execute. Se não, confirme novamente que está tudo pronto.';
+        await new Promise(r => setTimeout(r, 800));
+        continue;
       }
 
       if (result.mode === 'ACTION' && result.needsContinue) {
@@ -3680,8 +3707,10 @@ FERRAMENTAS LUNA: readFile, writeFile, replaceInFile, executeShell, executeScrip
       }
 
       if (result.mode === 'CHAT') {
-        // Chat response means task is done or needs user input
-        return { success: true, response: result.response, sessionId };
+        // [DONO ABSOLUTO] Chat não significa fim — continuar verificando
+        taskDescription = '[CHECK] Você respondeu em modo chat. Verifique se há mais ações pendentes para a tarefa atual. Se houver, execute-as agora.';
+        await new Promise(r => setTimeout(r, 800));
+        continue;
       }
 
       if (!result.success) {
