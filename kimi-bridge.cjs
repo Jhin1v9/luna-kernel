@@ -43,22 +43,31 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // ============================================================
-// CONFIG
+// CONFIG — v5.2: centralized with fallback to env vars
 // ============================================================
-const CDP_PORTS = [9222, 9223, 9224, 9225];
-const DEFAULT_TIMEOUT = parseInt(process.env.KIMI_TIMEOUT, 10) || 120000;
-const KIMI_MODE_URLS = {
+let config;
+try {
+  config = require('./config/luna-config');
+} catch (e) {
+  // Fallback if config module not available (e.g. standalone use)
+  config = null;
+}
+
+const CDP_PORTS = config?.KIMI?.cdpPorts || [9222, 9223, 9224, 9225];
+const DEFAULT_TIMEOUT = parseInt(process.env.KIMI_TIMEOUT, 10) || config?.TIMEOUTS?.kimi || 120000;
+const KIMI_MODE_URLS = config?.KIMI?.modeUrls || {
   instant: 'https://www.kimi.com/?chat_enter_method=new_chat',
   thinking: 'https://www.kimi.com/?chat_enter_method=new_chat',
   agent: 'https://www.kimi.com/agent',
   swarm: 'https://www.kimi.com/agent-swarm',
 };
-const MAX_CONCURRENT_PAGES = parseInt(process.env.KIMI_MAX_PAGES, 10) || 5;
-const IDLE_TIMEOUT_MS = parseInt(process.env.KIMI_IDLE_TIMEOUT, 10) || 10 * 60 * 1000;
-const COOLDOWN_MS = parseInt(process.env.KIMI_COOLDOWN_MS, 10) || 5000;
-const MAX_TEXT_TYPE_LENGTH = parseInt(process.env.KIMI_MAX_TYPE_LENGTH, 10) || 500;
-const LOG_MAX_SIZE_MB = parseInt(process.env.KIMI_LOG_MAX_MB, 10) || 10;
-const ARTIFACTS_DIR = path.join(__dirname, '..', 'ARTIFACTS');
+const MAX_CONCURRENT_PAGES = parseInt(process.env.KIMI_MAX_PAGES, 10) || config?.KIMI?.maxPages || 5;
+const IDLE_TIMEOUT_MS = parseInt(process.env.KIMI_IDLE_TIMEOUT, 10) || config?.TIMEOUTS?.kimiIdle || 10 * 60 * 1000;
+const KIMI_PERSISTENT_MODE = process.env.KIMI_PERSISTENT_MODE === 'true' || process.env.KIMI_PERSISTENT_MODE === '1' || config?.KIMI?.persistentMode || false;
+const COOLDOWN_MS = parseInt(process.env.KIMI_COOLDOWN_MS, 10) || config?.TIMEOUTS?.kimiCooldown || 5000;
+const MAX_TEXT_TYPE_LENGTH = parseInt(process.env.KIMI_MAX_TYPE_LENGTH, 10) || config?.KIMI?.maxTextTypeLength || 500;
+const LOG_MAX_SIZE_MB = parseInt(process.env.KIMI_LOG_MAX_MB, 10) || config?.KIMI?.logMaxSizeMB || 10;
+const ARTIFACTS_DIR = config?.PATHS?.artifacts || path.join(__dirname, '..', 'ARTIFACTS');
 const SESSION_STORE_PATH = path.join(ARTIFACTS_DIR, 'kimi-sessions.json');
 const COOKIES_BACKUP_PATH = path.join(__dirname, 'kimi-cookies.json');
 const COOKIES_MANUAL_PATH = path.join(__dirname, 'kimi-cookies.manual.json');
@@ -230,6 +239,7 @@ class KimiBridge {
     this.lastRequestTime = new Map(); // userId -> timestamp (rate limiting)
     this.idleTimer = null;
     this.cookieBackupTimer = null;
+    this.persistentUserIds = new Set(); // userIds that should NEVER be cleaned up
 
     // Initialize turndown if available
     this.turndown = null;
@@ -2356,7 +2366,23 @@ class KimiBridge {
   }
 
   /**
-   * Start idle cleanup timer — closes inactive pages
+   * Mark a userId as persistent (never close its page due to idle timeout)
+   */
+  setPersistent(userId) {
+    this.persistentUserIds.add(userId);
+    log.info(`Persistent mode enabled for user ${hashUserId(userId)}`);
+  }
+
+  /**
+   * Unmark a userId as persistent
+   */
+  unsetPersistent(userId) {
+    this.persistentUserIds.delete(userId);
+    log.info(`Persistent mode disabled for user ${hashUserId(userId)}`);
+  }
+
+  /**
+   * Start idle cleanup timer — closes inactive pages (skips persistent users)
    */
   _startIdleCleanup() {
     if (this.idleTimer) clearInterval(this.idleTimer);
@@ -2364,6 +2390,19 @@ class KimiBridge {
       const now = Date.now();
       for (const [userId, session] of this.userSessions) {
         if (session.processing) continue;
+        // v5.2-fix: Never clean up persistent users
+        if (this.persistentUserIds.has(userId)) {
+          continue;
+        }
+        if (KIMI_PERSISTENT_MODE) {
+          // In global persistent mode, only clean up if explicitly not persistent
+          // and idle for > 30min (double the normal timeout)
+          if (now - session.lastActivity > this.idleTimeout * 3) {
+            log.info(`Persistent mode: long-idle cleanup for user ${hashUserId(userId)}`);
+          } else {
+            continue;
+          }
+        }
         if (now - session.lastActivity > this.idleTimeout) {
           log.info(`Idle cleanup: closing page for user ${hashUserId(userId)}`);
           try {

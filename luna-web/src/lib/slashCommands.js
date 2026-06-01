@@ -14,6 +14,7 @@ export const SLASH_COMMANDS = [
   { cmd: '/logs',        desc: 'Ver ultimos logs',                   icon: '📜', category: 'System', handler: 'systemLogs' },
   { cmd: '/limpar',      desc: 'Limpar chat',                        icon: '🗑️', category: 'System', handler: 'clearChat' },
   { cmd: '/nova',        desc: 'Nova sessao',                        icon: '✨', category: 'System', handler: 'newSession' },
+  { cmd: '/turnoff',     desc: 'Desligar agente (fecha Chrome)',     icon: '🌙', category: 'System', handler: 'turnOffAgent' },
   { cmd: '/ajuda',       desc: 'Mostrar ajuda',                      icon: '❓', category: 'System', handler: 'help' },
   { cmd: '/modo',        desc: 'Trocar modo (instant/thinking/agent/swarm)', icon: '⚡', category: 'System', handler: 'changeMode' },
 

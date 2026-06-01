@@ -5,8 +5,8 @@
   export let status = 'connected';
   export let onOpenConfig = () => {};
 
-  $: statusColor = status === 'connected' ? '#22c55e' : status === 'error' ? '#ef4444' : '#eab308';
-  $: statusText = status === 'connected' ? 'Conectado' : status === 'error' ? 'Erro' : 'Desconectado';
+  $: statusColor = status === 'connected' ? '#22c55e' : status === 'error' ? '#ef4444' : status === 'reconnecting' ? '#f59e0b' : '#eab308';
+  $: statusText = status === 'connected' ? 'Conectado' : status === 'error' ? 'Erro' : status === 'reconnecting' ? 'Reconectando...' : 'Desconectado';
 
   $: planStatus = $planModeState.active ? $planModeState.status : null;
   $: planStatusConfig = {

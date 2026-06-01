@@ -81,6 +81,26 @@
     }
   }
 
+  // Sync sessionId with URL query param — enables copy-paste URL to continue chat
+  function getSessionFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('session');
+  }
+  function setSessionInURL(sessionId) {
+    const url = new URL(window.location);
+    if (sessionId) {
+      url.searchParams.set('session', sessionId);
+    } else {
+      url.searchParams.delete('session');
+    }
+    window.history.replaceState({}, '', url);
+  }
+
+  // Subscribe to currentSessionId changes and sync to URL
+  const unsubSession = currentSessionId.subscribe(id => {
+    setSessionInURL(id);
+  });
+
   onMount(async () => {
     // Auto-login: validate existing token
     try {
@@ -97,11 +117,16 @@
       const res = await fetchSessions();
       if (res.ok && res.sessions) {
         sessions.set(res.sessions);
-        // v5.1-fix: Do NOT auto-select first session — respect stored currentSessionId
-        // If stored session no longer exists, clear it so WelcomeScreen shows
-        const storedId = $currentSessionId;
-        if (storedId && !res.sessions.find(s => s.id === storedId)) {
-          currentSessionId.set(null);
+
+        // v5.3: Check URL first, then localStorage, then fallback
+        const urlSessionId = getSessionFromURL();
+        if (urlSessionId && res.sessions.find(s => s.id === urlSessionId)) {
+          currentSessionId.set(urlSessionId);
+        } else {
+          const storedId = $currentSessionId;
+          if (storedId && !res.sessions.find(s => s.id === storedId)) {
+            currentSessionId.set(null);
+          }
         }
       }
       const cfg = await fetchConfig();
@@ -109,6 +134,10 @@
     } catch (e) {
       console.error('Init error:', e);
     }
+
+    return () => {
+      unsubSession();
+    };
   });
 </script>
 

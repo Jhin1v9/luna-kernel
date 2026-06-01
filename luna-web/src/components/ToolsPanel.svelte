@@ -2,22 +2,59 @@
   import { onMount } from 'svelte';
   import LeadDashboardModal from './LeadDashboardModal.svelte';
   import TaskDashboardModal from './TaskDashboardModal.svelte';
+  import FinanceDashboardModal from './FinanceDashboardModal.svelte';
+  import VotingDashboardModal from './VotingDashboardModal.svelte';
 
   let leadModalOpen = false;
   let taskModalOpen = false;
-  let stats = { leads: { total: 0, value: 0, recent: 0 }, tasks: { total: 0, pending: 0, highPriority: 0 } };
+  let financeModalOpen = false;
+  let votingModalOpen = false;
+  let stats = {
+    leads: { total: 0, value: 0, recent: 0 },
+    tasks: { total: 0, pending: 0, highPriority: 0 },
+    finance: { balance: 0, monthlyIncome: 0, monthlyExpenses: 0, activeClients: 0, overduePayments: 0 },
+    voting: { total: 0, open: 0 }
+  };
   let loading = true;
+  let error = false;
+  let retryCount = 0;
 
-  onMount(async () => {
+  function fmt(val, prefix = '', suffix = '') {
+    if (error || loading) return '—';
+    return prefix + val + suffix;
+  }
+
+  async function loadStats() {
     try {
       const res = await fetch('/api/tools/stats');
       const data = await res.json();
-      if (data.ok) stats = data.stats;
+      if (data.ok && data.stats) {
+        stats = data.stats;
+        error = false;
+        retryCount = 0;
+      } else {
+        error = true;
+        console.warn('[ToolsPanel] stats not ok:', data.error || 'unknown');
+        // Retry up to 3 times
+        if (retryCount < 3) {
+          retryCount++;
+          setTimeout(loadStats, 3000);
+        }
+      }
     } catch (e) {
-      console.error('Stats error:', e);
+      error = true;
+      console.error('[ToolsPanel] Stats fetch error:', e);
+      if (retryCount < 3) {
+        retryCount++;
+        setTimeout(loadStats, 3000);
+      }
     } finally {
       loading = false;
     }
+  }
+
+  onMount(() => {
+    loadStats();
   });
 </script>
 
@@ -25,6 +62,11 @@
   <div class="tools-header">
     <span class="tools-icon">🛠️</span>
     <span class="tools-title">Ferramentas do Dashboard</span>
+    {#if error}
+      <span class="tools-error" title="Dashboard PRO temporariamente indisponível. Tentando reconectar...">⚠️</span>
+    {:else if loading}
+      <span class="tools-loading"></span>
+    {/if}
   </div>
   
   <div class="tools-grid">
@@ -41,17 +83,17 @@
               <line x1="23" y1="11" x2="17" y2="11"/>
             </svg>
           </div>
-          <div class="tool-badge">{stats.leads.total}</div>
+          <div class="tool-badge">{fmt(stats.leads.total)}</div>
         </div>
         <div class="tool-name">Leads</div>
         <div class="tool-desc">CRM com pipeline completo</div>
         <div class="tool-stats-row">
           <span class="tool-stat">
-            <span class="tool-stat-value">{stats.leads.recent}</span>
+            <span class="tool-stat-value">{fmt(stats.leads.recent)}</span>
             <span class="tool-stat-label">novos</span>
           </span>
           <span class="tool-stat">
-            <span class="tool-stat-value">R$ {(stats.leads.value / 1000).toFixed(0)}k</span>
+            <span class="tool-stat-value">{fmt((stats.leads.value / 1000).toFixed(0), 'R$ ', 'k')}</span>
             <span class="tool-stat-label">pipeline</span>
           </span>
         </div>
@@ -69,17 +111,17 @@
               <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
             </svg>
           </div>
-          <div class="tool-badge">{stats.tasks.total}</div>
+          <div class="tool-badge">{fmt(stats.tasks.total)}</div>
         </div>
         <div class="tool-name">Tarefas</div>
         <div class="tool-desc">Gestão de operações</div>
         <div class="tool-stats-row">
           <span class="tool-stat">
-            <span class="tool-stat-value">{stats.tasks.pending}</span>
+            <span class="tool-stat-value">{fmt(stats.tasks.pending)}</span>
             <span class="tool-stat-label">pendentes</span>
           </span>
           <span class="tool-stat">
-            <span class="tool-stat-value" style="color: #ef4444">{stats.tasks.highPriority}</span>
+            <span class="tool-stat-value" style="color: #ef4444">{fmt(stats.tasks.highPriority)}</span>
             <span class="tool-stat-label">alta prioridade</span>
           </span>
         </div>
@@ -87,7 +129,7 @@
     </button>
 
     <!-- Finance Card -->
-    <button class="tool-card finance" on:click={() => alert('Módulo financeiro em desenvolvimento')}>
+    <button class="tool-card finance" on:click={() => financeModalOpen = true}>
       <div class="tool-card-glow"></div>
       <div class="tool-card-content">
         <div class="tool-card-header">
@@ -97,21 +139,27 @@
               <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
             </svg>
           </div>
-          <div class="tool-badge soon">Em breve</div>
+          <div class="tool-badge">{fmt(stats.finance.activeClients)}</div>
         </div>
         <div class="tool-name">Financeiro</div>
         <div class="tool-desc">Caixa, gastos e receitas</div>
         <div class="tool-stats-row">
           <span class="tool-stat">
-            <span class="tool-stat-value">—</span>
+            <span class="tool-stat-value" style="color: {(!error && stats.finance.balance >= 0) ? '#22c55e' : '#ef4444'}">
+              {fmt(stats.finance.balance.toFixed(0), '€ ')}
+            </span>
             <span class="tool-stat-label">caixa</span>
+          </span>
+          <span class="tool-stat">
+            <span class="tool-stat-value" style="color: #ef4444">{fmt(stats.finance.monthlyExpenses.toFixed(0), '€ ')}</span>
+            <span class="tool-stat-label">gastos/mês</span>
           </span>
         </div>
       </div>
     </button>
 
     <!-- Voting Card -->
-    <button class="tool-card voting" on:click={() => alert('Módulo de votação em desenvolvimento')}>
+    <button class="tool-card voting" on:click={() => votingModalOpen = true}>
       <div class="tool-card-glow"></div>
       <div class="tool-card-content">
         <div class="tool-card-header">
@@ -122,13 +170,17 @@
               <path d="M6 20v-4"/>
             </svg>
           </div>
-          <div class="tool-badge soon">Em breve</div>
+          <div class="tool-badge">{fmt(stats.voting.open)}</div>
         </div>
         <div class="tool-name">Votações</div>
         <div class="tool-desc">Decisões da diretoria</div>
         <div class="tool-stats-row">
           <span class="tool-stat">
-            <span class="tool-stat-value">—</span>
+            <span class="tool-stat-value">{fmt(stats.voting.total)}</span>
+            <span class="tool-stat-label">total</span>
+          </span>
+          <span class="tool-stat">
+            <span class="tool-stat-value" style="color: #22c55e">{fmt(stats.voting.open)}</span>
             <span class="tool-stat-label">ativas</span>
           </span>
         </div>
@@ -139,6 +191,8 @@
 
 <LeadDashboardModal open={leadModalOpen} onClose={() => leadModalOpen = false} />
 <TaskDashboardModal open={taskModalOpen} onClose={() => taskModalOpen = false} />
+<FinanceDashboardModal open={financeModalOpen} onClose={() => financeModalOpen = false} />
+<VotingDashboardModal open={votingModalOpen} onClose={() => votingModalOpen = false} />
 
 <style>
   .tools-panel {
@@ -162,6 +216,29 @@
     color: var(--luna-text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+  }
+  .tools-error {
+    margin-left: auto;
+    font-size: 14px;
+    cursor: help;
+    opacity: 0.8;
+    animation: pulse-error 2s infinite;
+  }
+  @keyframes pulse-error {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+  }
+  .tools-loading {
+    margin-left: auto;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255,255,255,0.1);
+    border-top-color: var(--luna-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
   .tools-grid {
     display: grid;

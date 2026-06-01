@@ -1,12 +1,13 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage } from '../stores.js';
-  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool } from '../api.js';
+  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
   import MessagesList from './MessagesList.svelte';
   import ChatInput from './ChatInput.svelte';
+  import PersonaSelector from './PersonaSelector.svelte';
 
   export let sessionId = null;
 
@@ -472,6 +473,8 @@
 
     sseManager.connect(sessionId, handleEvent);
     lastConnectedSessionId = sessionId;
+    // v5.2: Start heartbeat to keep agent page alive
+    startHeartbeat('web-' + sessionId, 30000);
   }
 
   $: if (sessionId && sessionId !== lastConnectedSessionId) {
@@ -562,7 +565,7 @@
         let result = null;
 
         // System handlers (frontend APIs)
-        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs'].includes(slashDef.handler)) {
+        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent'].includes(slashDef.handler)) {
           switch (slashDef.handler) {
             case 'systemRestart': result = await systemRestart(); break;
             case 'systemStatus': result = await systemStatus(); break;
@@ -570,6 +573,11 @@
             case 'systemStart': result = await systemStart(); break;
             case 'systemHealth': result = await systemHealth(); break;
             case 'systemLogs': result = await systemLogs(); break;
+            case 'turnOffAgent':
+              result = await turnOffAgent('web-' + sessionId);
+              mascotState.set('sleep');
+              mascotMessage.set('🌙 Luna dormindo. Envie uma mensagem para acordar.');
+              break;
           }
         }
         // Frontend-only handlers
@@ -748,19 +756,23 @@
 
   onDestroy(() => {
     sseManager.disconnect();
+    stopHeartbeat();
     mascotState.set('sleep');
   });
 </script>
 
 <div class="chat-area">
-  <ChatHeader
-    title={$messages.find(m => m.type === 'user')?.content?.slice(0, 50) || 'Nova Conversa'}
-    mode={$currentMode}
-    isStreaming={$isStreaming}
-    on:modeChange={(e) => currentMode.set(e.detail)}
-    on:clear={handleClear}
+  <div class="chat-header-row">
+    <ChatHeader
+      title={$messages.find(m => m.type === 'user')?.content?.slice(0, 50) || 'Nova Conversa'}
+      mode={$currentMode}
+      isStreaming={$isStreaming}
+      on:modeChange={(e) => currentMode.set(e.detail)}
+      on:clear={handleClear}
     on:export={handleExport}
   />
+  <PersonaSelector sessionId={sessionId} />
+  </div>
 
   <MessagesList
     messages={$messages}
@@ -783,5 +795,16 @@
     flex-direction: column;
     overflow: hidden;
     position: relative;
+  }
+  .chat-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 clamp(0.5rem, 2vw, 1rem);
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+  .chat-header-row > :global(.chat-header) {
+    flex: 1;
   }
 </style>

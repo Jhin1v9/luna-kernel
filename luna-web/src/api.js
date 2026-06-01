@@ -4,14 +4,17 @@ export class SSEManager {
   constructor() {
     this.eventSource = null;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
+    this.maxReconnectAttempts = Infinity; // v5.2: Never give up
     this.baseDelay = 1000;
-    this.maxDelay = 15000;
+    this.maxDelay = 30000;
     this.isIntentionallyClosed = false;
     this.gracefulClose = false;
     this.statusDebounceTimer = null;
     this.lastStatus = null;
     this.currentSessionId = null;
+    this.onEventCallback = null;
+    this.fallbackTimer = null;
+    this.lastMessageCount = 0;
   }
 
   _setStatus(status) {
@@ -27,7 +30,44 @@ export class SSEManager {
     }
   }
 
+  // v5.2: Fallback polling when SSE is down
+  _startFallbackPolling(sessionId) {
+    if (this.fallbackTimer) clearInterval(this.fallbackTimer);
+    this.fallbackTimer = setInterval(async () => {
+      if (this.isIntentionallyClosed || this.gracefulClose || this.eventSource) return;
+      try {
+        const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages`);
+        const data = await res.json();
+        if (data.ok && data.messages) {
+          const newMessages = data.messages.slice(this.lastMessageCount);
+          for (const msg of newMessages) {
+            if (this.onEventCallback) {
+              this.onEventCallback({
+                type: msg.type || 'response_delta',
+                role: msg.role,
+                text: msg.content,
+                fullResponse: msg.content,
+                timestamp: msg.timestamp,
+              });
+            }
+          }
+          this.lastMessageCount = data.messages.length;
+        }
+      } catch (e) {
+        // Silently fail — fallback is best-effort
+      }
+    }, 2000);
+  }
+
+  _stopFallbackPolling() {
+    if (this.fallbackTimer) {
+      clearInterval(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
+  }
+
   connect(sessionId, onEvent) {
+    this.onEventCallback = onEvent;
     // v4.1-fix: Prevent duplicate connections for same session
     if (this.eventSource && this.currentSessionId === sessionId) {
       console.log(`[SSE] Already connected to session ${sessionId}, skipping`);
@@ -42,6 +82,8 @@ export class SSEManager {
     this.isIntentionallyClosed = false;
     this.gracefulClose = false;
     this.reconnectAttempts = 0;
+    this._stopFallbackPolling();
+
     const url = `/api/chat/stream?sessionId=${encodeURIComponent(sessionId)}`;
     this.eventSource = new EventSource(url);
 
@@ -69,16 +111,18 @@ export class SSEManager {
         this.eventSource.close();
         this.eventSource = null;
       }
-      this._setStatus('disconnected');
-      if (!this.isIntentionallyClosed && !this.gracefulClose && this.reconnectAttempts < this.maxReconnectAttempts) {
-        const delay = Math.min(this.baseDelay * Math.pow(2, this.reconnectAttempts), this.maxDelay);
+      if (!this.isIntentionallyClosed && !this.gracefulClose) {
+        this._setStatus('reconnecting');
+        // v5.2: Start fallback polling immediately
+        this._startFallbackPolling(sessionId);
+        const delay = Math.min(this.baseDelay * Math.pow(2, this.reconnectAttempts) + Math.random() * 1000, this.maxDelay);
         this.reconnectAttempts++;
-        console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
         setTimeout(() => this.connect(sessionId, onEvent), delay);
       } else if (this.gracefulClose) {
+        this._setStatus('disconnected');
         console.log('[SSE] Graceful close — no reconnect needed.');
-      } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-        this._setStatus('error');
+        this._stopFallbackPolling();
       }
     };
   }
@@ -87,6 +131,8 @@ export class SSEManager {
     this.isIntentionallyClosed = true;
     this.gracefulClose = true;
     this.currentSessionId = null;
+    this.onEventCallback = null;
+    this._stopFallbackPolling();
     if (this.statusDebounceTimer) clearTimeout(this.statusDebounceTimer);
     if (this.eventSource) {
       this.eventSource.close();
@@ -175,6 +221,43 @@ export async function exportSessions(sessionIds, format = 'json') {
   a.remove();
   window.URL.revokeObjectURL(url);
   return { ok: true };
+}
+
+// ============================================================
+// Heartbeat — keep agent page alive (persistent mode)
+// ============================================================
+let heartbeatTimer = null;
+
+export function startHeartbeat(userId = 'web-default', intervalMs = 30000) {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(async () => {
+    try {
+      await fetch('/api/system/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
+      });
+    } catch (e) {
+      // Silently fail — heartbeat is best-effort
+    }
+  }, intervalMs);
+}
+
+export function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+export async function turnOffAgent(userId = 'web-default') {
+  stopHeartbeat();
+  const res = await fetch('/api/system/turnoff', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId })
+  });
+  return res.json();
 }
 
 export async function fetchSessionMessages(sessionId) {
@@ -295,6 +378,24 @@ export async function systemStart() {
 
 export async function systemStatus() {
   const res = await fetch('/api/system/status');
+  return res.json();
+}
+
+export async function fetchPersonas() {
+  try {
+    const res = await fetch('/api/personas');
+    return res.json();
+  } catch {
+    return { ok: false, personas: [] };
+  }
+}
+
+export async function setSessionPersona(sessionId, persona) {
+  const res = await fetch('/api/chat/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'setPersona', sessionId, persona })
+  });
   return res.json();
 }
 

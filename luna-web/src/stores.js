@@ -4,21 +4,16 @@ export const sessions = writable([]);
 export const selectedSessionIds = writable(new Set());
 export const selectionMode = writable(false);
 
-// Persistent session store with 30-min idle timeout
+// Persistent session store — NO timeout, survives until user closes
 function createPersistentSessionStore() {
   const STORAGE_KEY = 'luna_current_session';
-  const TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
   let initial = null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const data = JSON.parse(raw);
-      if (data.ts && Date.now() - data.ts < TIMEOUT_MS) {
-        initial = data.id || null;
-      } else {
-        localStorage.removeItem(STORAGE_KEY);
-      }
+      initial = data.id || null;
     }
   } catch (e) {
     console.warn('Session restore error:', e);
@@ -29,7 +24,7 @@ function createPersistentSessionStore() {
   store.subscribe(id => {
     try {
       if (id) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ id, ts: Date.now() }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ id }));
       } else {
         localStorage.removeItem(STORAGE_KEY);
       }
