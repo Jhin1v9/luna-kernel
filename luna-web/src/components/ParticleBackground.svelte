@@ -659,7 +659,7 @@
     width: 100vw;
     height: 100vh;
     height: 100dvh;
-    z-index: -1;
+    z-index: 0;
     pointer-events: none;
     background: #0a0a1a;
   }
