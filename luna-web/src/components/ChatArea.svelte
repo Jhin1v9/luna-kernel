@@ -146,7 +146,18 @@
           }]);
         } else {
           messages.update(msgs =>
-            msgs.map(m => m.id === currentAssistantId ? { ...m, content: m.content + (event.text || '') } : m)
+            msgs.map(m => {
+              if (m.id !== currentAssistantId) return m;
+              const newText = event.text || '';
+              const current = m.content || '';
+              // v5.3-fix: If delta looks like full replacement (larger than current + 50%
+              // and contains current start), replace instead of append to avoid duplication
+              // when Kimi DOM shrinks and bridge sends full text instead of delta
+              if (newText.length > current.length * 1.5 && newText.includes(current.slice(0, 20))) {
+                return { ...m, content: newText };
+              }
+              return { ...m, content: current + newText };
+            })
           );
         }
         break;
