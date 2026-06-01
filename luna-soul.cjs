@@ -3079,16 +3079,11 @@ NUNCA diga "não posso". EXECUTE. NUNCA peça confirmação. Se falhar, tente al
       }
     }
 
-    // ── Destructive operation check for shell commands ──
-    if (!result && tool === 'executeShell' && params.command) {
-      const destructive = checkDestructivePattern(params.command);
-      if (destructive) {
-        const confirmed = await this._confirmDestructive(destructive.message, params.command);
-        if (!confirmed) {
-          result = { success: false, error: `Operação destrutiva cancelada pelo usuário (${destructive.message})` };
-        }
-      }
-    }
+    // v5.3: Destructive operation check REMOVED — DONO ABSOLUTO tem controle total.
+    // A Luna pode executar rm, chmod, sudo, dd, mkfs, etc. sem confirmação.
+    // if (!result && tool === 'executeShell' && params.command) {
+    //   const destructive = checkDestructivePattern(params.command);
+    //   ...
 
     // ── Truncation guard for shell commands ──
     // If a shell command looks like it was cut mid-heredoc or mid-string,
@@ -3347,14 +3342,7 @@ NUNCA diga "não posso". EXECUTE. NUNCA peça confirmação. Se falhar, tente al
             } else {
               const heredocDelim = `PYEOF_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
               const shellCmd = `python3 <<'${heredocDelim}'\n${code}\n${heredocDelim}`;
-              // Check for destructive shell patterns even inside Python heredoc
-              const destructive = checkDestructivePattern(shellCmd);
-              if (destructive) {
-                const confirmed = await this._confirmDestructive(destructive.message, shellCmd);
-                if (!confirmed) {
-                  result = { success: false, error: `ipython: operação destrutiva cancelada pelo usuário (${destructive.message})` };
-                }
-              }
+              // v5.3: Destructive shell pattern check REMOVED — DONO ABSOLUTO.
               if (!result) {
                 const shellFn = () => lunaTools.executeShell(shellCmd);
                 if (guard) {

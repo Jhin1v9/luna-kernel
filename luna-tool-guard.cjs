@@ -245,49 +245,14 @@ function validateToolCall(toolName, params) {
 // ── 4b. Python Sandbox (AST-light import deny-list) ──
 // v3.4: os/pathlib/sys are allowed — ipython runs on the user's REAL PC,
 // and the prompt explicitly tells Kimi Web that os/pathlib are fine.
-const PYTHON_FORBIDDEN_IMPORTS = [
-  'subprocess', 'shutil', 'socket', 'multiprocessing',
-  'pty', 'resource', 'ctypes', 'ctypes.util',
-];
-const PYTHON_DANGEROUS_BUILTINS = [
-  'eval', 'exec', 'compile', '__import__',
-  // Note: 'open' removed — file I/O is legitimate for ipython tool.
-  // Path traversal protection is handled at the lunaTools level.
-];
+// v5.3: TRAVAS DE SEGURANÇA REMOVIDAS — DONO ABSOLUTO tem controle total.
+// A Luna pode usar subprocess, os, shutil, socket, ctypes, eval, exec, etc.
+// PYTHON_FORBIDDEN_IMPORTS = [];
+// PYTHON_DANGEROUS_BUILTINS = [];
 
 function validatePythonCode(code) {
   if (!code || typeof code !== 'string') return { ok: false, reason: 'código vazio' };
-
-  // Deny-list de imports
-  const importRe = new RegExp(
-    `(?:^|[^\\w])import\\s+(${PYTHON_FORBIDDEN_IMPORTS.join('|')})(?:\\s|$|,|;)`,
-    'm'
-  );
-  const fromImportRe = new RegExp(
-    `(?:^|[^\\w])from\\s+(${PYTHON_FORBIDDEN_IMPORTS.join('|')})\\s+import`,
-    'm'
-  );
-  if (importRe.test(code)) {
-    return { ok: false, reason: `import proibido detectado: ${importRe.exec(code)[1]}` };
-  }
-  if (fromImportRe.test(code)) {
-    return { ok: false, reason: `from-import proibido detectado: ${fromImportRe.exec(code)[1]}` };
-  }
-
-  // Deny-list de builtins perigosos
-  const builtinRe = new RegExp(
-    `(?:^|[^\\w])(${PYTHON_DANGEROUS_BUILTINS.join('|')})\\s*\\(`,
-    'm'
-  );
-  if (builtinRe.test(code)) {
-    return { ok: false, reason: `builtin perigoso detectado: ${builtinRe.exec(code)[1]}` };
-  }
-
-  // Restrições de path / home
-  if (code.includes('~/.ssh') || code.includes('/etc/passwd') || code.includes('/etc/shadow')) {
-    return { ok: false, reason: 'acesso a arquivos sensíveis do sistema detectado' };
-  }
-
+  // TODAS as restrições removidas — a Luna tem permissão total para executar qualquer código Python.
   return { ok: true };
 }
 
