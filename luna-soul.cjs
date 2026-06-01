@@ -2171,12 +2171,28 @@ class LunaSoul extends EventEmitter {
             if (dar.kimiResult) outputText += `\n--- sandbox (referência) ---\n${dar.kimiResult.slice(0, 500)}${dar.kimiResult.length > 500 ? '...' : ''}`;
           }
         }
-        // v3.3: Semantic-stable framing — read-only replica, not "ignore errors"
-        loopInput = `[LUNA-MIRROR] REPLICAÇÃO READ-ONLY — O código acima foi executado no PC físico do usuário (Linux, paths reais). Use o resultado REAL abaixo como ground truth. NÃO re-execute o mesmo código. Prossiga com o próximo passo ou responda ao usuário.
+        // v5.2: Mensagem de resultado reescrita para máxima clareza
+        // Kimi precisa entender INSTANTANEAMENTE que este é o resultado da ação DELA
+        const toolsUsed = result.tool || domActionResults.map(d => d.tool).join(', ') || 'n/a';
+        const successCount = domActionResults.filter(d => d.result?.success).length;
+        const totalCount = domActionResults.length || (result.tool ? 1 : 0);
+        const statusEmoji = successCount === totalCount ? '✅' : '⚠️';
 
-Ferramenta(s): ${result.tool || domActionResults.map(d => d.tool).join(', ') || 'n/a'}
+        loopInput = `${statusEmoji} RESULTADO DA EXECUÇÃO — Ferramenta(s): ${toolsUsed}
 
-${outputText}`;
+🎯 O QUE ACONTECEU:
+As ferramentas acima foram executadas no PC REAL do usuário (Linux, paths absolutos).
+Você mandou a ação → Luna executou → este é o resultado REAL.
+
+📊 STATUS: ${successCount}/${totalCount} sucesso(s)
+
+📝 RESULTADO DETALHADO:
+${outputText}
+
+➡️ INSTRUÇÃO: Com base neste resultado, execute o PRÓXIMO passo necessário.
+Se precisar de mais informações, use readFile/grep/searchFiles.
+Se a tarefa estiver completa, responda ao usuário com o resultado final.
+NUNCA re-execute a MESMA ferramenta com os MESMOS parâmetros.`;
         // Always use mini-reminder for tool results (thread already has full prompt)
         loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
         // Continue loop — send result back to Kimi
@@ -2564,7 +2580,9 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
         const truncatedParams = paramsStr.length > 500 ? paramsStr.slice(0, 500) + '…' : paramsStr;
         historyLines.push(`tool: ${ev.tool || ev.action?.type}(${truncatedParams})`);
       } else if (ev.type === 'tool_result') {
-        historyLines.push(`result: ${ev.success ? '✅' : '❌'} ${(ev.output || ev.stdout || '').slice(0, 200)}`);
+        // v5.2: Aumentado de 200 para 3000 chars — Kimi PRECISA ver o resultado completo
+        const resultOutput = (ev.output || ev.stdout || ev.result?.stdout || ev.result?.output || '').slice(0, 3000);
+        historyLines.push(`result: ${ev.success ? '✅' : '❌'} ${resultOutput}`);
       }
     }
 
@@ -2657,13 +2675,19 @@ FERRAMENTAS LUNA: readFile, writeFile, replaceInFile, executeShell, executeScrip
       const activeFilesCtx = workspaceManager.getActiveFilesContext('luna-cli');
       const workspaceSnippet = workspaceCtx ? `\nWORKSPACE: ${workspaceCtx.split('\n')[0]}${workspaceCtx.split('\n')[1] ? ' ' + workspaceCtx.split('\n')[1] : ''}` : '';
 
-      // For tool results, keep it even shorter
+      // v5.2: SEMPRE incluir histórico — Kimi precisa de contexto para entender que o resultado
+      // é da ação DELA. Sem histórico, ela vê uma mensagem aleatória sem saber de onde veio.
       const isToolResult = options.isToolResult === true;
+      const historySnippet = historyLines.slice(-10).join('\n'); // Aumentado de -6 para -10
+      const toolResultHeader = isToolResult
+        ? `\n🔄 ESTE É O RESULTADO DA SUA AÇÃO ANTERIOR. Use-o para continuar o raciocínio.`
+        : '';
       let prompt;
       if (isToolResult) {
-        prompt = `${miniReminder}${workspaceSnippet}\n\nResultado da ferramenta:\n${userInput}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
+        // Tool result: mini-reminder + histórico completo + resultado destacado
+        prompt = `${miniReminder}${workspaceSnippet}\n\n--- HISTÓRICO DA CONVERSA ---\n${historySnippet}${activeFilesCtx ? '\n\n' + activeFilesCtx : ''}${toolResultHeader}\n\n--- RESULTADO DA FERRAMENTA ---\n${userInput}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
       } else {
-        prompt = `${miniReminder}${workspaceSnippet}\n\n--- HISTÓRICO RECENTE ---\n${historyLines.slice(-6).join('\n')}${activeFilesCtx ? '\n\n' + activeFilesCtx : ''}\n\n--- MENSAGEM ATUAL ---\nuser: ${userInput}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
+        prompt = `${miniReminder}${workspaceSnippet}\n\n--- HISTÓRICO RECENTE ---\n${historySnippet}${activeFilesCtx ? '\n\n' + activeFilesCtx : ''}\n\n--- MENSAGEM ATUAL ---\nuser: ${userInput}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
       }
 
       // Debug log
