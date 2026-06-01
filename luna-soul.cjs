@@ -704,9 +704,10 @@ function parseTagResponse(text) {
   // Extract all properly closed [[action]] tags
   const actionMatches = trimmed.match(/\[\[action\]\]([\s\S]*?)\[\[\/action\]\]/g);
 
-  // v4.0: Extract actions from markdown code blocks (PRIMARY format)
+  // v5.2: Extract ALL code blocks — responses AND actions
   const codeBlockRegex = /```(?:json)?\s*\n?([\s\S]*?)```/g;
   const codeBlockActions = [];
+  const codeBlockResponses = [];
   let cbMatch;
   while ((cbMatch = codeBlockRegex.exec(trimmed)) !== null) {
     const inner = cbMatch[1].trim();
@@ -715,6 +716,10 @@ function parseTagResponse(text) {
     // Check if it looks like an action (has tool and params)
     if (/"tool"\s*:/.test(inner) && /"params"\s*:/.test(inner)) {
       codeBlockActions.push(inner);
+    }
+    // v5.2: Also extract response blocks (even without tool/params)
+    else if (/"response"\s*:/.test(inner)) {
+      codeBlockResponses.push(inner);
     }
   }
 
@@ -725,6 +730,8 @@ function parseTagResponse(text) {
     const inner = jcMatch[1].trim();
     if (/"tool"\s*:/.test(inner) && /"params"\s*:/.test(inner)) {
       codeBlockActions.push(inner);
+    } else if (/"response"\s*:/.test(inner)) {
+      codeBlockResponses.push(inner);
     }
   }
 
@@ -881,6 +888,19 @@ function parseTagResponse(text) {
       return { mode: 'ACTION', response, tool: 'executeScript', params: { code: scriptCode, language } };
     }
 
+    // v5.2: Extract response from code block JSON responses (e.g. {"response": "..."})
+    // Combine with [[response]] tag content — code block has priority
+    let combinedResponse = response || '';
+    for (const respBlock of codeBlockResponses) {
+      try {
+        const parsedResp = JSON.parse(respBlock.replace(/^JSON\s*\n\s*Copy\s*\n/i, '').replace(/```json\s*/gi, '').replace(/```\s*$/gm, '').trim());
+        if (parsedResp.response) {
+          combinedResponse = parsedResp.response;
+          break; // First response block wins
+        }
+      } catch {}
+    }
+
     // ACTION / PLAN mode — code blocks are PRIMARY, [[action]] tags are fallback
     const allActionSources = codeBlockActions.length > 0
       ? codeBlockActions
@@ -889,16 +909,21 @@ function parseTagResponse(text) {
       const validActions = allActionSources.map(a => tryParseDelimiterJson(a)).filter(Boolean);
       if (validActions.length > 1) {
         // PLAN: multiple valid actions
-        return { mode: 'PLAN', response, steps: validActions };
+        return { mode: 'PLAN', response: combinedResponse, steps: validActions };
       }
       if (validActions.length === 1) {
         // Single ACTION
-        return { mode: 'ACTION', response, tool: validActions[0].tool, params: validActions[0].params || {} };
+        return { mode: 'ACTION', response: combinedResponse, tool: validActions[0].tool, params: validActions[0].params || {} };
       }
       // Action found but JSON invalid — warn instead of silently falling back to CHAT
       if (validActions.length === 0) {
         console.error(`[parseTagResponse] WARNING: ${allActionSources.length} action(s) found but all contain invalid JSON. Sources: ${actionMatches ? actionMatches.length : 0} [[action]] tags, ${codeBlockActions ? codeBlockActions.length : 0} code blocks. Kimi may have used native tools (ipython/browser/computer) — these are captured by DOM Mirror.`);
       }
+    }
+
+    // v5.2: If we have a response from code block but no action, return CHAT
+    if (combinedResponse && !responseMatch) {
+      return { mode: 'CHAT', response: combinedResponse };
     }
 
     // CHAT/DONE mode: if we extracted any response content
@@ -2114,6 +2139,11 @@ class LunaSoul extends EventEmitter {
           }
         }
       } catch (err) {
+        if (err.message === 'STREAM_CANCELLED') {
+          // v5.3-fix: User cancelled — not an error, just stop gracefully
+          yield { type: 'system', message: '⏹️ Geração cancelada pelo usuário.', sessionId };
+          return;
+        }
         if (err.message === 'KIMI_LOGIN_REQUIRED') {
           yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.com e faça login.', sessionId };
         } else {
@@ -2314,6 +2344,10 @@ NUNCA re-execute a MESMA ferramenta com os MESMOS parâmetros.`;
         }
       }
     } catch (err) {
+      if (err.message === 'STREAM_CANCELLED') {
+        yield { type: 'system', message: '⏹️ Geração cancelada pelo usuário.', sessionId };
+        return;
+      }
       if (err.message === 'KIMI_LOGIN_REQUIRED') {
         yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.com e faça login.', sessionId };
       } else {
@@ -2424,6 +2458,16 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
         break;
 
       case 'ACTION': {
+        // v5.2: Emit response FIRST (if any) before executing action
+        // Kimi sends response + tool in same message — user must see the response text
+        if (parsed.response) {
+          yield { type: 'assistant', response: parsed.response, sessionId };
+          this.sessionManager.appendEvent(sessionId, {
+            type: 'assistant',
+            response: parsed.response,
+            timestamp: new Date().toISOString(),
+          });
+        }
         yield { type: 'action_start', tool: parsed.tool, params: parsed.params, sessionId };
         const actionResult = await this._handleAction(parsed, sessionId, options);
         yield { type: 'action_end', tool: parsed.tool, result: actionResult, sessionId };
@@ -2432,6 +2476,15 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
       }
 
       case 'PLAN': {
+        // v5.2: Emit response FIRST (if any) before executing plan
+        if (parsed.response) {
+          yield { type: 'assistant', response: parsed.response, sessionId };
+          this.sessionManager.appendEvent(sessionId, {
+            type: 'assistant',
+            response: parsed.response,
+            timestamp: new Date().toISOString(),
+          });
+        }
         yield { type: 'plan_start', steps: parsed.steps, sessionId };
         for await (const ev of this._handlePlanStream(parsed, sessionId, originalInput, options)) {
           yield ev;
@@ -2491,15 +2544,29 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
 
       case 'ACTION': {
         tool = parsed.tool || '';
+        // v5.2: Emit response FIRST (if any) before executing action
+        if (parsed.response) {
+          const chatResult = this._handleChat({ response: parsed.response }, sessionId);
+          events.push(chatResult);
+          output = parsed.response;
+        }
         events.push({ type: 'action_start', tool: parsed.tool, params: parsed.params, sessionId });
         const actionResult = await this._handleAction(parsed, sessionId, options);
         events.push({ type: 'action_end', tool: parsed.tool, result: actionResult, sessionId });
-        output = actionResult.result?.stdout || actionResult.result?.output || actionResult.result?.text || JSON.stringify(actionResult.result);
+        // Append action output to response output
+        const actionOutput = actionResult.result?.stdout || actionResult.result?.output || actionResult.result?.text || JSON.stringify(actionResult.result);
+        output = output ? `${output}\n\n${actionOutput}` : actionOutput;
         break;
       }
 
       case 'PLAN': {
         const steps = parsed.steps || [];
+        // v5.2: Emit response FIRST (if any) before executing plan
+        if (parsed.response) {
+          const chatResult = this._handleChat({ response: parsed.response }, sessionId);
+          events.push(chatResult);
+          output = parsed.response;
+        }
         events.push({ type: 'plan_start', steps, sessionId });
         for (let i = 0; i < steps.length; i++) {
           const step = steps[i];
