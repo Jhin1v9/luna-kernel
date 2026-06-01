@@ -1414,88 +1414,30 @@ class KimiBridge {
     const oldUrl = page.url();
     log.info(`Creating new chat for user ${hashUserId(userId)} (current: ${oldUrl})`);
 
-    // v3.5-fix: Robust tab capture with extended timeout + smart fallback.
-    // Kimi Web frequently takes 8-12s to open a new tab for new chats.
-    // Use the user's isolated context instead of shared context
-    const userCtx = session.context || this.userContexts.get(userId);
-    let newPage = null;
-    try {
-      // Step 1: Try capturing new tab with extended timeout (15s)
-      [newPage] = await Promise.all([
-        userCtx.waitForEvent('page', { timeout: 0 }),
-        page.click('.sidebar-new-chat, .new-chat-btn, [class*="new-chat"]').catch(() => {
-          // Fallback: try JS click if Playwright click fails
-          return page.evaluate(() => {
-            const btn = document.querySelector('.sidebar-new-chat, .new-chat-btn, [class*="new-chat"]');
-            if (btn) btn.click();
-          });
-        }),
-      ]);
-      log.info(`New tab captured via waitForEvent: ${newPage.url()}`);
-    } catch (e) {
-      log.warn(`waitForEvent('page') failed (${e.message}) — trying smart fallback`);
-    }
+    // v5.3-fix: Usar goto na MESMA aba em vez de clicar no botão "new chat".
+    // O botão "new chat" abre uma NOVA ABA no navegador, causando acúmulo de abas
+    // e problemas de memória. goto na mesma aba é limpo, rápido e previsível.
+    await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded', timeout: 0 });
+    await page.waitForTimeout(2500);
+    let newUrl = page.url();
 
-    // Step 2: Smart fallback — scan existing pages for new chat tabs
-    if (!newPage) {
-      await new Promise(r => setTimeout(r, 3000)); // Give Kimi time to open tab
-      const allPages = userCtx.pages();
-      log.info(`Scanning ${allPages.length} pages for new chat tab...`);
-      for (const p of allPages) {
-        try {
-          const url = p.url();
-          if (url.includes('/chat/') && url !== oldUrl) {
-            newPage = p;
-            log.info(`Found new chat tab in existing pages: ${url}`);
-            break;
-          }
-        } catch {
-          // Page may be closing
-        }
-      }
-    }
-
-    let targetPage = newPage || page;
-
-    // Step 3: If still no new tab, fallback to direct navigation
-    if (!newPage) {
-      await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded', timeout: 0 });
-      await page.waitForTimeout(2500);
-      targetPage = page;
-    } else {
-      // Wait for new page to load
-      await newPage.waitForLoadState('domcontentloaded', { timeout: 0 }).catch(() => {});
-      await newPage.waitForTimeout(1500);
-    }
-
-    // Step 4: Post-navigation verification — ensure we have a valid chat URL
-    let newUrl = targetPage.url();
-    const isValidChat = newUrl.includes('/chat/');
-    if (!isValidChat) {
-      log.warn(`targetPage URL is not a valid chat: ${newUrl} — scanning for valid chat tabs...`);
-      // Wait up to 10s for a valid chat tab to appear
+    // v5.3-fix: Post-navigation verification — aguardar URL válida com paciência
+    if (!newUrl.includes('/chat/')) {
+      log.warn(`newChat: URL ainda não é chat válido (${newUrl}), aguardando...`);
       const deadline = Date.now() + 10000;
       while (Date.now() < deadline) {
-        const allPages = userCtx.pages();
-        for (const p of allPages) {
-          try {
-            const url = p.url();
-            if (url.includes('/chat/') && url !== oldUrl) {
-              targetPage = p;
-              newUrl = url;
-              log.info(`Found valid chat tab during verification: ${url}`);
-              break;
-            }
-          } catch {}
-        }
+        newUrl = page.url();
         if (newUrl.includes('/chat/')) break;
         await new Promise(r => setTimeout(r, 1000));
       }
     }
 
-    // Step 5: Inject stream interceptor on the FINAL target page
-    await this._injectStreamInterceptor(targetPage);
-    await this._injectDomObserverEvaluate(targetPage);
+    // v5.3-fix: Inject stream interceptor na página atual (evaluate) + futuras (addInitScript)
+    // ISSO é a correção crítica: sem _injectStreamInterceptorEvaluate, o agente não captura
+    // as respostas da API na aba atual e fica "dormindo" para sempre.
+    await this._injectStreamInterceptor(page);           // addInitScript — para futuras navs
+    await this._injectStreamInterceptorEvaluate(page);   // evaluate — para página ATUAL (CRÍTICO!)
+    await this._injectDomObserverEvaluate(page);
 
     // v3.4: Verify we actually got a new chat URL
     const chatIdOld = oldUrl.includes('/chat/') ? oldUrl.split('/chat/')[1].split('?')[0] : null;
@@ -1506,13 +1448,11 @@ class KimiBridge {
 
     // Step 6: Mark chat with user identifier
     try {
-      await targetPage.evaluate((uid) => {
-        // Try to set chat title to include user identifier
+      await page.evaluate((uid) => {
         const titleEl = document.querySelector('[class*="chat-title"], [class*="title"], h1, .chat-header-title');
         if (titleEl && !titleEl.textContent.includes(uid)) {
           titleEl.textContent = `[${uid}] ${titleEl.textContent}`;
         }
-        // Also store in dataset for easy retrieval
         document.body.dataset.lunaUserId = uid;
       }, hashUserId(userId));
       log.info(`Marked chat with user identifier: ${hashUserId(userId)}`);
@@ -1520,15 +1460,10 @@ class KimiBridge {
       log.warn(`Failed to mark chat with user ID: ${e.message}`);
     }
 
-    // Update session to use the new page
-    session.page = targetPage;
+    // Update session
+    session.page = page;
     session.chatUrl = newUrl;
     this._saveChatUrl(userId, session.chatUrl);
-
-    // Close old page to free resources (optional — uncomment if needed)
-    // if (newPage && page !== newPage && !page.isClosed()) {
-    //   await page.close().catch(() => {});
-    // }
 
     log.success(`New chat created for user ${hashUserId(userId)}: ${session.chatUrl}`);
     return { chatUrl: session.chatUrl, mode: session.mode };
