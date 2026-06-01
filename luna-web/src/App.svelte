@@ -26,7 +26,7 @@
   import StatusBar from './components/StatusBar.svelte';
   import ParticleBackground from './components/ParticleBackground.svelte';
   import WelcomeScreen from './components/WelcomeScreen.svelte';
-  import LunaStage from './components/LunaStage.svelte';
+
 
   let configOpen = false;
   let mobileSidebarOpen = false;
@@ -171,7 +171,7 @@
     />
 
     <!-- 🏠 CASA DA LUNA — Footer Stage -->
-    <LunaStage />
+
   </div>
 {:else if authChecked}
   <LoginPage />

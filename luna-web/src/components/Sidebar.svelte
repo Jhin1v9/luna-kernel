@@ -3,7 +3,6 @@
   import { formatTime } from '../utils.js';
   import { user, mascotState } from '../stores.js';
   import { logout } from '../api.js';
-  import LunaMascot from './LunaMascot.svelte';
 
   export let sessions = [];
   export let currentId = null;
@@ -190,10 +189,16 @@
       </svg>
       Configuracoes
     </button>
-    <!-- Luna Mascot + Moon Phase -->
+    <!-- Luna — Moon Phase Avatar + Status -->
     <div class="footer-luna-row">
-      <div class="footer-mascot-avatar">
-        <LunaMascot size={55} floating={false} />
+      <div class="footer-moon-wrapper">
+        <span class="moon-phase" aria-label="Fases da Lua"></span>
+        <span class="moon-atmosphere"></span>
+        <span class="moon-stars">
+          <span class="star s1"></span>
+          <span class="star s2"></span>
+          <span class="star s3"></span>
+        </span>
       </div>
       <div class="footer-mascot-info">
         <span class="footer-mascot-name">Luna</span>
@@ -202,15 +207,6 @@
            $mascotState === 'thinking' ? '🤔 Pensando' :
            $mascotState === 'working' ? '⚡ Trabalhando' :
            $mascotState === 'error' ? '❌ Erro' : '🟢 Online'}
-        </span>
-      </div>
-      <div class="footer-moon-wrapper">
-        <span class="moon-phase" aria-label="Fases da Lua"></span>
-        <span class="moon-atmosphere"></span>
-        <span class="moon-stars">
-          <span class="star s1"></span>
-          <span class="star s2"></span>
-          <span class="star s3"></span>
         </span>
       </div>
     </div>
