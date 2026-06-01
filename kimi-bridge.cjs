@@ -240,6 +240,7 @@ class KimiBridge {
     this.idleTimer = null;
     this.cookieBackupTimer = null;
     this.persistentUserIds = new Set(); // userIds that should NEVER be cleaned up
+    this.cancelledStreams = new Map(); // userId -> true (cancelled mid-stream)
 
     // Initialize turndown if available
     this.turndown = null;
@@ -3321,6 +3322,108 @@ class KimiBridge {
   }
 
   /**
+   * v5.3: Extract JSON code blocks from the DOM in REAL-TIME.
+   * Returns { responses: [], actions: [] } for FIFO streaming.
+   * Detects {"response": "..."} and {"tool": "...", "params": {...}} blocks.
+   */
+  async _extractJsonBlocksFromDOM(page) {
+    try {
+      return await page.evaluate(() => {
+        const responses = [];
+        const actions = [];
+        const seen = new Set();
+
+        // Find the LAST assistant segment
+        const assistantSelectors = [
+          '.segment-assistant', '.message-assistant',
+          '[data-testid="assistant-message"]', '[data-testid="message-assistant"]',
+          '.chat-message--assistant', '[class*="assistant"][class*="segment"]',
+          '[class*="assistant"][class*="message"]',
+        ];
+        let lastAssistant = null;
+        for (const sel of assistantSelectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length) { lastAssistant = els[els.length - 1]; break; }
+        }
+        if (!lastAssistant) return { responses, actions };
+
+        // Find ALL code blocks in the assistant message
+        const codeSelectors = [
+          '.segment-code', '.message-code', '[class*="code"][class*="segment"]',
+          '.toolcall-content pre', '.toolcall-content code',
+          '.markdown pre code', '.markdown-container pre code',
+        ];
+        const allCodeEls = [];
+        for (const sel of codeSelectors) {
+          lastAssistant.querySelectorAll(sel).forEach(el => {
+            if (!allCodeEls.includes(el)) allCodeEls.push(el);
+          });
+        }
+
+        for (const el of allCodeEls) {
+          let text = '';
+          // Try innerText first, then textContent
+          text = (el.innerText || el.textContent || '').trim();
+          // Fallback: get from parent pre if innerText is empty
+          if (!text && el.parentElement && el.parentElement.tagName === 'PRE') {
+            text = (el.parentElement.innerText || el.parentElement.textContent || '').trim();
+          }
+          if (!text || text.length < 10 || seen.has(text)) continue;
+          seen.add(text);
+
+          // Clean up JSON wrapper artifacts from DOM extraction
+          const cleaned = text
+            .replace(/^JSON\s*\n\s*Copy\s*\n/i, '')
+            .replace(/^json\s*\n\s*Copy\s*\n/i, '');
+
+          // Try to parse as JSON
+          let parsed = null;
+          try {
+            parsed = JSON.parse(cleaned);
+          } catch {
+            // Try extracting first JSON object
+            const firstBrace = cleaned.indexOf('{');
+            const lastBrace = cleaned.lastIndexOf('}');
+            if (firstBrace >= 0 && lastBrace > firstBrace) {
+              try {
+                parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+              } catch {}
+            }
+          }
+
+          if (!parsed) continue;
+
+          // Detect response block
+          if (parsed.response !== undefined && !parsed.tool && !parsed.script) {
+            responses.push({ response: parsed.response, raw: text });
+          }
+          // Detect action/tool block
+          else if (parsed.tool && parsed.params !== undefined) {
+            actions.push({
+              tool: parsed.tool,
+              params: parsed.params,
+              raw: text,
+            });
+          }
+          // Detect script block
+          else if (parsed.script) {
+            actions.push({
+              tool: 'executeScript',
+              params: { code: parsed.script, language: parsed.language || 'bash' },
+              raw: text,
+            });
+          }
+        }
+
+        return { responses, actions };
+      });
+    } catch (e) {
+      log.warn(`_extractJsonBlocksFromDOM failed: ${e.message}`);
+      return { responses: [], actions: [] };
+    }
+  }
+
+  /**
    * Check if extracted Python code appears complete (not mid-stream).
    * Prevents emitting incomplete code that would fail execution.
    */
@@ -3543,19 +3646,34 @@ class KimiBridge {
     });
 
     // Wait for any ongoing processing
+    // v5.3-fix: If stream was cancelled, don't wait — force reset processing
     if (session.processing) {
-      log.warn(`User ${hashUserId(userId)} already processing — waiting`);
-      const startWait = Date.now();
-      while (session.processing) {
-        if (Date.now() - startWait > 60000) {
-          throw new Error('Timeout waiting for previous message');
+      if (this.cancelledStreams.get(userId)) {
+        log.warn(`User ${hashUserId(userId)} was cancelled — forcing processing reset`);
+        session.processing = false;
+        this.cancelledStreams.delete(userId);
+      } else {
+        log.warn(`User ${hashUserId(userId)} already processing — waiting`);
+        const startWait = Date.now();
+        while (session.processing) {
+          if (Date.now() - startWait > 60000) {
+            throw new Error('Timeout waiting for previous message');
+          }
+          // v5.3-fix: Check cancellation while waiting
+          if (this.cancelledStreams.get(userId)) {
+            log.warn(`User ${hashUserId(userId)} cancelled while waiting — forcing reset`);
+            session.processing = false;
+            this.cancelledStreams.delete(userId);
+            break;
+          }
+          await new Promise(r => setTimeout(r, 500));
         }
-        await new Promise(r => setTimeout(r, 500));
       }
     }
 
     session.processing = true;
     session.lastActivity = Date.now();
+    this.cancelledStreams.delete(userId); // clear any stale cancel flag
 
     try {
       await this._verifySession(page);
@@ -3624,11 +3742,20 @@ class KimiBridge {
       // Track DOM-extracted ipython actions to avoid duplicate emits
       const emittedActionCodes = new Set();
       let domActionsCount = 0;
+      // v5.3: Track JSON code blocks (responses + actions) for FIFO real-time streaming
+      const emittedResponseHashes = new Set();
+      const emittedJsonActionHashes = new Set();
 
       // Phase 0: Wait for text to start changing — NO TIMEOUT. Waits forever until Kimi starts.
       let textHasChanged = false;
       let pollCount = 0;
       while (true) {
+        // v5.3-fix: Check if user cancelled the stream
+        if (this.cancelledStreams.get(userId)) {
+          log.warn(`[sendMessageStream] Phase 0 cancelled by user ${hashUserId(userId)}`);
+          this.cancelledStreams.delete(userId);
+          throw new Error('STREAM_CANCELLED');
+        }
         const poll = await this._pollThinkingAndResponse(page);
         const combined = poll.thinking + poll.response;
         // Exit if text changed and is non-empty
@@ -3661,6 +3788,12 @@ class KimiBridge {
       const streamStartTime = Date.now();
 
       while (!isComplete) {
+        // v5.3-fix: Check if user cancelled the stream
+        if (this.cancelledStreams.get(userId)) {
+          log.warn(`[sendMessageStream] Phase 1 cancelled by user ${hashUserId(userId)}`);
+          this.cancelledStreams.delete(userId);
+          throw new Error('STREAM_CANCELLED');
+        }
         const poll = await this._pollThinkingAndResponse(page);
 
         // Track text changes for fallback completion
@@ -3754,6 +3887,46 @@ class KimiBridge {
         } catch (e) {
           // Non-critical: if DOM extraction fails, continue streaming
           log.warn(`[DOM MIRROR] Extraction error: ${e.message}`);
+        }
+
+        // ── v5.3: REAL-TIME JSON BLOCK STREAMING ──
+        // Detect {"response": "..."} and {"tool": "..."} code blocks as they're written.
+        // FIFO: emit immediately, in order of appearance. Response first, then action.
+        try {
+          const jsonBlocks = await this._extractJsonBlocksFromDOM(page);
+
+          // Emit responses (in order)
+          for (const respBlock of jsonBlocks.responses) {
+            const hash = crypto.createHash('sha256').update(respBlock.raw).digest('hex').slice(0, 16);
+            if (!emittedResponseHashes.has(hash)) {
+              emittedResponseHashes.add(hash);
+              log.info(`[JSON STREAM] Response detected (${respBlock.response.length} chars)`);
+              yield {
+                type: 'response_detected',
+                response: respBlock.response,
+                source: 'json_block',
+              };
+            }
+          }
+
+          // Emit actions (in order)
+          for (const actionBlock of jsonBlocks.actions) {
+            const hash = crypto.createHash('sha256').update(actionBlock.raw).digest('hex').slice(0, 16);
+            if (!emittedJsonActionHashes.has(hash)) {
+              emittedJsonActionHashes.add(hash);
+              log.info(`[JSON STREAM] Action detected: ${actionBlock.tool}`);
+              yield {
+                type: 'action_detected',
+                action: { tool: actionBlock.tool, params: actionBlock.params },
+                source: 'json_block',
+                code: actionBlock.raw,
+                kimiResult: '',
+                kimiImages: [],
+              };
+            }
+          }
+        } catch (e) {
+          log.warn(`[JSON STREAM] Extraction error: ${e.message}`);
         }
 
         // Check buttons visibility
@@ -3870,12 +4043,45 @@ class KimiBridge {
       }
 
     } catch (err) {
-      try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch {}
-      throw err;
+      // v5.3-fix: STREAM_CANCELLED is not a real error — don't clear input, don't throw
+      if (err.message === 'STREAM_CANCELLED') {
+        log.info(`[sendMessageStream] Stream cancelled gracefully for user ${hashUserId(userId)}`);
+      } else {
+        try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch {}
+        throw err;
+      }
     } finally {
       session.processing = false;
       session.lastActivity = Date.now();
+      this.cancelledStreams.delete(userId);
     }
+  }
+
+  /**
+   * Cancel an active stream for a user.
+   * v5.3-fix: Sets cancel flag, clicks stop button on Kimi Web, and forces processing reset.
+   * This is the REAL cancellation — unlike the old server-side-only cancel.
+   */
+  async cancelStream(userId) {
+    log.info(`[cancelStream] Cancelling stream for user ${hashUserId(userId)}`);
+    this.cancelledStreams.set(userId, true);
+
+    // 1. Click stop button on Kimi Web to halt generation
+    await this.abortGeneration(userId);
+
+    // 2. Force reset processing state so next message doesn't wait forever
+    const session = this.userSessions.get(userId);
+    if (session) {
+      session.processing = false;
+      session.lastActivity = Date.now();
+      log.info(`[cancelStream] Forced processing=false for user ${hashUserId(userId)}`);
+    }
+
+    // 3. Give Kimi a moment to actually stop before next message
+    await new Promise(r => setTimeout(r, 800));
+
+    this.cancelledStreams.delete(userId);
+    return true;
   }
 
   /**

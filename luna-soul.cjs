@@ -2078,6 +2078,20 @@ class LunaSoul extends EventEmitter {
               yield { type: 'waiting', message: event.message, sessionId };
               break;
 
+            // v5.3: REAL-TIME JSON response streaming — show response immediately
+            case 'response_detected': {
+              const respText = event.response || '';
+              if (respText) {
+                yield { type: 'assistant', response: respText, sessionId };
+                this.sessionManager.appendEvent(sessionId, {
+                  type: 'assistant',
+                  response: respText,
+                  timestamp: new Date().toISOString(),
+                });
+              }
+              break;
+            }
+
             case 'action_detected': {
               // DOM MIRROR v3.2: Kimi Web showed Python code in the DOM.
               // We ALWAYS execute locally — Python is a native Linux command on the user's machine.
@@ -2322,6 +2336,20 @@ NUNCA re-execute a MESMA ferramenta com os MESMOS parâmetros.`;
             fullPlan += event.text;
             yield { type: 'plan_delta', text: event.text, fullPlan, sessionId };
             break;
+
+          // v5.3: REAL-TIME JSON response streaming — show response immediately
+          case 'response_detected': {
+            const respText = event.response || '';
+            if (respText) {
+              yield { type: 'assistant', response: respText, sessionId };
+              this.sessionManager.appendEvent(sessionId, {
+                type: 'assistant',
+                response: respText,
+                timestamp: new Date().toISOString(),
+              });
+            }
+            break;
+          }
 
           case 'action_detected': {
             // In plan mode, we still execute read-only actions (readFile, grep, etc.)
