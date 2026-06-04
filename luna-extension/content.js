@@ -10,8 +10,29 @@
   const INJECTED_SRC = chrome.runtime.getURL('injected.js');
   let isForwarding = true;
 
+  // v8.2-fix: Teardown old observer BEFORE injecting new one to prevent memory leak
+  function teardownMainWorldObserver() {
+    const script = document.createElement('script');
+    script.textContent = `
+      (function() {
+        try {
+          if (window.__lunaDomObserver && typeof window.__lunaDomObserver.teardown === 'function') {
+            window.__lunaDomObserver.teardown();
+          }
+        } catch (e) {}
+      })();
+    `;
+    (document.head || document.documentElement).appendChild(script);
+    script.remove();
+  }
+
   // ── Inject observer into MAIN world ──
   function injectObserver() {
+    // If observer already exists and is healthy, don't re-inject
+    if (window.__lunaDomObserver) {
+      return;
+    }
+
     const old = document.getElementById(SCRIPT_ID);
     if (old) old.remove();
 
@@ -29,30 +50,30 @@
     injectObserver();
   }
 
-  // Re-inject on SPA navigation
+  // v8.2-fix: SPA navigation — teardown old, then inject new. Prevents observer accumulation.
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
 
   history.pushState = function(...args) {
     originalPushState.apply(this, args);
-    setTimeout(injectObserver, 100);
+    setTimeout(() => { teardownMainWorldObserver(); injectObserver(); }, 100);
   };
 
   history.replaceState = function(...args) {
     originalReplaceState.apply(this, args);
-    setTimeout(injectObserver, 100);
+    setTimeout(() => { teardownMainWorldObserver(); injectObserver(); }, 100);
   };
 
   window.addEventListener('popstate', () => {
-    setTimeout(injectObserver, 100);
+    setTimeout(() => { teardownMainWorldObserver(); injectObserver(); }, 100);
   });
 
-  // Safety net re-injection
+  // Safety net re-injection — much less frequent (30s instead of 5s)
   setInterval(() => {
     if (!window.__lunaDomObserver && document.readyState === 'complete') {
       injectObserver();
     }
-  }, 5000);
+  }, 30000);
 
   // ── Kimi Input Injection ──
   function findKimiInput() {

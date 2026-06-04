@@ -20,29 +20,16 @@
   let userMessageAdded = false; // v5.6-fix: Ensure user message is in store before assistant responses
   let streamingSafetyTimer = null; // v5.7-fix: Detect SSE inactivity (NOT thinking time)
   let currentMessageId = null; // v6.1-fix: Track current message ID to ignore stale SSE events
-  const SSE_INACTIVITY_MS = 60000; // 60s without ANY SSE event = connection probably dead
+  const SSE_INACTIVITY_MS = 600000; // v8.2-fix: 10 min — user explicitly wants to wait for long operations
 
-  // v5.7-fix: Reset inactivity timer on EVERY SSE event. If NO event for 60s,
-  // the SSE connection is likely dead (not Kimi thinking). Force isStreaming=false.
+  // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
+  // The timer is cleared but NEVER restarted, so SSE never aborts due to silence.
   function resetStreamingInactivityTimer() {
     if (streamingSafetyTimer) {
       clearTimeout(streamingSafetyTimer);
       streamingSafetyTimer = null;
     }
-    if ($isStreaming) {
-      streamingSafetyTimer = setTimeout(() => {
-        console.warn('[ChatArea] SSE inactivity timeout: no events for 60s, assuming connection dead');
-        isStreaming.set(false);
-        mascotState.set('idle');
-        mascotMessage.set('O que mais posso fazer?');
-        messages.update(msgs => removeAllThinking(msgs));
-        thinkingId = null;
-        currentAssistantId = null;
-        streamingSafetyTimer = null;
-        // Try to reconnect SSE and fetch any pending messages
-        reconnectAndFetchPending();
-      }, SSE_INACTIVITY_MS);
-    }
+    // NOTE: setTimeout removed per user request. SSE stays alive indefinitely.
   }
 
   async function reconnectAndFetchPending() {

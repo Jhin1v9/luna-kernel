@@ -74,57 +74,90 @@
     }
   };
 
+  // v8.2-fix: Robust JSON parser that finds ALL valid JSON objects in text by counting braces.
+  // Replaces regex-based extraction which fails on nested JSON.
+  function extractJsonBlocks(text) {
+    const blocks = [];
+    let i = 0;
+    while (i < text.length) {
+      if (text[i] === '{') {
+        let depth = 1;
+        let j = i + 1;
+        let inString = false;
+        let escape = false;
+        while (j < text.length && depth > 0) {
+          const c = text[j];
+          if (escape) {
+            escape = false;
+          } else if (c === '\\') {
+            escape = true;
+          } else if (c === '"') {
+            inString = !inString;
+          } else if (!inString) {
+            if (c === '{') depth++;
+            else if (c === '}') depth--;
+          }
+          j++;
+        }
+        if (depth === 0) {
+          const jsonStr = text.slice(i, j);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            blocks.push({ start: i, end: j, parsed, raw: jsonStr });
+          } catch {}
+          i = j;
+          continue;
+        }
+      }
+      i++;
+    }
+    return blocks;
+  }
+
   function renderMarkdown(text) {
     if (!text) return '';
-    // v5.1-fix: Strip Kimi JSON wrappers and unescape literal \n sequences
-    // Handles formats like: JSON\nCopy\n```json\n{"response": "..."}\n```
+
+    // v8.2-fix: Strip Kimi JSON wrappers before processing
     let working = text.trim();
     working = working.replace(/^\s*(?:JSON|json)\s*(?:Copy|复制|複製)?\s*/im, '');
     working = working.replace(/^```json\s*/i, '').replace(/```\s*$/g, '');
 
-    // Try extracting JSON response
-    let jsonText = working;
-    if (!jsonText.startsWith('{')) {
-      const jsonObjMatch = working.match(/\{[\s\S]*"response"\s*:[\s\S]*\}/);
-      if (jsonObjMatch) jsonText = jsonObjMatch[0];
+    // v8.2-fix: Extract all JSON objects by brace-counting (handles nested JSON)
+    const jsonBlocks = extractJsonBlocks(working);
+
+    // Build transformed text by replacing JSON blocks with badges or responses
+    let result = '';
+    let lastEnd = 0;
+    for (const block of jsonBlocks) {
+      // Append text before this JSON block
+      result += working.slice(lastEnd, block.start);
+
+      const parsed = block.parsed;
+      if (parsed.response !== undefined && typeof parsed.response === 'string') {
+        // JSON response block → show the response text
+        result += parsed.response;
+      } else if (parsed.tool !== undefined && parsed.response === undefined) {
+        // Tool call JSON → show badge
+        const toolName = parsed.tool || 'tool';
+        const p = parsed.params || {};
+        const paramSummary = Object.keys(p).slice(0, 2).join(', ') || '';
+        result += `<span class="md-tool-badge" data-tool="${toolName}">🔧 ${toolName}${paramSummary ? ' (' + paramSummary + ')' : ''}</span>`;
+      } else {
+        // Other JSON → keep as code block for readability
+        result += `<code class="md-inline-code">${block.raw.slice(0, 120)}${block.raw.length > 120 ? '...' : ''}</code>`;
+      }
+      lastEnd = block.end;
     }
+    // Append remaining text after last JSON block
+    result += working.slice(lastEnd);
 
-    let extractedResponse = null;
-    if (jsonText.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(jsonText);
-        if (parsed.response && typeof parsed.response === 'string') {
-          extractedResponse = parsed.response;
-        }
-      } catch {}
-    }
+    // v8.2-fix: Deduplicate consecutive identical tool badges
+    // When the same tool JSON appears twice in the text (e.g. DOM mirror + streaming delta),
+    // this prevents duplicate badges like "🔧 tool 🔧 tool"
+    result = result.replace(/(<span class="md-tool-badge"[^>]*>[\s\S]*?<\/span>)(?:\s*\1)+/g, '$1');
 
-    // v5.2-fix: Hide tool-call JSON blocks from display (they are executed, not shown)
-    // Replace {"tool": "...", "params": {...}} with a discreet badge
-    working = working.replace(/\{[\s\S]*?"tool"\s*:\s*"([^"]+)"[\s\S]*?\}/g, (match, toolName) => {
-      try {
-        const parsed = JSON.parse(match);
-        if (parsed.tool && !parsed.response) {
-          return `<span class="md-tool-badge" data-tool="${parsed.tool}">🔧 ${parsed.tool}</span>`;
-        }
-      } catch {}
-      return match;
-    });
-    // Also hide code blocks that contain pure tool JSON
-    working = working.replace(/```(?:json)?\s*\n?\{\s*"tool"\s*:[\s\S]*?\}\s*```/g, (match) => {
-      const inner = match.replace(/```(?:json)?\s*\n?/, '').replace(/```\s*$/, '');
-      try {
-        const parsed = JSON.parse(inner);
-        if (parsed.tool && !parsed.response) {
-          return `<span class="md-tool-badge" data-tool="${parsed.tool}">🔧 ${parsed.tool}</span>`;
-        }
-      } catch {}
-      return match;
-    });
-
-    // Use extracted response if available; otherwise use raw text
-    // Unescape literal \n -> real newline in both cases
-    text = (extractedResponse !== null ? extractedResponse : working).replace(/\\n/g, '\n');
+    // Unescape literal \n sequences
+    text = result.replace(/\\n/g, '\n');
     let html = text
       .replace(/^### (.*$)/gim, '<h3 class="md-h3">$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="md-h2">$1</h2>')
@@ -495,6 +528,31 @@
     0% { box-shadow: 0 0 0 0 var(--luna-accent-glow); }
     50% { box-shadow: 0 0 20px 4px var(--luna-accent-glow); }
     100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  /* v8.2: Tool badge styling */
+  .md-tool-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(99, 102, 241, 0.1));
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #c4b5fd;
+    font-family: var(--font-mono, 'SF Mono', monospace);
+    white-space: nowrap;
+  }
+  .md-inline-code {
+    background: rgba(255,255,255,0.05);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 12px;
+    color: #a5b4fc;
+    font-family: var(--font-mono, 'SF Mono', monospace);
+    word-break: break-all;
   }
 
   @keyframes fadeInUp {
