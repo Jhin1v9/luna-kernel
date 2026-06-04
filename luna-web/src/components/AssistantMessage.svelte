@@ -76,34 +76,55 @@
 
   function renderMarkdown(text) {
     if (!text) return '';
-    // v4.1-fix: Extract JSON response if present (Kimi returns {"response": "..."})
-    // Handles formats like: JSON\nCopy\n```json\n{...}\n```
-    const trimmed = text.trim();
-    // Try code block first
-    let codeBlockMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)```\s*$/m);
-    // Also try extracting from "JSON\nCopy\n```...```" pattern
-    if (!codeBlockMatch) {
-      codeBlockMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-    }
-    // Try extracting raw JSON object from anywhere in the text
-    let jsonText = codeBlockMatch ? codeBlockMatch[1].trim() : trimmed;
-    
-    // If jsonText doesn't start with {, try to find a JSON object in the text
+    // v5.1-fix: Strip Kimi JSON wrappers and unescape literal \n sequences
+    // Handles formats like: JSON\nCopy\n```json\n{"response": "..."}\n```
+    let working = text.trim();
+    working = working.replace(/^\s*(?:JSON|json)\s*(?:Copy|复制|複製)?\s*/im, '');
+    working = working.replace(/^```json\s*/i, '').replace(/```\s*$/g, '');
+
+    // Try extracting JSON response
+    let jsonText = working;
     if (!jsonText.startsWith('{')) {
-      const jsonObjMatch = trimmed.match(/\{[\s\S]*"response"\s*:[\s\S]*\}/);
-      if (jsonObjMatch) {
-        jsonText = jsonObjMatch[0];
-      }
+      const jsonObjMatch = working.match(/\{[\s\S]*"response"\s*:[\s\S]*\}/);
+      if (jsonObjMatch) jsonText = jsonObjMatch[0];
     }
-    
+
+    let extractedResponse = null;
     if (jsonText.startsWith('{')) {
       try {
         const parsed = JSON.parse(jsonText);
         if (parsed.response && typeof parsed.response === 'string') {
-          text = parsed.response;
+          extractedResponse = parsed.response;
         }
       } catch {}
     }
+
+    // v5.2-fix: Hide tool-call JSON blocks from display (they are executed, not shown)
+    // Replace {"tool": "...", "params": {...}} with a discreet badge
+    working = working.replace(/\{[\s\S]*?"tool"\s*:\s*"([^"]+)"[\s\S]*?\}/g, (match, toolName) => {
+      try {
+        const parsed = JSON.parse(match);
+        if (parsed.tool && !parsed.response) {
+          return `<span class="md-tool-badge" data-tool="${parsed.tool}">🔧 ${parsed.tool}</span>`;
+        }
+      } catch {}
+      return match;
+    });
+    // Also hide code blocks that contain pure tool JSON
+    working = working.replace(/```(?:json)?\s*\n?\{\s*"tool"\s*:[\s\S]*?\}\s*```/g, (match) => {
+      const inner = match.replace(/```(?:json)?\s*\n?/, '').replace(/```\s*$/, '');
+      try {
+        const parsed = JSON.parse(inner);
+        if (parsed.tool && !parsed.response) {
+          return `<span class="md-tool-badge" data-tool="${parsed.tool}">🔧 ${parsed.tool}</span>`;
+        }
+      } catch {}
+      return match;
+    });
+
+    // Use extracted response if available; otherwise use raw text
+    // Unescape literal \n -> real newline in both cases
+    text = (extractedResponse !== null ? extractedResponse : working).replace(/\\n/g, '\n');
     let html = text
       .replace(/^### (.*$)/gim, '<h3 class="md-h3">$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="md-h2">$1</h2>')

@@ -17,19 +17,60 @@
   let lastConnectedSessionId = null;
   let toolStartTimes = new Map(); // toolName -> startTimestamp
   let processedEventIds = new Set(); // v4.2: Track processed SSE event IDs to prevent duplicates
+  let userMessageAdded = false; // v5.6-fix: Ensure user message is in store before assistant responses
+  let streamingSafetyTimer = null; // v5.7-fix: Detect SSE inactivity (NOT thinking time)
+  let currentMessageId = null; // v6.1-fix: Track current message ID to ignore stale SSE events
+  const SSE_INACTIVITY_MS = 60000; // 60s without ANY SSE event = connection probably dead
+
+  // v5.7-fix: Reset inactivity timer on EVERY SSE event. If NO event for 60s,
+  // the SSE connection is likely dead (not Kimi thinking). Force isStreaming=false.
+  function resetStreamingInactivityTimer() {
+    if (streamingSafetyTimer) {
+      clearTimeout(streamingSafetyTimer);
+      streamingSafetyTimer = null;
+    }
+    if ($isStreaming) {
+      streamingSafetyTimer = setTimeout(() => {
+        console.warn('[ChatArea] SSE inactivity timeout: no events for 60s, assuming connection dead');
+        isStreaming.set(false);
+        mascotState.set('idle');
+        mascotMessage.set('O que mais posso fazer?');
+        messages.update(msgs => removeAllThinking(msgs));
+        thinkingId = null;
+        currentAssistantId = null;
+        streamingSafetyTimer = null;
+        // Try to reconnect SSE and fetch any pending messages
+        reconnectAndFetchPending();
+      }, SSE_INACTIVITY_MS);
+    }
+  }
+
+  async function reconnectAndFetchPending() {
+    if (!sessionId) return;
+    try {
+      console.log('[ChatArea] Reconnecting SSE to fetch pending messages...');
+      await connectSSE();
+    } catch (e) {
+      console.error('[ChatArea] Reconnect failed:', e.message);
+    }
+  }
 
   function removeAllThinking(msgs) {
     return msgs.filter(m => m.type !== 'thinking');
   }
 
   function getEventHash(event) {
-    // v4.2: Create a unique hash for an event based on its properties
+    // v5.5-fix: Create a unique hash for an event based on its CONTENT + params, not id.
+    // The backend generates unique ids per event ('ev-' + Date.now()), so using id
+    // in the hash makes deduplication useless — duplicates have different ids.
+    // For tool events, include params so two action_start's with different params
+    // don't get incorrectly deduplicated.
     const type = event.type || '';
     const text = event.text || event.content || event.fullResponse || '';
     const tool = event.tool || '';
-    const id = event.id || '';
-    // Use first 100 chars of text + type + tool to create a simple hash
-    const raw = `${type}:${tool}:${id}:${text.slice(0, 100)}`;
+    const paramsKey = event.params ? JSON.stringify(event.params).slice(0, 50) : '';
+    // Use first 100 chars of text + type + tool + params to create a simple hash
+    const raw = `${type}:${tool}:${paramsKey}:${text.slice(0, 100)}`;
     let hash = 0;
     for (let i = 0; i < raw.length; i++) {
       const char = raw.charCodeAt(i);
@@ -42,6 +83,21 @@
   function handleEvent(event) {
     if (!event) return;
     if (event.sessionId && event.sessionId !== sessionId) return;
+
+    // v6.1-fix: If the event has a messageId that doesn't match the current message,
+    // it's a stale event from a previous message — ignore it.
+    if (event.messageId && currentMessageId && event.messageId !== currentMessageId) {
+      console.log('[SSE] Ignoring stale event from previous message:', event.type, event.messageId);
+      return;
+    }
+
+    // v5.6-fix: Ignore response events until user message is confirmed in store
+    const isResponseEvent = ['assistant', 'thinking', 'response_detected', 'partial', 'done', 'tool', 'action_start', 'action_end'].includes(event.type);
+    if (isResponseEvent && !userMessageAdded) {
+      console.log('[SSE] Delaying response event until user message is added:', event.type);
+      setTimeout(() => handleEvent(event), 100);
+      return;
+    }
 
     // v4.2-fix: Deduplicate by event hash — prevents duplicate rendering on reconnects
     const eventHash = getEventHash(event);
@@ -114,7 +170,18 @@
         break;
       }
       case 'thinking_delta': {
-        if (thinkingId) {
+        // v5.3-fix: Auto-create thinking bubble if it doesn't exist yet.
+        // The bridge doesn't always emit 'thinking_start', so we create on demand.
+        if (!thinkingId) {
+          const newId = 'think-' + Date.now();
+          thinkingId = newId;
+          messages.update(msgs => [...removeAllThinking(msgs), {
+            id: newId,
+            type: 'thinking',
+            content: event.text || '',
+            timestamp: new Date().toISOString()
+          }]);
+        } else {
           messages.update(msgs =>
             msgs.map(m => {
               if (m.id !== thinkingId) return m;
@@ -133,22 +200,39 @@
       }
       case 'response_delta': {
         playSound('messageReceived');
-        messages.update(msgs => removeAllThinking(msgs));
-        thinkingId = null;
+        // v5.5-fix: Don't immediately kill thinking bubble — give user visual feedback.
+        // If thinking was created less than 2s ago, keep it visible briefly.
+        let thinkRemoved = false;
+        messages.update(msgs => {
+          const thinkMsg = msgs.find(m => m.type === 'thinking');
+          if (thinkMsg && Date.now() - new Date(thinkMsg.timestamp).getTime() < 2000) {
+            return msgs;
+          }
+          thinkRemoved = true;
+          return removeAllThinking(msgs);
+        });
+        if (thinkRemoved) thinkingId = null;
+
+        const deltaText = event.text || '';
+        // v7.0-fix: Don't create empty assistant bubbles from empty deltas.
+        // Empty deltas can arrive when the DOM observer returns empty text temporarily.
+        if (!currentAssistantId && !deltaText) {
+          break;
+        }
 
         if (!currentAssistantId) {
           currentAssistantId = 'resp-' + Date.now();
           messages.update(msgs => [...msgs, {
             id: currentAssistantId,
             type: 'assistant',
-            content: event.text || '',
+            content: deltaText,
             timestamp: new Date().toISOString()
           }]);
         } else {
           messages.update(msgs =>
             msgs.map(m => {
               if (m.id !== currentAssistantId) return m;
-              const newText = event.text || '';
+              const newText = deltaText;
               const current = m.content || '';
               // v5.3-fix: If delta looks like full replacement (larger than current + 50%
               // and contains current start), replace instead of append to avoid duplication
@@ -159,6 +243,70 @@
               return { ...m, content: current + newText };
             })
           );
+        }
+        break;
+      }
+      case 'response_detected': {
+        // v5.4-fix: JSON-block responses from Kimi — each one is a COMPLETE message.
+        // If we already have an assistant bubble created recently (from response_delta),
+        // replace it instead of creating a duplicate bubble.
+        playSound('messageReceived');
+        // v5.5-fix: Same as response_delta — preserve thinking briefly for visual feedback
+        let thinkRemoved = false;
+        messages.update(msgs => {
+          const thinkMsg = msgs.find(m => m.type === 'thinking');
+          if (thinkMsg && Date.now() - new Date(thinkMsg.timestamp).getTime() < 2000) {
+            return msgs;
+          }
+          thinkRemoved = true;
+          return removeAllThinking(msgs);
+        });
+        if (thinkRemoved) thinkingId = null;
+
+        const newContent = event.text || event.response || '';
+        
+        // v7.0-fix: If newContent is empty, don't create an empty bubble.
+        // This can happen when the DOM observer dies and response_detected fires
+        // without extracted text. The 'done' event will provide the fallback.
+        if (!newContent || newContent.trim().length === 0) {
+          console.warn('[ChatArea] response_detected with empty content — skipping bubble creation, waiting for done');
+          break;
+        }
+        
+        // Check if current assistant bubble was created recently (within last 10s).
+        // response_delta often accumulates partial content before response_detected
+        // emits the complete JSON-extracted version. We should replace, not duplicate.
+        let replaced = false;
+        if (currentAssistantId) {
+          messages.update(msgs => {
+            const currentMsg = msgs.find(m => m.id === currentAssistantId);
+            if (currentMsg && currentMsg.type === 'assistant') {
+              const msgAge = Date.now() - new Date(currentMsg.timestamp).getTime();
+              // If message is recent (< 10s), it's likely from response_delta — replace it
+              if (msgAge < 10000) {
+                replaced = true;
+                return msgs.map(m =>
+                  m.id === currentAssistantId
+                    ? { ...m, content: newContent }
+                    : m
+                );
+              }
+            }
+            return msgs;
+          });
+        }
+
+        if (!replaced) {
+          // No duplicate found — create new bubble
+          currentAssistantId = null;
+          const bubbleId = 'resp-' + Date.now();
+          messages.update(msgs => [...msgs, {
+            id: bubbleId,
+            type: 'assistant',
+            content: newContent,
+            timestamp: new Date().toISOString()
+          }]);
+          currentAssistantId = bubbleId;
         }
         break;
       }
@@ -212,6 +360,22 @@
         currentAssistantId = null;
         break;
       }
+      case 'context_limit': {
+        playSound('error');
+        mascotState.set('idle');
+        mascotMessage.set('Limite de contexto atingido');
+        messages.update(msgs => removeAllThinking(msgs));
+        thinkingId = null;
+        messages.update(msgs => [...msgs, {
+          id: 'ctxlim-' + Date.now(),
+          type: 'system',
+          content: event.message || '🔁 Limite de contexto atingido. Use /newchat para criar uma nova thread.',
+          timestamp: new Date().toISOString()
+        }]);
+        isStreaming.set(false);
+        currentAssistantId = null;
+        break;
+      }
       case 'done': {
         mascotState.set('idle');
         mascotMessage.set('O que mais posso fazer?');
@@ -219,17 +383,54 @@
         thinkingId = null;
         const finalResponse = event.result?.response || event.response || event.text;
         console.log('[done] finalResponse length:', finalResponse?.length, 'content:', finalResponse?.substring(0, 100));
-        if (finalResponse && !currentAssistantId) {
-          messages.update(msgs => [...msgs, {
-            id: 'resp-' + Date.now(),
-            type: 'assistant',
-            content: finalResponse,
-            timestamp: new Date().toISOString()
-          }]);
-        } else if (finalResponse && currentAssistantId) {
-          messages.update(msgs =>
-            msgs.map(m => m.id === currentAssistantId ? { ...m, content: finalResponse } : m)
-          );
+        
+        // v7.0-fix: Robust fallback — always ensure an assistant bubble exists with the final response.
+        // Cases handled:
+        //   1. No assistant bubble at all (currentAssistantId is null) → create one
+        //   2. Assistant bubble exists but is empty → update it
+        //   3. Assistant bubble exists with content → update with final (may be more complete)
+        if (finalResponse) {
+          let hasAssistantBubble = false;
+          let assistantBubbleEmpty = false;
+          messages.update(msgs => {
+            if (currentAssistantId) {
+              const currentMsg = msgs.find(m => m.id === currentAssistantId);
+              if (currentMsg && currentMsg.type === 'assistant') {
+                hasAssistantBubble = true;
+                assistantBubbleEmpty = !currentMsg.content || currentMsg.content.trim().length === 0;
+              }
+            }
+            // Also check if there's ANY assistant message without content
+            const emptyAssistant = msgs.find(m => m.type === 'assistant' && (!m.content || m.content.trim().length === 0));
+            if (emptyAssistant && !currentAssistantId) {
+              currentAssistantId = emptyAssistant.id;
+              assistantBubbleEmpty = true;
+            }
+            return msgs;
+          });
+          
+          if (!hasAssistantBubble || assistantBubbleEmpty) {
+            // Create new bubble if none exists or existing is empty
+            const bubbleId = currentAssistantId || ('resp-' + Date.now());
+            if (!currentAssistantId) {
+              messages.update(msgs => [...msgs, {
+                id: bubbleId,
+                type: 'assistant',
+                content: finalResponse,
+                timestamp: new Date().toISOString()
+              }]);
+              currentAssistantId = bubbleId;
+            } else {
+              messages.update(msgs =>
+                msgs.map(m => m.id === currentAssistantId ? { ...m, content: finalResponse } : m)
+              );
+            }
+          } else if (currentAssistantId) {
+            // Update existing non-empty bubble with final response
+            messages.update(msgs =>
+              msgs.map(m => m.id === currentAssistantId ? { ...m, content: finalResponse } : m)
+            );
+          }
         }
         isStreaming.set(false);
         currentAssistantId = null;
@@ -501,8 +702,27 @@
   async function handleSend(msg, files) {
     if (!msg.trim()) return;
 
-    // v4.2-fix: Reset dedup tracking for new message
-    processedEventIds.clear();
+    // v6.1-fix: Abort any active stream from a previous message before starting
+    // a new one. This prevents stale SSE events from the previous message
+    // from being processed as part of the new message.
+    if ($isStreaming && sessionId) {
+      console.log('[handleSend] Aborting previous stream before sending new message');
+      await cancelStream(sessionId);
+    }
+
+    // v6.1-fix: Generate a new message ID for this message. If the backend
+    // sends messageId in SSE events, we can validate against it.
+    currentMessageId = 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+
+    // v5.6-fix: Reset user message tracking for new message
+    userMessageAdded = false;
+
+    // v6.0-fix: DO NOT clear processedEventIds — it breaks deduplication of
+    // delayed SSE events from the previous message. When a 'done' or
+    // 'response_detected' event from msg N-1 arrives after handleSend() was
+    // called for msg N, clearing the set allows it to be processed as new,
+    // causing the previous response to be "pasted" into the chat again.
+    // processedEventIds.clear(); ← REMOVED
 
     // v3.7-fix: Auto-create session if none exists
     let activeSessionId = sessionId;
@@ -543,6 +763,19 @@
     // v4.0-fix: Remove all previous thinking bubbles when sending a new message
     messages.update(msgs => removeAllThinking(msgs));
 
+    // v5.5-fix: Create a synthetic thinking bubble that persists during streaming.
+    // When Kimi generates JSON blocks, the bridge often doesn't emit thinking deltas
+    // because Kimi Web doesn't render thinking text for JSON. This ensures the user
+    // sees visual feedback (🧠 Pensando...) while waiting for the response.
+    const syntheticThinkId = 'think-' + Date.now();
+    thinkingId = syntheticThinkId;
+    messages.update(msgs => [...msgs, {
+      id: syntheticThinkId,
+      type: 'thinking',
+      content: '',
+      timestamp: new Date().toISOString()
+    }]);
+
     const userMsg = {
       id: 'user-' + Date.now(),
       type: 'user',
@@ -551,6 +784,8 @@
       timestamp: new Date().toISOString()
     };
     messages.update(msgs => [...msgs, userMsg]);
+    userMessageAdded = true;
+    await tick(); // Ensure user message is rendered before processing response events
     isStreaming.set(true);
 
     try {
@@ -696,7 +931,11 @@
         planModeState.update(s => ({ ...s, status: 'processing' }));
         await startPlanMode(planMsg, activeSessionId);
       } else {
-        await sendMessage(msg, activeSessionId, $currentMode, files);
+        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId);
+        // v7.1-fix: Reconnect SSE after sending a new message in the same session.
+        // The previous SSE connection was gracefully closed after 'done'. We need
+        // a fresh connection for the new message's streaming response.
+        await connectSSE();
       }
     } catch (e) {
       console.error('Send error:', e);

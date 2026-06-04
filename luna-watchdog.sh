@@ -3,7 +3,7 @@
 # Roda via cron a cada 2 minutos
 
 HEALTH_URL="https://luna-app.duckdns.org:5173/"
-LOCAL_URL="http://localhost:3458/"
+LOCAL_URL="http://localhost:3458/health"
 PM2_BIN="/home/jhin/.npm-global/bin/pm2"
 LOG_FILE="/home/jhin/.luna-kernel/logs/watchdog.log"
 
@@ -13,8 +13,8 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-# Check local backend first
-if ! curl -s --max-time 5 "$LOCAL_URL" > /dev/null 2>&1; then
+# Check local backend first (use /health endpoint — it's lightweight and fast)
+if ! curl -s --max-time 10 "$LOCAL_URL" > /dev/null 2>&1; then
   log "⚠️ Backend localhost:3458 OFFLINE — restarting PM2 processes"
   
   # Ensure PM2 daemon is running

@@ -12,6 +12,8 @@
   export let onDelete = () => {};
   export let onOpenConfig = () => {};
   export let mobileOpen = false;
+  export let collapsed = false;
+  export let onToggleCollapse = () => {};
 
   let editingId = null;
   let editTitle = '';
@@ -86,7 +88,17 @@
   <div class="mobile-overlay" on:click={() => mobileOpen = false} />
 {/if}
 
-<aside class="sidebar" class:mobile-open={mobileOpen} bind:this={sidebarEl}>
+<aside class="sidebar" class:mobile-open={mobileOpen} class:collapsed bind:this={sidebarEl}>
+  <!-- Toggle collapse button -->
+  <button class="collapse-toggle" on:click={onToggleCollapse} title={collapsed ? 'Expandir sidebar' : 'Colapsar sidebar'}>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      {#if collapsed}
+        <polyline points="9 18 15 12 9 6"/>
+      {:else}
+        <polyline points="15 18 9 12 15 6"/>
+      {/if}
+    </svg>
+  </button>
   <!-- Logo minimal no topo — so o texto -->
   <div class="logo-area">
     <span class="logo-text-top">Luna Web</span>
@@ -235,6 +247,52 @@
     overflow: hidden;
     position: relative;
     z-index: 20;
+    transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .sidebar.collapsed {
+    width: 44px;
+    min-width: 44px;
+  }
+  .sidebar.collapsed .logo-area,
+  .sidebar.collapsed .new-session-btn,
+  .sidebar.collapsed .section-label,
+  .sidebar.collapsed .session-list,
+  .sidebar.collapsed .sidebar-footer {
+    opacity: 0;
+    pointer-events: none;
+    width: 0;
+    overflow: hidden;
+    padding: 0;
+    margin: 0;
+    border: none;
+    flex-shrink: 0;
+  }
+  .collapse-toggle {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 25;
+    background: transparent;
+    border: none;
+    color: var(--luna-text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    opacity: 0.6;
+  }
+  .collapse-toggle:hover {
+    opacity: 1;
+    background: rgba(255,255,255,0.08);
+    color: var(--luna-text);
+  }
+  .sidebar.collapsed .collapse-toggle {
+    position: static;
+    margin: 8px auto;
+    opacity: 0.8;
   }
   .logo-area {
     padding: 16px;

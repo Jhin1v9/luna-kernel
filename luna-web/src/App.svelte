@@ -23,7 +23,7 @@
   import ChatArea from './components/ChatArea.svelte';
   import LoginPage from './components/LoginPage.svelte';
   import ConfigDrawer from './components/ConfigDrawer.svelte';
-  import StatusBar from './components/StatusBar.svelte';
+
   import ParticleBackground from './components/ParticleBackground.svelte';
   import WelcomeScreen from './components/WelcomeScreen.svelte';
 
@@ -31,6 +31,7 @@
   let configOpen = false;
   let mobileSidebarOpen = false;
   let authChecked = false;
+  let sidebarCollapsed = false;
 
   // Quando não há sessão ativa, Luna vai dormir 💤
   $: if (!$currentSessionId) mascotState.set('sleep');
@@ -165,6 +166,8 @@
         onDelete={handleDelete}
         onOpenConfig={() => configOpen = true}
         bind:mobileOpen={mobileSidebarOpen}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => sidebarCollapsed = !sidebarCollapsed}
       />
 
       <main class="main-content">
@@ -194,12 +197,7 @@
       />
     </div>
 
-    <StatusBar
-      status={$connectionStatus}
-      onOpenConfig={() => configOpen = true}
-    />
-
-    <!-- 🏠 CASA DA LUNA — Footer Stage -->
+    <!-- StatusBar removido — mais espaço para o chat -->
 
   </div>
 {:else if authChecked}

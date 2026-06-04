@@ -30,7 +30,14 @@
   window.fetch = async function(...args) {
     const response = await ORIGINAL_FETCH.apply(this, args);
     const url = args[0];
-    if (typeof url === 'string' && (url.includes('/api/chat') || url.includes('/ChatService/Chat') || url.includes('/kimi.gateway.chat'))) {
+    if (typeof url === 'string' && (
+      url.includes('/api/chat') ||
+      url.includes('/ChatService/Chat') ||
+      url.includes('/kimi.gateway.chat') ||
+      url.includes('/apiv2/kimi.chat') ||
+      url.includes('/kimi.chat.v1.ChatService') ||
+      url.includes('/ChatService/ChatCompletion')
+    )) {
       // CRITICAL: For streaming SSE responses, we MUST tee the body stream.
       // response.clone() creates a new Response with a cloned body, but if
       // the original body is a ReadableStream that's already being consumed
@@ -130,7 +137,14 @@
   };
   XMLHttpRequest.prototype.send = function(body) {
     this.addEventListener('load', function() {
-      if (typeof this._lunaUrl === 'string' && (this._lunaUrl.includes('/api/chat') || this._lunaUrl.includes('/ChatService/Chat') || this._lunaUrl.includes('/kimi.gateway.chat'))) {
+      if (typeof this._lunaUrl === 'string' && (
+        this._lunaUrl.includes('/api/chat') ||
+        this._lunaUrl.includes('/ChatService/Chat') ||
+        this._lunaUrl.includes('/kimi.gateway.chat') ||
+        this._lunaUrl.includes('/apiv2/kimi.chat') ||
+        this._lunaUrl.includes('/kimi.chat.v1.ChatService') ||
+        this._lunaUrl.includes('/ChatService/ChatCompletion')
+      )) {
         try { parseKimiStream(this.responseText); } catch (e) {}
       }
     });

@@ -33,12 +33,20 @@ export class SSEManager {
   // v5.2: Fallback polling when SSE is down
   _startFallbackPolling(sessionId) {
     if (this.fallbackTimer) clearInterval(this.fallbackTimer);
+    // v5.5-fix: On first activation, record current history length so we don't
+    // replay the ENTIRE history. lastMessageCount starts at 0, so slice(0) emits all.
+    const initialCount = this.lastMessageCount;
     this.fallbackTimer = setInterval(async () => {
       if (this.isIntentionallyClosed || this.gracefulClose || this.eventSource) return;
       try {
         const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages`);
         const data = await res.json();
         if (data.ok && data.messages) {
+          // v5.5-fix: First activation — skip existing history, only track new messages
+          if (this.lastMessageCount === 0 && initialCount === 0) {
+            this.lastMessageCount = data.messages.length;
+            return;
+          }
           const newMessages = data.messages.slice(this.lastMessageCount);
           for (const msg of newMessages) {
             if (this.onEventCallback) {
@@ -142,7 +150,7 @@ export class SSEManager {
   }
 }
 
-export async function sendMessage(message, sessionId, mode = 'thinking', files = []) {
+export async function sendMessage(message, sessionId, mode = 'thinking', files = [], messageId = null) {
   let filePayload = [];
   if (files && files.length > 0) {
     filePayload = await Promise.all(
@@ -161,10 +169,12 @@ export async function sendMessage(message, sessionId, mode = 'thinking', files =
       })
     );
   }
+  const body = { message, sessionId, mode, files: filePayload };
+  if (messageId) body.messageId = messageId;
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, sessionId, mode, files: filePayload })
+    body: JSON.stringify(body)
   });
   return res.json();
 }

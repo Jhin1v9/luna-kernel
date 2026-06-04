@@ -13,6 +13,7 @@
     dashboardCreateTask: '#ec4899', dashboardListTasks: '#ec4899',
     dashboardCreateLead: '#ec4899', dashboardListLeads: '#ec4899',
     dashboardGetFinanceSummary: '#ec4899', replaceInFile: '#06b6d4',
+    ipython: '#f59e0b', web_search: '#f97316', browser: '#3b82f6',
   };
 
   const TOOL_ICONS = {
@@ -22,6 +23,7 @@
     dashboardCreateTask: '📋', dashboardListTasks: '📋',
     dashboardCreateLead: '👤', dashboardListLeads: '👥',
     dashboardGetFinanceSummary: '💰', replaceInFile: '✏️',
+    ipython: '🐍', web_search: '🌐', browser: '🌍',
   };
 
   $: status = result ? (result.success !== false ? 'success' : 'error') : 'running';
@@ -29,10 +31,11 @@
   $: icon = TOOL_ICONS[tool] || '🔧';
   $: displayPath = params?.path || params?.file || params?.dir || params?.url || '';
   $: displayCommand = params?.command || params?.code || params?.script || '';
-  $: truncatedOutput = result?.output
-    ? result.output.length > 500
-      ? result.output.slice(0, 500) + '...'
-      : result.output
+  $: resultOutput = result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.content !== undefined ? result.content : '';
+  $: truncatedOutput = resultOutput
+    ? resultOutput.length > 500
+      ? resultOutput.slice(0, 500) + '...'
+      : resultOutput
     : '';
 
   // Cinema animations per tool type

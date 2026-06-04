@@ -348,7 +348,7 @@ function listFiles(pattern, opts = {}) {
         files = globSync(resolvedPattern, {
           cwd,
           dot: opts.dot || false,
-          ignore: opts.ignore || ['node_modules/**', '.git/**', 'dist/**', 'build/**'],
+          ignore: opts.ignore || ['node_modules/**', '.git/**', 'dist/**', 'build/**', '.next/**', 'out/**', 'coverage/**', '.cache/**', '.turbo/**', '.vercel/**', '.output/**', 'logs/**', 'tmp/**', 'temp/**', '*.log', '*.map', '*.min.js', '*.min.css'],
           absolute: opts.absolute !== false,
         });
       } catch {
@@ -379,27 +379,77 @@ function listFiles(pattern, opts = {}) {
   }
 }
 
+// v6.2-fix: Ignore patterns to prevent flooding context with useless files
+const DEFAULT_IGNORE_PATTERNS = [
+  'node_modules', '.git', 'dist', 'build', '.next', 'out',
+  'coverage', '.cache', '.turbo', '.vercel', '.output',
+  '.npm', '.pnp', '.yarn', 'logs', 'tmp', 'temp',
+  '.env', '.env.local', '.env.production', '.env.development',
+  '.DS_Store', 'Thumbs.db',
+];
+const IGNORED_EXTENSIONS = ['.log', '.map', '.min.js', '.min.css', '.lock'];
+
+function shouldIgnore(name) {
+  // Check exact name matches
+  if (DEFAULT_IGNORE_PATTERNS.includes(name)) return true;
+  // Check extension matches
+  const ext = path.extname(name).toLowerCase();
+  if (IGNORED_EXTENSIONS.includes(ext)) return true;
+  // Check wildcard patterns
+  if (name.startsWith('.') && name !== '.' && name !== '..') {
+    // Hidden files — only skip known noise, not all hidden files
+    if (['.gitignore', '.env.example', '.env.template', '.eslintrc', '.prettierrc', '.babelrc', '.editorconfig'].includes(name)) {
+      return false; // Keep these useful config files
+    }
+  }
+  return false;
+}
+
 function viewDirectory(dirPath, opts = {}) {
   const resolved = resolvePath(dirPath || '.');
   if (!fs.existsSync(resolved)) return err(`Diretório não encontrado: ${dirPath}`);
   try {
     const maxDepth = opts.depth || 3;
+    let itemsCount = 0;
+    const MAX_ITEMS = 200; // Hard cap on total items to prevent context flood
+    let truncated = false;
+
     function buildTree(dir, depth) {
       if (depth > maxDepth) return [];
       const items = fs.readdirSync(dir, { withFileTypes: true });
-      return items.map(item => {
+      const result = [];
+      for (const item of items) {
+        if (shouldIgnore(item.name)) continue;
+        if (itemsCount >= MAX_ITEMS) {
+          truncated = true;
+          break;
+        }
+        itemsCount++;
         const fullPath = path.join(dir, item.name);
         const prefix = '  '.repeat(depth);
         if (item.isDirectory()) {
           const children = depth < maxDepth ? buildTree(fullPath, depth + 1) : [];
-          return { name: item.name, path: fullPath, type: 'dir', prefix: `${prefix}📁 `, children };
+          result.push({ name: item.name, path: fullPath, type: 'dir', prefix: `${prefix}📁 `, children });
+        } else {
+          let size = 0;
+          try {
+            const stat = fs.statSync(fullPath);
+            size = stat.size;
+          } catch (statErr) {
+            // File may be a broken symlink, socket, or otherwise inaccessible
+            size = 0;
+          }
+          result.push({ name: item.name, path: fullPath, type: 'file', size, prefix: `${prefix}📄 ` });
         }
-        const stat = fs.statSync(fullPath);
-        return { name: item.name, path: fullPath, type: 'file', size: stat.size, prefix: `${prefix}📄 ` };
-      });
+      }
+      return result;
     }
     const tree = buildTree(resolved, 0);
-    return ok({ path: resolved, entries: tree, total: fs.readdirSync(resolved).length });
+    const output = { path: resolved, entries: tree, total: itemsCount, truncated };
+    if (truncated) {
+      output.warning = `Diretório muito grande. Mostrando ${MAX_ITEMS} itens. Use grep ou searchFiles para encontrar arquivos específicos.`;
+    }
+    return ok(output);
   } catch (e) {
     return err(e.message);
   }
@@ -505,13 +555,125 @@ function glob(pattern, opts = {}) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 3b. WEB SEARCH (DuckDuckGo HTML scraping — no API key required)
+// ═══════════════════════════════════════════════════════════════════════════
+
 function searchWeb(query, opts = {}) {
-  // Stub — requires API key for real search
-  return ok({
-    query,
-    note: 'SearchWeb requer configuração de API key em ~/.luna/config.json',
-    results: [],
+  return new Promise((resolve) => {
+    const searchUrl = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
+    const client = searchUrl.startsWith('https:') ? https : http;
+    const req = client.get(searchUrl, {
+      timeout: opts.timeout || 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return fetchURL(res.headers.location, opts).then(resolve);
+      }
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const results = [];
+          // DuckDuckGo HTML uses .result__a for title+link, .result__snippet for description
+          const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+          let match;
+          let count = 0;
+          const limit = opts.limit || 10;
+          while ((match = resultRegex.exec(data)) !== null && count < limit) {
+            const url = match[1].replace(/&amp;/g, '&');
+            const title = match[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim();
+            const snippet = match[3].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim();
+            if (title && url) {
+              results.push({ title, url, snippet });
+              count++;
+            }
+          }
+          // Fallback: try alternative selectors if no results
+          if (results.length === 0) {
+            const altRegex = /<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>[\s\S]*?(?:<div[^>]*>[\s\S]*?)?<span[^>]*>([\s\S]*?)<\/span>/gi;
+            while ((match = altRegex.exec(data)) !== null && count < limit) {
+              const url = match[1].replace(/&amp;/g, '&');
+              const title = match[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').trim();
+              const snippet = match[3] ? match[3].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').trim() : '';
+              if (title && url && !url.includes('duckduckgo.com')) {
+                results.push({ title, url, snippet });
+                count++;
+              }
+            }
+          }
+          resolve(ok({ query, engine: 'duckduckgo', results, count: results.length }));
+        } catch (e) {
+          resolve(err('Search parse error: ' + e.message));
+        }
+      });
+    });
+    req.on('error', (e) => resolve(err('Search request error: ' + e.message)));
+    req.on('timeout', () => { req.destroy(); resolve(err('Search timeout')); });
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3c. BROWSER (Playwright navigation for JS-heavy pages)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let browserInstance = null;
+let browserContext = null;
+
+async function getBrowserContext() {
+  try {
+    if (!browserInstance) {
+      const { chromium } = require('playwright');
+      browserInstance = await chromium.launch({ headless: true });
+    }
+    if (!browserContext) {
+      browserContext = await browserInstance.newContext({
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      });
+    }
+    return browserContext;
+  } catch (e) {
+    throw new Error('Browser not available: ' + e.message);
+  }
+}
+
+async function browser(url, opts = {}) {
+  try {
+    const ctx = await getBrowserContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(url, { waitUntil: opts.waitUntil || 'domcontentloaded', timeout: opts.timeout || 20000 });
+      // Wait for network idle if requested (for JS-heavy pages)
+      if (opts.waitUntil === 'networkidle') {
+        await page.waitForLoadState('networkidle', { timeout: opts.timeout || 20000 });
+      }
+      // Extract page content
+      const title = await page.title().catch(() => '');
+      const content = await page.evaluate(() => {
+        // Remove script/style/nav/footer elements for cleaner text
+        const clones = document.body.cloneNode(true);
+        clones.querySelectorAll('script, style, nav, footer, aside, .advertisement, .ads').forEach(el => el.remove());
+        return clones.innerText || '';
+      });
+      const screenshot = opts.screenshot ? await page.screenshot({ fullPage: opts.fullPage, type: 'png', encoding: 'base64' }) : null;
+      return ok({
+        url,
+        title,
+        content: content.slice(0, opts.limit || 30000),
+        screenshot: screenshot ? `data:image/png;base64,${screenshot}` : null,
+      });
+    } finally {
+      await page.close();
+    }
+  } catch (e) {
+    // Fallback to fetchURL if browser fails
+    if (opts.noFallback) return err(e.message);
+    return fetchURL(url, opts);
+  }
 }
 
 function fetchURL(url, opts = {}) {
@@ -1696,6 +1858,9 @@ async function dashboardCreateReviewVote(params) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 module.exports = {
+  // Aliases for natively-named tools
+  web_search: searchWeb,
+  webSearch: searchWeb,
   // File Ops
   readFile,
   writeFile,
@@ -1731,6 +1896,7 @@ module.exports = {
   applyPatch,
   // Network
   downloadFile,
+  browser,
   // Clipboard
   clipboardRead,
   clipboardWrite,

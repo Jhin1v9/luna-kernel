@@ -23,6 +23,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { WebBridgeClient } = require('./webbridge-client.cjs');
 
 // Lazy-load turndown — fail gracefully if not installed
 let TurndownService = null;
@@ -56,10 +57,10 @@ try {
 const CDP_PORTS = config?.KIMI?.cdpPorts || [9222, 9223, 9224, 9225];
 const DEFAULT_TIMEOUT = parseInt(process.env.KIMI_TIMEOUT, 10) || config?.TIMEOUTS?.kimi || 120000;
 const KIMI_MODE_URLS = config?.KIMI?.modeUrls || {
-  instant: 'https://www.kimi.com/?chat_enter_method=new_chat',
-  thinking: 'https://www.kimi.com/?chat_enter_method=new_chat',
-  agent: 'https://www.kimi.com/agent',
-  swarm: 'https://www.kimi.com/agent-swarm',
+  instant: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
+  thinking: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
+  agent: 'https://www.kimi.com/agent?lang=en',
+  swarm: 'https://www.kimi.com/agent-swarm?lang=en',
 };
 const MAX_CONCURRENT_PAGES = parseInt(process.env.KIMI_MAX_PAGES, 10) || config?.KIMI?.maxPages || 5;
 const IDLE_TIMEOUT_MS = parseInt(process.env.KIMI_IDLE_TIMEOUT, 10) || config?.TIMEOUTS?.kimiIdle || 10 * 60 * 1000;
@@ -86,6 +87,172 @@ if (!fs.existsSync(ARTIFACTS_DIR)) {
 // ============================================================
 function hashUserId(userId) {
   return crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 8);
+}
+
+// ============================================================
+// v5.6: ROBUST ELEMENT INTERACTION — best practices from industry research
+// https://playwright.dev/docs/best-practices
+// https://www.browserstack.com/guide/playwright-locator
+// ============================================================
+
+/**
+ * Smart click with multi-strategy fallback.
+ * Priority: CSS selector → ARIA attributes → text content → icon detection → coordinates.
+ * Uses getBoundingClientRect to click the CENTER of the element (works through shadow DOM/iframes).
+ * @param {Page} page — Playwright page
+ * @param {Object} strategies — { css?, aria?, text?, icon?, coords? }
+ * @param {string} label — human-readable label for logging
+ * @returns {Promise<boolean>} — true if clicked
+ */
+async function smartClick(page, strategies, label = 'element') {
+  const attempts = [];
+
+  // Strategy 1: CSS selector (most stable)
+  if (strategies.css) {
+    attempts.push(async () => {
+      const el = page.locator(strategies.css).first();
+      if (await el.count() > 0) {
+        const box = await el.evaluate(el => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y, w: r.width, h: r.height, visible: r.width > 0 && r.height > 0 };
+        }).catch(() => null);
+        if (box?.visible) {
+          await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2);
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  // Strategy 2: ARIA role + label
+  if (strategies.aria) {
+    attempts.push(async () => {
+      const { role, label: ariaLabel, name } = strategies.aria;
+      let locator;
+      if (role && ariaLabel) {
+        locator = page.getByRole(role, { name: ariaLabel, exact: false });
+      } else if (role && name) {
+        locator = page.getByRole(role, { name, exact: false });
+      } else if (ariaLabel) {
+        locator = page.getByLabel(ariaLabel, { exact: false });
+      } else if (role) {
+        locator = page.getByRole(role);
+      }
+      if (!locator) return false;
+      if (await locator.count() > 0) {
+        const box = await locator.first().evaluate(el => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y, w: r.width, h: r.height, visible: r.width > 0 && r.height > 0 };
+        }).catch(() => null);
+        if (box?.visible) {
+          await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2);
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  // Strategy 3: Text content (regex or partial match)
+  if (strategies.text) {
+    attempts.push(async () => {
+      const patterns = Array.isArray(strategies.text) ? strategies.text : [strategies.text];
+      for (const pattern of patterns) {
+        let locator;
+        if (typeof pattern === 'string') {
+          locator = page.getByText(pattern, { exact: false });
+        } else {
+          // Regex: use Playwright locator with hasText regex
+          locator = page.locator('button, [role="button"], a, div').filter({ hasText: pattern }).first();
+        }
+        if (await locator.count() > 0) {
+          const box = await locator.first().evaluate(el => {
+            const r = el.getBoundingClientRect();
+            return { x: r.x, y: r.y, w: r.width, h: r.height, visible: r.width > 0 && r.height > 0 };
+          }).catch(() => null);
+          if (box?.visible) {
+            await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2);
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+  }
+
+  // Strategy 4: Icon detection (SVG, img with specific src, etc.)
+  if (strategies.icon) {
+    attempts.push(async () => {
+      const clicked = await page.evaluate((iconHint) => {
+        const buttons = document.querySelectorAll('button, [role="button"], a');
+        for (const btn of buttons) {
+          const html = btn.innerHTML.toLowerCase();
+          if (html.includes('svg') || html.includes('<img') || html.includes('icon')) {
+            if (!iconHint || html.includes(iconHint.toLowerCase())) {
+              const r = btn.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) {
+                // Return center coordinates
+                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+              }
+            }
+          }
+        }
+        return null;
+      }, strategies.icon);
+      if (clicked) {
+        await page.mouse.click(clicked.x, clicked.y);
+        return true;
+      }
+      return false;
+    });
+  }
+
+  // Strategy 5: Coordinate fallback (last resort)
+  if (strategies.coords) {
+    attempts.push(async () => {
+      const [x, y] = strategies.coords;
+      await page.mouse.click(x, y);
+      return true;
+    });
+  }
+
+  // Execute strategies in order
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      const success = await attempts[i]();
+      if (success) {
+        log.info(`[smartClick] Clicked ${label} via strategy ${i + 1}`);
+        return true;
+      }
+    } catch (e) {
+      // Continue to next strategy
+    }
+  }
+
+  log.warn(`[smartClick] Failed to click ${label} — all strategies exhausted`);
+  return false;
+}
+
+/**
+ * Detect the language of the Kimi Web UI.
+ * Returns 'en', 'zh', 'zh-tw', 'pt', or 'unknown'.
+ */
+async function detectPageLanguage(page) {
+  return await page.evaluate(() => {
+    const htmlLang = document.documentElement.lang || '';
+    if (htmlLang.startsWith('zh')) {
+      return htmlLang.includes('tw') || htmlLang.includes('hant') ? 'zh-tw' : 'zh';
+    }
+    if (htmlLang.startsWith('pt')) return 'pt';
+    if (htmlLang.startsWith('en')) return 'en';
+    // Fallback: detect by common UI text
+    const bodyText = document.body.innerText;
+    if (bodyText.includes('登录') || bodyText.includes('使用 Google 登录')) return 'zh';
+    if (bodyText.includes('登入') || bodyText.includes('使用 Google 帳戶登入')) return 'zh-tw';
+    if (bodyText.includes('Entrar') || bodyText.includes('Fazer login')) return 'pt';
+    return 'unknown';
+  }).catch(() => 'unknown');
 }
 
 // ============================================================
@@ -220,6 +387,165 @@ class Semaphore {
 }
 
 // ============================================================
+// KIMI NETWORK INTERCEPTOR v7.5
+// ============================================================
+// Replaces fragile JavaScript injection with native CDP network interception.
+// Uses Chrome DevTools Protocol Fetch domain to intercept SSE streams in
+// real-time, server-side. Immune to page anti-tampering, SPA navigation,
+// React resets, or fetch restoration.
+
+class KimiNetworkInterceptor {
+  constructor(page) {
+    this.page = page;
+    this.reasoning = [];
+    this.content = [];
+    this.toolCalls = [];
+    this.lastActivity = Date.now();
+    this._active = false;
+    this._cdpSession = null;
+    this._requestId = null;
+    this._responseBuffer = '';
+  }
+
+  async start() {
+    if (this._active) return;
+    this._active = true;
+
+    // v7.5: Use CDP Fetch domain for real-time response interception
+    // This captures SSE chunks as they arrive, not just at the end.
+    try {
+      this._cdpSession = await this.page.context().newCDPSession(this.page);
+      await this._cdpSession.send('Fetch.enable', {
+        patterns: [
+          { urlPattern: '*kimi*chat*', requestStage: 'Response' },
+          { urlPattern: '*api/chat*', requestStage: 'Response' },
+        ]
+      });
+
+      this._cdpSession.on('Fetch.requestPaused', async (event) => {
+        const { requestId, responseStatusCode, responseHeaders } = event;
+
+        // Only intercept successful responses
+        if (responseStatusCode && responseStatusCode >= 200 && responseStatusCode < 300) {
+          this._requestId = requestId;
+          this.lastActivity = Date.now();
+
+          try {
+            // Get response body (may be partial for streaming)
+            const bodyResult = await this._cdpSession.send('Fetch.getResponseBody', { requestId });
+            if (bodyResult.body) {
+              const text = bodyResult.base64Encoded
+                ? Buffer.from(bodyResult.body, 'base64').toString('utf-8')
+                : bodyResult.body;
+              this._responseBuffer += text;
+              this._parseSse(text);
+            }
+          } catch (e) {
+            // Body may not be available yet for streaming responses
+          }
+        }
+
+        // Always continue the request so the page works normally
+        try {
+          await this._cdpSession.send('Fetch.continueRequest', { requestId });
+        } catch (e) {
+          // Request may have been already continued
+        }
+      });
+
+      log.info('[KimiNetworkInterceptor] Started — listening via CDP Fetch domain');
+    } catch (e) {
+      log.warn(`[KimiNetworkInterceptor] CDP Fetch failed (${e.message}), falling back to page.on('response')`);
+      this._startPlaywrightFallback();
+    }
+  }
+
+  _startPlaywrightFallback() {
+    this._listener = async (response) => {
+      const url = response.url();
+      if (!this._isChatUrl(url)) return;
+      this.lastActivity = Date.now();
+      try {
+        const body = await response.body();
+        const text = body.toString('utf-8');
+        this._parseSse(text);
+      } catch (e) {}
+    };
+    this.page.on('response', this._listener);
+  }
+
+  stop() {
+    if (!this._active) return;
+    this._active = false;
+    if (this._cdpSession) {
+      this._cdpSession.detach().catch(() => {});
+      this._cdpSession = null;
+    }
+    if (this._listener) {
+      this.page.off('response', this._listener);
+      this._listener = null;
+    }
+  }
+
+  reset() {
+    this.reasoning = [];
+    this.content = [];
+    this.toolCalls = [];
+    this._responseBuffer = '';
+    this.lastActivity = Date.now();
+  }
+
+  getData() {
+    const thinking = this.reasoning.join('');
+    const response = this.content.join('');
+    return {
+      thinking,
+      response,
+      hasData: thinking.length > 0 || response.length > 0,
+      source: 'network-intercept',
+    };
+  }
+
+  _isChatUrl(url) {
+    return typeof url === 'string' && (
+      url.includes('/api/chat') ||
+      url.includes('/ChatService/Chat') ||
+      url.includes('/kimi.gateway.chat') ||
+      url.includes('/apiv2/kimi.chat') ||
+      url.includes('/kimi.chat.v1.ChatService') ||
+      url.includes('/ChatService/ChatCompletion')
+    );
+  }
+
+  _parseSse(text) {
+    const lines = text.split('\n');
+    for (const line of lines) {
+      if (!line.trim() || !line.startsWith('data:')) continue;
+      try {
+        const json = JSON.parse(line.slice(5));
+
+        // Kimi Connect-RPC format
+        const msg = json?.result?.message || json?.message;
+        if (msg) {
+          if (msg.reasoning_content) this.reasoning.push(msg.reasoning_content);
+          if (msg.content) this.content.push(msg.content);
+          if (msg.tool_calls) this.toolCalls.push(...msg.tool_calls);
+        }
+
+        // Delta format
+        const delta = json?.result?.delta || json?.delta;
+        if (delta) {
+          if (delta.reasoning_content) this.reasoning.push(delta.reasoning_content);
+          if (delta.content) this.content.push(delta.content);
+        }
+      } catch (e) {
+        // Ignore parse errors for malformed lines
+      }
+    }
+  }
+}
+
+// ============================================================
 // KIMI BRIDGE v2.1
 // ============================================================
 class KimiBridge {
@@ -241,6 +567,19 @@ class KimiBridge {
     this.cookieBackupTimer = null;
     this.persistentUserIds = new Set(); // userIds that should NEVER be cleaned up
     this.cancelledStreams = new Map(); // userId -> true (cancelled mid-stream)
+
+    // v7.5: Network Interceptors — one per page, native Playwright response interception
+    this.networkInterceptors = new Map(); // userId -> KimiNetworkInterceptor
+
+    // v7.0: Decoupled DOM Event Queue — DOM reader is independent from stream lifecycle
+    this.domEventQueues = new Map(); // userId -> { events: [], lastReadIndex: 0, createdAt: Date.now() }
+    this.streamStopFlags = new Map(); // userId -> () => void (soft cancel signal)
+    this.domPollingTasks = new Map(); // userId -> { active: boolean, startTime: number }
+
+    // v5.6: WebBridge as PRIMARY, Playwright CDP as fallback
+    this.webbridgeEnabled = true;
+    this.webbridgeClients = new Map(); // userId -> WebBridgeClient
+    this.webbridgeHealthy = false; // checked on connect()
 
     // Initialize turndown if available
     this.turndown = null;
@@ -329,6 +668,22 @@ class KimiBridge {
       return this;
     }
 
+    // v5.6: Check WebBridge health FIRST — it's our PRIMARY driver
+    try {
+      const wb = new WebBridgeClient('luna-kimi');
+      const health = await wb.healthCheck();
+      if (health.ok && health.connected) {
+        this.webbridgeHealthy = true;
+        log.success('WebBridge PRIMARY ready on port 10086 — Playwright CDP is fallback');
+      } else {
+        this.webbridgeHealthy = false;
+        log.warn('WebBridge not healthy — falling back to Playwright CDP');
+      }
+    } catch (e) {
+      this.webbridgeHealthy = false;
+      log.warn(`WebBridge check failed: ${e.message} — using Playwright CDP fallback`);
+    }
+
     let cdpUrl = await this._getCdpUrl();
     log.info(`Connecting to Chrome at ${cdpUrl}`);
     try {
@@ -411,6 +766,9 @@ class KimiBridge {
     // Start cookie backup timer (save every 5 minutes)
     this._startCookieBackup();
 
+    // v5.6-fix: Start background polling to keep pages alive (prevents mobile Chrome suspension)
+    this._startBackgroundPolling();
+
     return this;
   }
 
@@ -424,6 +782,10 @@ class KimiBridge {
     if (this.idleTimer) {
       clearInterval(this.idleTimer);
       this.idleTimer = null;
+    }
+    if (this.bgPollTimer) {
+      clearInterval(this.bgPollTimer);
+      this.bgPollTimer = null;
     }
 
     // Close all user contexts (which also closes their pages)
@@ -482,47 +844,14 @@ class KimiBridge {
   async _getOrCreateUserContext(userId) {
     await this._ensureConnected();
 
-    const existing = this.userContexts.get(userId);
-    if (existing) {
-      // Even for existing contexts, re-inject MASTER cookies to ensure they stay logged in
-      // This fixes cases where the context was created before cookies were saved
-      try {
-        const masterPath = path.join(__dirname, 'cookies', 'kimi-master-cookies.json');
-        if (fs.existsSync(masterPath)) {
-          const masterData = JSON.parse(fs.readFileSync(masterPath, 'utf8'));
-          const masterCookies = masterData.cookies || [];
-          if (masterCookies.length > 0) {
-            await existing.addCookies(masterCookies);
-            log.info(`Re-injected ${masterCookies.length} MASTER cookies into existing context for user ${hashUserId(userId)}`);
-          }
-        }
-      } catch (e) {
-        log.warn(`Failed to re-inject MASTER cookies for existing context ${hashUserId(userId)}: ${e.message}`);
-      }
-      return existing;
-    }
+    // v7.4-fix: Use defaultContext instead of incognito context.
+    // Incognito contexts do NOT load Chrome extensions (like Luna Extension),
+    // causing the DOM observer to fall back to unreliable Playwright injection.
+    // The defaultContext shares the same profile as the manually-started Chrome,
+    // so extensions are available and login state persists.
+    const ctx = this.defaultContext;
 
-    log.info(`Creating isolated context for user ${hashUserId(userId)}`);
-
-    // Create new incognito context
-    const ctx = await this.browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      locale: 'pt-BR',
-    });
-
-    // Copy cookies from default context so user is already logged in
-    try {
-      const cookies = await this.defaultContext.cookies();
-      if (cookies && cookies.length > 0) {
-        await ctx.addCookies(cookies);
-        log.info(`Copied ${cookies.length} cookies to context for user ${hashUserId(userId)}`);
-      }
-    } catch (e) {
-      log.warn(`Failed to copy cookies for ${hashUserId(userId)}: ${e.message}`);
-    }
-
-    // Also inject MASTER cookies (permanent save after manual login)
-    // This ensures new contexts always have login cookies even if Chrome was restarted
+    // Re-inject MASTER cookies to ensure login state
     try {
       const masterPath = path.join(__dirname, 'cookies', 'kimi-master-cookies.json');
       if (fs.existsSync(masterPath)) {
@@ -530,11 +859,11 @@ class KimiBridge {
         const masterCookies = masterData.cookies || [];
         if (masterCookies.length > 0) {
           await ctx.addCookies(masterCookies);
-          log.info(`Injected ${masterCookies.length} MASTER cookies to context for user ${hashUserId(userId)}`);
+          log.info(`Re-injected ${masterCookies.length} MASTER cookies into defaultContext for user ${hashUserId(userId)}`);
         }
       }
     } catch (e) {
-      log.warn(`Failed to inject MASTER cookies for ${hashUserId(userId)}: ${e.message}`);
+      log.warn(`Failed to re-inject MASTER cookies for ${hashUserId(userId)}: ${e.message}`);
     }
 
     this.userContexts.set(userId, ctx);
@@ -567,7 +896,41 @@ class KimiBridge {
       // causing the bridge to close a perfectly good logged-in page and
       // create a new unlogged one. isClosed() is sufficient.
       existing.lastActivity = Date.now();
+      // v7.0-fix: Re-inject observer on reused pages (may have been navigated)
+      await this._injectEventQueueObserver(existing.page).catch(() => {});
       return existing.page;
+    }
+
+    // v7.4-fix: If no existing session, try to reuse an existing page from defaultContext
+    // that is already on kimi.com. This avoids creating a duplicate tab when Chrome
+    // was started with --load-extension and already has a kimi.com tab open.
+    if (!existing || !existing.page || existing.page.isClosed()) {
+      const existingPages = this.defaultContext?.pages() || [];
+      for (const p of existingPages) {
+        if (p.isClosed()) continue;
+        try {
+          const url = p.url();
+          if (url && url.includes('kimi.com')) {
+            log.info(`Reusing existing kimi.com page for user ${hashUserId(userId)}: ${url}`);
+            p._lunaUserId = userId;
+            const session = {
+              page: p,
+              context: this.defaultContext,
+              chatUrl: url,
+              lastActivity: Date.now(),
+              processing: false,
+              mode: this.store.getUser(userId)?.mode || 'instant',
+            };
+            this.userSessions.set(userId, session);
+            this._saveChatUrl(userId, session.chatUrl, { mode: session.mode });
+            // v7.5: Network Interceptor is managed per-user, not injected into page
+            await this._injectMasterLocalStorage(p);
+            return p;
+          }
+        } catch (e) {
+          // Page may be closing, skip
+        }
+      }
     }
 
     // Acquire semaphore slot (now effectively unlimited)
@@ -579,7 +942,7 @@ class KimiBridge {
 
     // Restore previous chat URL from store if available
     const stored = this.store.getUser(userId);
-    const chatUrl = stored?.chatUrl || 'https://www.kimi.com/?chat_enter_method=new_chat';
+    const chatUrl = stored?.chatUrl || 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en';
 
     let page = null;
     try {
@@ -594,11 +957,9 @@ class KimiBridge {
         this.semaphore.release();
       });
 
-      // Inject stream interceptor BEFORE navigation so it captures the chat API calls
-      await this._injectStreamInterceptor(page);
-
-      // v3.3: Inject DOM MutationObserver to detect tool calls in real-time
-      await this._injectDomObserver(page);
+      // v7.5: No JavaScript injection into page. Network interception is handled
+      // server-side via Playwright's native page.on('response'). DOM polling uses
+      // page.evaluate() on demand. This is immune to page anti-tampering.
 
       await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2000);
@@ -606,8 +967,7 @@ class KimiBridge {
       // v3.3-fix: Re-inject via evaluate after navigation to ensure observer is active
       // addInitScript only works for future navigations; evaluate ensures current page
       await this._injectDomObserverEvaluate(page);
-      // v3.7-fix: Also re-inject stream interceptor for current page
-      await this._injectStreamInterceptorEvaluate(page);
+      // v7.5: No page-level JS injection needed. Network Interceptor is server-side.
 
       // v3.9-fix: Inject localStorage tokens (access_token, refresh_token etc)
       // These are REQUIRED for Kimi login state in addition to cookies
@@ -689,20 +1049,26 @@ class KimiBridge {
       const context = page.context();
 
       // Phase 1: Ensure login modal is visible
-      let hasModal = await page.evaluate(() =>
-        document.body.innerText.includes('Continue with Google')
-      ).catch(() => false);
+      // v5.6-fix: Multi-language support for login detection (EN, PT, ZH, ZH-TW)
+      const loginTexts = [
+        'Continue with Google', 'Google', 
+        '使用 Google 登录', 'Google 登录', '使用 Google 帳戶登入',
+        'Entrar com Google', 'Fazer login com Google'
+      ];
+      let hasModal = await page.evaluate((texts) =>
+        texts.some(t => document.body.innerText.includes(t))
+      , loginTexts).catch(() => false);
 
       if (!hasModal) {
         log.info('[_autoLogin] Login modal not visible — clicking sidebar Log In button...');
-        // The "Log In" button in the sidebar is inside .user-info div (discovered via e2e test)
-        // We use page.evaluate to find and click it, as Playwright locators don't reliably
-        // target this SPA element.
-        const clickedSidebar = await page.evaluate(() => {
+        // v5.6-fix: Multi-language sidebar login button support
+        const sidebarLoginTexts = ['Log In', '登录', '登入', 'Entrar', 'Fazer login', 'Sign In'];
+        const clickedSidebar = await page.evaluate((texts) => {
           const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
           let node;
           while (node = walker.nextNode()) {
-            if (node.textContent.trim() === 'Log In') {
+            const trimmed = node.textContent.trim();
+            if (texts.some(t => trimmed === t || trimmed.includes(t))) {
               // Walk up to find clickable parent (.user-info or similar)
               let el = node.parentElement;
               for (let i = 0; i < 5 && el; i++) {
@@ -721,7 +1087,7 @@ class KimiBridge {
             }
           }
           return false;
-        });
+        }, sidebarLoginTexts);
 
         if (!clickedSidebar) {
           // Coordinate fallback: bottom-left sidebar area where Log In lives
@@ -733,12 +1099,12 @@ class KimiBridge {
 
         // Wait for modal to appear
         let modalAttempts = 0;
-        while (modalAttempts < 15) {
-          hasModal = await page.evaluate(() =>
-            document.body.innerText.includes('Continue with Google')
-          ).catch(() => false);
+        while (modalAttempts < 20) {
+          hasModal = await page.evaluate((texts) =>
+            texts.some(t => document.body.innerText.includes(t))
+          , loginTexts).catch(() => false);
           if (hasModal) break;
-          await page.waitForTimeout(400);
+          await page.waitForTimeout(500);
           modalAttempts++;
         }
 
@@ -750,107 +1116,163 @@ class KimiBridge {
       }
 
       // Phase 2: Click "Continue with Google" inside the modal
-      // The button is centered in the modal; coordinates ~640,260 on 1280x800
-      // We first try Playwright locator, then coordinates fallback.
-      const googleBtn = page.locator('button, [role="button"], div[role="button"]')
-        .filter({ hasText: /Continue with Google|Google/i })
-        .first();
+      // v5.6-fix: Try multiple strategies to find the Google button
       let clicked = false;
-      if (await googleBtn.count() > 0) {
+      
+      // Strategy 1: Locator with regex (covers EN, PT, ZH)
+      const googleBtn = page.locator('button, [role="button"], div[role="button"]')
+        .filter({ hasText: /Continue with Google|Google|使用 Google|Google 登录|Google 登入|Entrar com Google|Fazer login/i })
+        .first();
+      if (!clicked && await googleBtn.count() > 0) {
         await googleBtn.click({ timeout: 5000 });
         clicked = true;
         log.info('[_autoLogin] Clicked "Continue with Google" via locator');
-      } else {
-        await page.mouse.click(640, 260);
+      }
+      
+      // Strategy 2: Look for any button containing Google logo/icon
+      if (!clicked) {
+        const iconBtn = await page.evaluate(() => {
+          const buttons = document.querySelectorAll('button, [role="button"]');
+          for (const btn of buttons) {
+            const html = btn.innerHTML.toLowerCase();
+            if (html.includes('google') || html.includes('g-') || html.includes('svg')) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (iconBtn) {
+          clicked = true;
+          log.info('[_autoLogin] Clicked Google button via icon detection');
+        }
+      }
+      
+      // Strategy 3: Coordinate fallback (center of modal)
+      if (!clicked) {
+        await page.mouse.click(640, 300);
         clicked = true;
         log.info('[_autoLogin] Clicked "Continue with Google" via coordinates fallback');
       }
-      if (!clicked) {
-        log.warn('[_autoLogin] Could not find Google sign-in button');
-        return false;
-      }
 
-      // Phase 3: Wait for Google account chooser popup/tab
+      // Phase 3: Wait for Google auth flow
+      // The auth can happen in 3 ways:
+      // A) New popup/tab with accounts.google.com (account chooser)
+      // B) Same-page redirect to accounts.google.com
+      // C) Already logged in — immediate redirect back to Kimi (no chooser)
       await page.waitForTimeout(3000);
+      
       let googlePage = null;
       let attempts = 0;
-      while (attempts < 15) {
+      while (attempts < 20) {
         const pages = context.pages();
         googlePage = pages.find(p => p.url().includes('accounts.google.com'));
         if (googlePage) break;
+        
+        // Also check if current page redirected to Google
+        const currentUrl = page.url();
+        if (currentUrl.includes('accounts.google.com')) {
+          googlePage = page;
+          break;
+        }
+        
         await page.waitForTimeout(500);
         attempts++;
       }
+      
       if (!googlePage) {
-        log.warn('[_autoLogin] Google account chooser did not appear');
-        return false;
-      }
-      log.info('[_autoLogin] Google account chooser detected');
-
-      // Phase 4: Select available Google account
-      // Priority: 1) nexodigital, 2) Abner Gabriel, 3) first available account
-      let selectedAccount = null;
-      
-      // Try nexodigital first
-      const nexodigitalBtn = googlePage.locator('div[role="button"], div[role="link"], [data-email]')
-        .filter({ hasText: /nexodigital\.sys@gmail\.com|nexodigital/i })
-        .first();
-      if (await nexodigitalBtn.count() > 0) {
-        await nexodigitalBtn.click({ timeout: 10000 });
-        selectedAccount = 'nexodigital';
+        // Case C: No Google page appeared — maybe already logged in or redirect happened instantly
+        log.info('[_autoLogin] No Google auth page appeared — checking if already logged in...');
       } else {
-        const altNexo = googlePage.getByText('nexodigital', { exact: false }).first();
-        if (await altNexo.count() > 0) {
-          await altNexo.click();
-          selectedAccount = 'nexodigital';
-        }
-      }
-      
-      // Fallback: try Abner Gabriel
-      if (!selectedAccount) {
-        const abnerBtn = googlePage.locator('div[role="button"], div[role="link"], [data-email]')
-          .filter({ hasText: /Abner Gabriel|nninguem17@gmail\.com/i })
+        log.info('[_autoLogin] Google auth page detected');
+        
+        // Phase 4: Select available Google account on chooser
+        let selectedAccount = null;
+        
+        // Wait a moment for the chooser to fully render
+        await googlePage.waitForTimeout(1500);
+        
+        // Strategy 1: Try nexodigital first
+        const nexodigitalBtn = googlePage.locator('div[role="button"], div[role="link"], [data-email]')
+          .filter({ hasText: /nexodigital\.sys@gmail\.com|nexodigital/i })
           .first();
-        if (await abnerBtn.count() > 0) {
-          await abnerBtn.click({ timeout: 10000 });
-          selectedAccount = 'Abner Gabriel';
+        if (await nexodigitalBtn.count() > 0) {
+          await nexodigitalBtn.click({ timeout: 10000 });
+          selectedAccount = 'nexodigital';
         } else {
-          const altAbner = googlePage.getByText('Abner Gabriel', { exact: false }).first();
-          if (await altAbner.count() > 0) {
-            await altAbner.click();
-            selectedAccount = 'Abner Gabriel';
+          const altNexo = googlePage.getByText('nexodigital', { exact: false }).first();
+          if (await altNexo.count() > 0) {
+            await altNexo.click();
+            selectedAccount = 'nexodigital';
           }
         }
-      }
-      
-      // Fallback: select first account on the page (anything with an @ email)
-      if (!selectedAccount) {
-        const firstAccount = googlePage.locator('div[role="button"], div[role="link"]')
-          .filter({ hasText: /@/ })
-          .first();
-        if (await firstAccount.count() > 0) {
-          const accountText = await firstAccount.textContent();
-          await firstAccount.click({ timeout: 10000 });
-          selectedAccount = accountText?.trim().split('\n')[0] || 'first-available';
+        
+        // Strategy 2: Fallback to Abner Gabriel
+        if (!selectedAccount) {
+          const abnerBtn = googlePage.locator('div[role="button"], div[role="link"], [data-email]')
+            .filter({ hasText: /Abner Gabriel|nninguem17@gmail\.com/i })
+            .first();
+          if (await abnerBtn.count() > 0) {
+            await abnerBtn.click({ timeout: 10000 });
+            selectedAccount = 'Abner Gabriel';
+          } else {
+            const altAbner = googlePage.getByText('Abner Gabriel', { exact: false }).first();
+            if (await altAbner.count() > 0) {
+              await altAbner.click();
+              selectedAccount = 'Abner Gabriel';
+            }
+          }
         }
+        
+        // Strategy 3: Select first account with @ email
+        if (!selectedAccount) {
+          const firstAccount = googlePage.locator('div[role="button"], div[role="link"]')
+            .filter({ hasText: /@/ })
+            .first();
+          if (await firstAccount.count() > 0) {
+            const accountText = await firstAccount.textContent();
+            await firstAccount.click({ timeout: 10000 });
+            selectedAccount = accountText?.trim().split('\n')[0] || 'first-available';
+          }
+        }
+        
+        // Strategy 4: If no account chooser but there's a "Continue" or password field,
+        // the user might need to confirm — try clicking first interactive element
+        if (!selectedAccount) {
+          const anyBtn = googlePage.locator('button, [role="button"]').first();
+          if (await anyBtn.count() > 0) {
+            const btnText = await anyBtn.textContent();
+            log.info(`[_autoLogin] No account found, clicking first button: ${btnText?.substring(0, 50)}`);
+            await anyBtn.click({ timeout: 10000 });
+            selectedAccount = 'auto-clicked';
+          }
+        }
+        
+        if (!selectedAccount) {
+          log.warn('[_autoLogin] Could not find any Google account or button on auth page');
+          return false;
+        }
+        log.info(`[_autoLogin] Selected account: ${selectedAccount}`);
       }
-      
-      if (!selectedAccount) {
-        log.warn('[_autoLogin] Could not find any Google account on chooser');
-        return false;
-      }
-      log.info(`[_autoLogin] Selected account: ${selectedAccount}`);
 
       // Phase 5: Wait for redirect back to Kimi and verify login
-      await page.waitForTimeout(6000);
-      const isLoggedIn = await page.evaluate(() => {
-        const hasLoginForm = !!(
-          document.querySelector('form[action*="login"], form[action*="auth"]') ||
-          document.querySelector('input[type="password"]')
-        );
-        const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container, .segment-assistant-actions'));
-        return !hasLoginForm && hasAppContent;
-      }).catch(() => false);
+      log.info('[_autoLogin] Waiting for login to complete...');
+      let loginAttempts = 0;
+      let isLoggedIn = false;
+      while (loginAttempts < 30) {
+        isLoggedIn = await page.evaluate(() => {
+          const hasLoginForm = !!(
+            document.querySelector('form[action*="login"], form[action*="auth"]') ||
+            document.querySelector('input[type="password"]')
+          );
+          const hasAppContent = !!(document.querySelector('.chat-editor, .markdown-container, .segment-assistant-actions'));
+          return !hasLoginForm && hasAppContent;
+        }).catch(() => false);
+        
+        if (isLoggedIn) break;
+        await page.waitForTimeout(1000);
+        loginAttempts++;
+      }
 
       if (isLoggedIn) {
         log.success('[_autoLogin] Automatic login successful!');
@@ -994,177 +1416,309 @@ class KimiBridge {
   }
 
   /**
+   * v7.7-INFALÍVEL: Extract ALL new content since preSendSnapshot.
+   * Instead of guessing which assistant is the "correct" one, we capture
+   * the DOM state BEFORE sending, then AFTER the response is complete,
+   * and return the DIFFERENCE. This is immune to:
+   * - Confirmation messages appearing after the real response
+   * - Multiple assistants being created
+   * - DOM structure changes
+   * - Index shifting
+   */
+  async _extractResponseDiff(page, preSendSnapshot = []) {
+    if (!preSendSnapshot || preSendSnapshot.length === 0) {
+      // Fallback: no snapshot, use last assistant
+      return this._extractResponse(page, {});
+    }
+
+    try {
+      const postSnapshot = await page.evaluate(() => {
+        const assistants = document.querySelectorAll('.segment-assistant');
+        return Array.from(assistants).map((el, i) => {
+          // Extract all meaningful text from this assistant
+          let text = '';
+          const contentBox = el.querySelector('.segment-content-box');
+          if (contentBox) {
+            const codeBlocks = contentBox.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
+            for (const cb of codeBlocks) {
+              const t = (cb.innerText || cb.textContent || '').trim();
+              if (t) text += t + '\n\n';
+            }
+            const paragraphs = contentBox.querySelectorAll('.paragraph, p, [class*="text"]');
+            for (const p of paragraphs) {
+              const t = (p.innerText || p.textContent || '').trim();
+              if (t) text += t + '\n\n';
+            }
+          }
+          return {
+            index: i,
+            text: text.trim(),
+            textLength: text.trim().length,
+          };
+        });
+      });
+
+      let newContent = '';
+      let sources = [];
+
+      // Strategy A: New assistants (index >= preSendSnapshot.length)
+      for (let i = preSendSnapshot.length; i < postSnapshot.length; i++) {
+        const assistant = postSnapshot[i];
+        if (assistant.textLength > 0) {
+          newContent += assistant.text + '\n\n';
+          sources.push(`new-assistant-${i}`);
+        }
+      }
+
+      // Strategy B: Existing assistants that changed significantly
+      for (let i = 0; i < Math.min(preSendSnapshot.length, postSnapshot.length); i++) {
+        const preText = preSendSnapshot[i] || '';
+        const postText = postSnapshot[i]?.text || '';
+        if (postText.length > preText.length + 10) {
+          // Significant change — extract only the NEW part
+          const newPart = postText.slice(preText.length).trim();
+          if (newPart.length > 10) {
+            newContent += newPart + '\n\n';
+            sources.push(`changed-assistant-${i}`);
+          }
+        }
+      }
+
+      newContent = newContent.trim();
+
+      if (newContent.length > 0) {
+        log.success(`[v7.7] Extracted via snapshot-diff (${sources.join(', ')}): ${newContent.length} chars`);
+        return newContent;
+      }
+
+      // If no diff found, try extracting from the last assistant as fallback
+      const lastAssistant = postSnapshot[postSnapshot.length - 1];
+      if (lastAssistant && lastAssistant.textLength > 0) {
+        log.warn(`[v7.7] No diff detected, falling back to last assistant (${lastAssistant.textLength} chars)`);
+        return lastAssistant.text;
+      }
+    } catch (e) {
+      log.warn(`[v7.7] Snapshot diff failed: ${e.message} — falling back to _extractResponse`);
+    }
+
+    return this._extractResponse(page, {});
+  }
+
+  /**
+   * v7.7: Capture a snapshot of all assistant texts before sending.
+   * This snapshot is used by _extractResponseDiff to compute the difference.
+   */
+  async _capturePreSendSnapshot(page) {
+    try {
+      const snapshot = await page.evaluate(() => {
+        const assistants = document.querySelectorAll('.segment-assistant');
+        return Array.from(assistants).map((el) => {
+          let text = '';
+          const contentBox = el.querySelector('.segment-content-box');
+          if (contentBox) {
+            const codeBlocks = contentBox.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
+            for (const cb of codeBlocks) {
+              const t = (cb.innerText || cb.textContent || '').trim();
+              if (t) text += t + '\n\n';
+            }
+            const paragraphs = contentBox.querySelectorAll('.paragraph, p, [class*="text"]');
+            for (const p of paragraphs) {
+              const t = (p.innerText || p.textContent || '').trim();
+              if (t) text += t + '\n\n';
+            }
+          }
+          return text.trim();
+        });
+      });
+      log.info(`[v7.7] Captured pre-send snapshot: ${snapshot.length} assistants`);
+      return snapshot;
+    } catch (e) {
+      log.warn(`[v7.7] Failed to capture pre-send snapshot: ${e.message}`);
+      return [];
+    }
+  }
+
+  /**
    * Extract response using multi-strategy fallback.
    * Prioritizes stream interceptor, then React Fiber, then DOM selectors.
+   * v7.7: Kept as fallback for _extractResponseDiff.
    */
-  async _extractResponse(page) {
-    // Strategy 0: Stream interceptor — most reliable
+  async _extractResponse(page, options = {}) {
+    // v7.5: Unified DOM extraction using the SAME logic as _pollThinkingAndResponse Layer 2.5
+    // This ensures consistency between the DOM poller and final extraction.
+    const { preferAssistantIndex, userId } = options;
+
+    // v7.5: Strategy 0 — Network Interceptor (PRIMARY, server-side)
+    // Uses Playwright's native page.on('response') — immune to page anti-tampering.
+    if (userId) {
+      const interceptor = this.networkInterceptors.get(userId);
+      if (interceptor) {
+        const data = interceptor.getData();
+        if (data.response && data.response.trim().length > 0) {
+          log.success(`[v7.5] Extracted via network-intercept: ${data.response.slice(0, 80)}...`);
+          return data.response.trim();
+        }
+      }
+    }
+
+    // Strategy 0b: Legacy JS-injected stream interceptor (DEPRECATED)
     try {
       const intercepted = await page.evaluate(() => {
         const s = window.__lunaStream;
         if (s && s.active && s.content) {
-          // v3.7-fix: s.content is an array of deltas — join into string
           return Array.isArray(s.content) ? s.content.join('') : (s.content || '');
         }
         return null;
       });
       if (intercepted && intercepted.trim()) {
-        log.success(`Extracted via stream-intercept: ${intercepted.slice(0, 80)}...`);
+        log.success(`Extracted via stream-intercept-legacy: ${intercepted.slice(0, 80)}...`);
         return intercepted.trim();
       }
     } catch (e) {
       this._log(`Stream intercept extraction failed: ${e.message}`);
     }
 
-    // Strategy 1: Browser-evaluate — React Fiber + smart DOM
-    const strategies = [
-      {
-        type: 'evaluate',
-        selector: null,
-        fn: async () => {
-          return await page.evaluate(() => {
-            try {
-              // ── Helpers ──
-              function getReactFiber(dom) {
-                const key = Object.keys(dom).find(k =>
-                  k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
-                );
-                return key ? dom[key] : null;
-              }
-              function findMessageFiber(fiber) {
-                let node = fiber;
-                while (node) {
-                  const props = node.memoizedProps || node.pendingProps;
-                  if (props && (props.message || props.msg || props.data?.message)) return node;
-                  node = node.return;
-                }
-                return null;
-              }
-              function isInsideThink(el, boundary) {
-                let parent = el.parentElement;
-                while (parent && parent !== boundary) {
-                  const pc = (parent.className || '').toLowerCase();
-                  if (pc.includes('think') || pc.includes('thinking') || pc.includes('reasoning')) return true;
-                  parent = parent.parentElement;
-                }
-                return false;
-              }
+    // v7.5: Strategy 1 — Unified DOM extraction (same as _pollThinkingAndResponse Layer 2.5)
+    try {
+      const domResult = await page.evaluate((prefIdx) => {
+        const assistants = document.querySelectorAll('.segment-assistant');
+        if (!assistants.length) return null;
 
-              // ── Find last assistant ──
-              const assistantSelectors = [
-                '.segment-assistant', '.message-assistant',
-                '[data-testid="assistant-message"]', '[data-testid="message-assistant"]',
-                '.chat-message--assistant',
-                '[class*="assistant"][class*="segment"]',
-                '[class*="assistant"][class*="message"]',
-              ];
-              let lastAssistant = null;
-              for (const sel of assistantSelectors) {
-                const els = document.querySelectorAll(sel);
-                if (els.length) { lastAssistant = els[els.length - 1]; break; }
-              }
-              if (!lastAssistant) {
-                const allMsg = document.querySelectorAll('.chat-message, .message-item, [data-testid="message-container"]');
-                if (allMsg.length) lastAssistant = allMsg[allMsg.length - 1];
-              }
-              if (!lastAssistant) return '';
+        // v7.5-fix: If preferAssistantIndex is provided, use it. Otherwise use last.
+        // This allows the caller to specify which assistant to extract from.
+        let assistant = assistants[assistants.length - 1];
+        if (prefIdx !== undefined && prefIdx >= 0 && prefIdx < assistants.length) {
+          assistant = assistants[prefIdx];
+        }
 
-              // ── React Fiber inspection ──
-              const fiber = getReactFiber(lastAssistant);
-              const msgFiber = fiber ? findMessageFiber(fiber) : null;
-              if (msgFiber) {
-                const props = msgFiber.memoizedProps || msgFiber.pendingProps;
-                const msg = props?.message || props?.msg || props?.data;
-                if (msg) {
-                  const content = msg.content || msg.text || msg.response || '';
-                  if (content) return String(content).trim();
-                }
-              }
+        let thinking = '';
+        let response = '';
 
-              // ── DOM: markdown containers excluding thinking ──
-              const mdContainers = lastAssistant.querySelectorAll('.markdown-container, [class*="markdown"]');
-              for (let i = mdContainers.length - 1; i >= 0; i--) {
-                const md = mdContainers[i];
-                if (!isInsideThink(md, lastAssistant)) {
-                  const text = md.innerText?.trim();
-                  if (text && text.length > 0) return text;
-                }
-              }
+        const thinkContainer = assistant.querySelector('.toolcall-container.thinking-container');
+        if (thinkContainer) {
+          const thinkMd = thinkContainer.querySelector('.markdown-container.toolcall-content-text');
+          if (thinkMd) thinking = (thinkMd.innerText || '').trim();
+        }
 
-              // ── Fallback: assistant text minus think blocks ──
-              let fullText = lastAssistant.innerText?.trim() || '';
-              const thinkBlocks = lastAssistant.querySelectorAll(
-                '.thinking-container, .think-block, [class*="thinking"], [class*="reasoning"]'
-              );
-              for (const tb of thinkBlocks) {
-                fullText = fullText.replace(tb.innerText?.trim() || '', '');
-              }
-              return fullText.trim();
-            } catch (e) {
-              return '';
-            }
-          });
-        },
-      },
-      // Strategy 2: Plain text from paragraph elements
-      {
-        type: 'paragraph',
-        selector: '.markdown-container .paragraph',
-        fn: async (el) => {
-          const texts = await el.allInnerTexts();
-          return texts.join('\n\n');
-        },
-      },
-      // Strategy 3: Direct innerText from markdown container
-      {
-        type: 'innerText',
-        selector: '.markdown-container .markdown',
-        fn: async (el) => {
-          return await el.innerText();
-        },
-      },
-      // Strategy 4: Turndown (markdown conversion)
-      {
-        type: 'turndown',
-        selector: '.markdown-container .markdown',
-        fn: async (el) => {
-          if (!this.turndown) throw new Error('turndown not available');
-          const html = await el.innerHTML();
-          return this.turndown.turndown(html);
-        },
-      },
-      // Strategy 5: Fallback to body text
-      {
-        type: 'plaintext',
-        selector: 'body',
-        fn: async (el) => {
-          const text = await el.innerText();
-          return text.trim();
-        },
-      },
-    ];
+        const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
+        const contentBox = assistant.querySelector('.segment-content-box');
+        if (!contentBox) return null;
 
-    for (const strategy of strategies) {
-      try {
-        let result;
-        if (strategy.type === 'evaluate') {
-          result = await strategy.fn();
-        } else {
-          const locator = page.locator(strategy.selector).last();
-          const exists = await locator.count();
-          if (exists === 0) {
-            this._log(`Strategy ${strategy.type}: element not found`);
-            continue;
+        // Extract from markdown containers
+        const markdownContainers = contentBox.querySelectorAll('.markdown-container');
+        let rawResponse = '';
+        for (const md of markdownContainers) {
+          if (thinkContainer && md.closest('.toolcall-container.thinking-container')) continue;
+          const codeBlocks = md.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
+          for (const cb of codeBlocks) {
+            const text = (cb.innerText || cb.textContent || '').trim();
+            if (text) rawResponse += text + '\n\n';
           }
-          result = await strategy.fn(locator);
+          const paragraphs = md.querySelectorAll('.paragraph, p, [class*="text"]');
+          for (const p of paragraphs) {
+            const text = (p.innerText || p.textContent || '').trim();
+            if (text) rawResponse += text + '\n\n';
+          }
         }
-        if (result && result.trim()) {
-          log.success(`Extracted via ${strategy.type}: ${result.slice(0, 80)}...`);
-          return result.trim();
+
+        // OLD structure fallback
+        if (!rawResponse) {
+          const containerBlock = contentBox.querySelector('.container-block');
+          const blockItems = containerBlock
+            ? containerBlock.querySelectorAll('.block-item')
+            : contentBox.querySelectorAll('.block-item');
+          for (const item of blockItems) {
+            if (item.querySelector('.toolcall-container.thinking-container')) continue;
+            const codeBlocks = item.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
+            for (const cb of codeBlocks) {
+              const text = (cb.innerText || cb.textContent || '').trim();
+              if (text) rawResponse += text + '\n\n';
+            }
+            const paragraphs = item.querySelectorAll('.paragraph, p, [class*="text"]');
+            for (const p of paragraphs) {
+              const text = (p.innerText || p.textContent || '').trim();
+              if (text) rawResponse += text + '\n\n';
+            }
+          }
         }
-      } catch (e) {
-        this._log(`Strategy ${strategy.type} failed: ${e.message}`);
+
+        rawResponse = rawResponse.trim();
+
+        // v7.5: Apply same thinking/response separation logic
+        if (thinkContainer && rawResponse) {
+          const codeBlockIdx = rawResponse.indexOf('```');
+          const jsonStartIdx = rawResponse.search(/\{\s*"/);
+          const firstRealIdx = codeBlockIdx >= 0 && jsonStartIdx >= 0
+            ? Math.min(codeBlockIdx, jsonStartIdx)
+            : (codeBlockIdx >= 0 ? codeBlockIdx : jsonStartIdx);
+
+          if (firstRealIdx > 10) {
+            const beforeReal = rawResponse.slice(0, firstRealIdx).trim();
+            const afterReal = rawResponse.slice(firstRealIdx).trim();
+            if (thinkStarters.test(beforeReal) || beforeReal.length < 400) {
+              thinking = thinking ? thinking + '\n\n' + beforeReal : beforeReal;
+              response = afterReal;
+            } else {
+              response = rawResponse;
+            }
+          } else if (firstRealIdx === 0) {
+            response = rawResponse;
+          } else if (!rawResponse.includes('```') && !rawResponse.includes('{')) {
+            thinking = thinking ? thinking + '\n\n' + rawResponse : rawResponse;
+            response = '';
+          } else {
+            response = rawResponse;
+          }
+        } else {
+          response = rawResponse;
+        }
+
+        if (!thinkContainer && response && !thinking) {
+          const isThink = thinkStarters.test(response) && response.length < 500 &&
+                          !response.includes('"response"') && !response.includes('"tool"');
+          if (isThink) {
+            thinking = response;
+            response = '';
+          }
+        }
+
+        return { thinking: thinking || '', response: response || '', source: 'dom-unified', assistantIndex: prefIdx };
+      }, preferAssistantIndex);
+
+      if (domResult && domResult.response) {
+        log.success(`Extracted via dom-unified (assistant ${domResult.assistantIndex ?? 'last'}): ${domResult.response.slice(0, 80)}...`);
+        return domResult.response.trim();
       }
+    } catch (e) {
+      this._log(`DOM unified extraction failed: ${e.message}`);
+    }
+
+    // v7.5: Strategy 2 — Try previous assistant if last one looks like a confirmation
+    // This handles the case where Kimi adds a new "confirmation" assistant after the tool call
+    try {
+      const prevResult = await page.evaluate(() => {
+        const assistants = document.querySelectorAll('.segment-assistant');
+        if (assistants.length < 2) return null;
+        const prevAssistant = assistants[assistants.length - 2];
+        if (!prevAssistant) return null;
+
+        let response = '';
+        const contentBox = prevAssistant.querySelector('.segment-content-box');
+        if (contentBox) {
+          const codeBlocks = contentBox.querySelectorAll('.segment-code, pre code');
+          for (const cb of codeBlocks) {
+            const text = (cb.innerText || cb.textContent || '').trim();
+            if (text) response += text + '\n\n';
+          }
+        }
+        return response.trim() || null;
+      });
+      if (prevResult && prevResult.includes('{') && prevResult.includes('"tool"')) {
+        log.success(`Extracted via previous-assistant: ${prevResult.slice(0, 80)}...`);
+        return prevResult;
+      }
+    } catch (e) {
+      this._log(`Previous assistant extraction failed: ${e.message}`);
     }
 
     throw new Error('EXTRACTION_FAILED: Nenhuma resposta encontrada');
@@ -1198,18 +1752,32 @@ class KimiBridge {
    *
    * Throws on timeout.
    */
-  async _waitForResponse(page, mode = 'instant', onPartial = null, initialText = '') {
+  async _waitForResponse(page, mode = 'instant', onPartial = null, initialText = '', targetAssistantIndex = -1) {
     // NO TIMEOUT — Kimi may execute Python for 10+ minutes. That's valid activity.
     // We wait until buttons appear + text is stable, forever.
 
+    // v7.6-fix: Helper to get text from target assistant or last markdown
+    const getCurrentText = async () => {
+      if (targetAssistantIndex >= 0) {
+        return await page.evaluate((idx) => {
+          const assistants = document.querySelectorAll('.segment-assistant');
+          if (idx >= assistants.length) return '';
+          const assistant = assistants[idx];
+          const markdown = assistant.querySelector('.markdown-container .markdown');
+          return markdown ? (markdown.innerText || '').trim() : '';
+        }, targetAssistantIndex).catch(() => '');
+      }
+      return await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+    };
+
     // Phase 0: Wait for text to CHANGE from initialText — this ensures we don't
     // detect the previous response as "done" when buttons are still visible.
-    log.info('Waiting for new response text to appear...');
+    log.info(`Waiting for new response text to appear${targetAssistantIndex >= 0 ? ` (assistant ${targetAssistantIndex})` : ''}...`);
     let textHasChanged = false;
     const changeStart = Date.now();
     while (true) {
       try {
-        const currentText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+        const currentText = await getCurrentText();
         if (currentText !== initialText && currentText.trim().length > 0) {
           textHasChanged = true;
           log.success('New response text detected');
@@ -1256,7 +1824,7 @@ class KimiBridge {
         return lastText;
       }
       try {
-        const currentText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+        const currentText = await getCurrentText();
 
         // Notify partial update when text changes
         if (currentText !== lastText && currentText.trim().length > 0) {
@@ -1417,7 +1985,7 @@ class KimiBridge {
     // v5.3-fix: Usar goto na MESMA aba em vez de clicar no botão "new chat".
     // O botão "new chat" abre uma NOVA ABA no navegador, causando acúmulo de abas
     // e problemas de memória. goto na mesma aba é limpo, rápido e previsível.
-    await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded', timeout: 0 });
+    await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded', timeout: 0 });
     await page.waitForTimeout(2500);
     let newUrl = page.url();
 
@@ -1510,7 +2078,7 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
         session.chatUrl = page.url();
         this._saveChatUrl(userId, session.chatUrl);
@@ -1582,7 +2150,7 @@ class KimiBridge {
 
       // Step 6: Wait for response
       const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null);
-      let response = await this._extractResponse(page);
+      let response = await this._extractResponse(page, { userId });
 
       // CRITICAL: _extractResponse can return incomplete text. If it's much shorter
       // than the lastText we polled, use lastText as fallback to avoid cutting off [[action]] tags.
@@ -1619,8 +2187,513 @@ class KimiBridge {
   }
 
   /**
+   * Send a generic file (txt, pdf, etc.) to Kimi Web.
+   * v5.3: Generalized from sendImage — supports any file type.
+   *
+   * @param {string} userId
+   * @param {string|Buffer} fileData — base64 string (with/without data URI) or Buffer
+   * @param {string} fileName — e.g. 'message.txt', 'doc.pdf'
+   * @param {string} text — optional accompanying text
+   * @param {object} options
+   */
+  async sendFile(userId, fileData, fileName, text = '', options = {}) {
+    if (!fileData) {
+      throw new Error('File data is required');
+    }
+
+    // Rate limiting
+    this._checkCooldown(userId);
+
+    // v5.6: Try WebBridge FIRST (PRIMARY), Playwright as fallback
+    if (this.webbridgeHealthy) {
+      try {
+        log.info(`[sendFile] Using WebBridge PRIMARY for user ${hashUserId(userId)}`);
+        const result = await this._sendFileViaWebBridge(userId, fileData, fileName, text, options);
+        if (result && result.success) {
+          log.success(`[sendFile] WebBridge succeeded for user ${hashUserId(userId)}`);
+          return result;
+        }
+      } catch (wbErr) {
+        log.warn(`[sendFile] WebBridge failed: ${wbErr.message} — falling back to Playwright CDP`);
+      }
+    }
+
+    const page = await this._getOrCreateUserPage(userId);
+    const session = this.userSessions.get(userId);
+
+    if (session.processing) {
+      log.warn(`User ${hashUserId(userId)} already processing — queueing file upload`);
+      const startWait = Date.now();
+      while (session.processing) {
+        if (Date.now() - startWait > 60000) {
+          throw new Error('Timeout waiting for previous message to complete');
+        }
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    session.processing = true;
+    session.lastActivity = Date.now();
+
+    try {
+      await this._verifySession(page);
+
+      if (options.newChat) {
+        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(2000);
+        session.chatUrl = page.url();
+        this._saveChatUrl(userId, session.chatUrl);
+      }
+
+      if (options.mode) {
+        await this.setMode(userId, options.mode);
+      }
+
+      const actualMode = await this._detectActualMode(page) || session.mode || 'instant';
+      log.info(`User ${hashUserId(userId)} sending file ${fileName} (text=${text ? 'yes' : 'no'}, mode=${actualMode})`);
+
+      await page.bringToFront();
+
+      // Step 1: Save file data to temp file
+      const tmpDir = path.join(ARTIFACTS_DIR, 'tmp-uploads');
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+      const ext = path.extname(fileName) || '.txt';
+      const tmpFile = path.join(tmpDir, `kimi-upload-${hashUserId(userId)}-${Date.now()}${ext}`);
+
+      let buffer;
+      if (Buffer.isBuffer(fileData)) {
+        buffer = fileData;
+      } else if (typeof fileData === 'string' && fileData.includes('base64')) {
+        // Strip data URI prefix if present
+        const base64 = fileData.replace(/^data:[^;]+;base64,/, '');
+        buffer = Buffer.from(base64, 'base64');
+      } else if (typeof fileData === 'string') {
+        buffer = Buffer.from(fileData, 'utf8');
+      } else {
+        throw new Error('Unsupported fileData type');
+      }
+      fs.writeFileSync(tmpFile, buffer);
+      log.info(`File saved to temp file: ${tmpFile} (${buffer.length} bytes)`);
+
+      // Helper: check if login modal appeared mid-operation and recover
+      // v5.7-fix: When login is recovered, check if file is still in input.
+      // The user reported that file stays in the field during login modal.
+      const checkAndRecoverLogin = async (stepName) => {
+        // First check — modal may appear temporarily during file processing
+        let hasLoginModal = await page.evaluate(() => {
+          return !!(
+            document.querySelector('form[action*="login"], form[action*="auth"]') ||
+            document.querySelector('input[type="password"]') ||
+            document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
+          );
+        }).catch(() => false);
+        
+        if (!hasLoginModal) return false;
+        
+        // Modal detected — wait a moment, it might disappear on its own (session refresh)
+        log.warn(`[sendFile] Login modal detected after ${stepName} — waiting to see if it resolves...`);
+        await page.waitForTimeout(5000);
+        
+        // Check again
+        hasLoginModal = await page.evaluate(() => {
+          return !!(
+            document.querySelector('form[action*="login"], form[action*="auth"]') ||
+            document.querySelector('input[type="password"]') ||
+            document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
+          );
+        }).catch(() => false);
+        
+        if (!hasLoginModal) {
+          log.info(`[sendFile] Login modal resolved itself after ${stepName} — continuing`);
+          return false;
+        }
+        
+        // Modal persisted — attempt auto-login
+        log.warn(`[sendFile] Login modal persisted after ${stepName} — attempting auto-login...`);
+        const recovered = await this._autoLogin(page);
+        if (!recovered) {
+          throw new Error('KIMI_LOGIN_REQUIRED');
+        }
+        log.success(`[sendFile] Auto-login recovered after ${stepName}`);
+        
+        // v5.7-fix: Check if file is still in the input after login recovery.
+        // _autoLogin does NOT reload the page, so the file should still be there.
+        const fileStillThere = await page.evaluate(() => {
+          const input = document.querySelector('.hidden-input') || document.querySelector('input[type="file"]');
+          return !!(input && (input.files?.length > 0 || input.value));
+        }).catch(() => false);
+        
+        if (fileStillThere) {
+          log.info(`[sendFile] File still in input after login recovery — continuing without restart`);
+          return false; // Continue normally, file is still there
+        }
+        
+        log.warn(`[sendFile] File lost from input after login recovery — will restart upload`);
+        return 'RESTART_UPLOAD';
+      };
+
+      // v5.7-fix: Upload with login-recovery loop.
+      // If login modal appears and file is lost, restart upload from scratch.
+      let uploadAttempt = 0;
+      const maxUploadAttempts = 2;
+      let needRestart = false;
+
+      while (uploadAttempt < maxUploadAttempts) {
+        uploadAttempt++;
+        needRestart = false;
+
+        // Step 2: Open toolkit and use native file input
+        const toolkitBtn = page.locator('.toolkit-trigger-btn').first();
+        const hasToolkit = await toolkitBtn.count() > 0;
+
+        if (hasToolkit) {
+          await toolkitBtn.click();
+          await page.waitForTimeout(500);
+        }
+        const toolkitResult = await checkAndRecoverLogin('toolkit click');
+        if (toolkitResult === 'RESTART_UPLOAD') { needRestart = true; continue; }
+
+        // Use the native hidden input
+        const fileInput = page.locator('.hidden-input, input[type="file"]').first();
+        await fileInput.setInputFiles(tmpFile);
+        log.info(`File input populated via native input: ${tmpFile}`);
+        const inputResult = await checkAndRecoverLogin('file input');
+        if (inputResult === 'RESTART_UPLOAD') { needRestart = true; continue; }
+
+        // Step 3: Trigger change event
+        await page.evaluate(() => {
+          const input = document.querySelector('.hidden-input') || document.querySelector('input[type="file"]');
+          if (input) {
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        });
+
+        // Wait for file to be processed by Kimi UI
+        log.info('Waiting for file upload to be processed by Kimi...');
+        await page.waitForTimeout(2000);
+        const processingResult = await checkAndRecoverLogin('file processing');
+        if (processingResult === 'RESTART_UPLOAD') { needRestart = true; continue; }
+
+        // If we got here without restart, break the loop
+        break;
+      }
+
+      if (needRestart && uploadAttempt >= maxUploadAttempts) {
+        throw new Error('Upload failed: login recovery caused file loss and max attempts reached');
+      }
+
+      // Step 4: Send optional text
+      if (text && text.trim()) {
+        const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+        await inputLocator.fill('');
+        await page.waitForTimeout(300);
+        if (text.length <= MAX_TEXT_TYPE_LENGTH) {
+          await inputLocator.type(text, { delay: 50 });
+        } else {
+          await inputLocator.fill(text);
+        }
+        await page.waitForTimeout(500);
+      }
+
+      // Step 5: Press Enter to send
+      const sendLocator = page.locator('textarea, [contenteditable="true"]').first();
+      await sendLocator.press('Enter');
+      log.info(`File (+text) sent for user ${hashUserId(userId)}`);
+      const sendResult = await checkAndRecoverLogin('send message');
+      if (sendResult === 'RESTART_UPLOAD') {
+        // If login happened after send, the message may have been sent already.
+        // Just continue to wait for response.
+        log.info('[sendFile] Login recovered after send — continuing to wait for response');
+      }
+
+      // Step 6: Wait for response
+      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null);
+      let response = await this._extractResponse(page, { userId });
+
+      if (lastText && lastText.length > 0) {
+        const ratio = response.length > 0 ? response.length / lastText.length : 0;
+        if (ratio < 0.5 && lastText.length > response.length) {
+          log.warn(`sendFile: _extractResponse incomplete (${response.length} vs polled ${lastText.length}), using polled text as fallback`);
+          response = lastText;
+        }
+      }
+
+      session.chatUrl = page.url();
+      this._saveChatUrl(userId, session.chatUrl);
+
+      log.success(`Response ready for user ${hashUserId(userId)} (len=${response.length})`);
+
+      // Cleanup temp file
+      try { fs.unlinkSync(tmpFile); } catch {}
+
+      return {
+        response,
+        chatUrl: session.chatUrl,
+        mode: session.mode,
+      };
+    } catch (err) {
+      try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch {}
+      throw err;
+    } finally {
+      session.processing = false;
+      session.lastActivity = Date.now();
+    }
+  }
+
+  /**
    * Send a message and wait for response
    */
+  // ============================================================
+  // v5.6: WebBridge PRIMARY methods
+  // ============================================================
+
+  async _sendFileViaWebBridge(userId, fileData, fileName, text = '', options = {}) {
+    const wb = new WebBridgeClient(`luna-${hashUserId(userId)}`);
+
+    // Step 1: Navigate to Kimi or find existing tab
+    const listRes = await wb.listTabs();
+    const kimiTab = listRes.tabs?.find(t => t.url && t.url.includes('kimi.com'));
+    if (kimiTab) {
+      await wb.findTab(kimiTab.url);
+      log.info(`[WebBridge] Found existing Kimi tab: ${kimiTab.url}`);
+    } else {
+      await wb.navigate('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', true);
+      log.info('[WebBridge] Opened new Kimi tab');
+    }
+
+    // Step 2: Save file to disk (WebBridge needs file paths)
+    const tmpDir = path.join(ARTIFACTS_DIR, 'tmp-uploads');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const ext = path.extname(fileName) || '.txt';
+    const tmpFile = path.join(tmpDir, `wb-upload-${hashUserId(userId)}-${Date.now()}${ext}`);
+
+    let buffer;
+    if (Buffer.isBuffer(fileData)) {
+      buffer = fileData;
+    } else if (typeof fileData === 'string' && fileData.includes('base64')) {
+      const base64 = fileData.replace(/^data:[^;]+;base64,/, '');
+      buffer = Buffer.from(base64, 'base64');
+    } else if (typeof fileData === 'string') {
+      buffer = Buffer.from(fileData, 'utf8');
+    } else {
+      throw new Error('Unsupported fileData type');
+    }
+    fs.writeFileSync(tmpFile, buffer);
+    log.info(`[WebBridge] File saved to ${tmpFile} (${buffer.length} bytes)`);
+
+    // Step 3: Use evaluate to reveal file input and set files DIRECTLY
+    // This is the MOST RELIABLE method — bypasses accessibility tree entirely
+    await this._sleep(1500);
+    log.info('[WebBridge] Injecting file into Kimi via DOM evaluate...');
+    
+    // v5.7-fix: Check for login modal BEFORE attempting upload
+    const loginCheck = await wb.evaluate(`
+      (() => {
+        const hasModal = !!(
+          document.querySelector('form[action*="login"], form[action*="auth"]') ||
+          document.querySelector('input[type="password"]') ||
+          document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
+        );
+        const loginTexts = ['Continue with Google', 'Google', '使用 Google 登录', 'Google 登录', '使用 Google 帳戶登入', 'Entrar com Google', 'Fazer login com Google'];
+        const hasLoginText = loginTexts.some(t => document.body.innerText.includes(t));
+        return { hasLoginModal: hasModal || hasLoginText };
+      })()
+    `);
+    if (loginCheck.data?.value?.hasLoginModal) {
+      log.warn('[WebBridge] Login modal detected — WebBridge cannot handle login. Falling back to Playwright CDP');
+      throw new Error('LOGIN_MODAL_WEBBRIDGE_CANNOT_HANDLE');
+    }
+
+    const injectResult = await wb.evaluate(`
+      (async () => {
+        // Find or create file input
+        let input = document.querySelector('input[type="file"]');
+        
+        // If not found, click toolkit button to reveal it
+        if (!input) {
+          const toolkitBtn = document.querySelector('.toolkit-trigger-btn, button[class*="toolkit"], [class*="upload"]');
+          if (toolkitBtn) {
+            toolkitBtn.click();
+            await new Promise(r => setTimeout(r, 500));
+            input = document.querySelector('input[type="file"]');
+          }
+        }
+        
+        if (!input) {
+          // Create a hidden file input as last resort
+          input = document.createElement('input');
+          input.type = 'file';
+          input.style.display = 'none';
+          document.body.appendChild(input);
+        }
+        
+        // Make sure it's visible and interactive
+        input.style.display = 'block';
+        input.style.visibility = 'visible';
+        input.style.opacity = '1';
+        input.style.position = 'fixed';
+        input.style.top = '0';
+        input.style.left = '0';
+        input.style.zIndex = '999999';
+        
+        return { found: true, hasInput: !!input, tag: input?.tagName };
+      })()
+    `);
+    log.info(`[WebBridge] File input ready: ${JSON.stringify(injectResult.data?.value)}`);
+
+    // Step 4: Upload file using CSS selector (input is now visible)
+    await this._sleep(500);
+    try {
+      await wb.upload("input[type='file']", [tmpFile]);
+      log.info(`[WebBridge] Uploaded file via CSS selector`);
+    } catch (uploadErr) {
+      log.warn(`[WebBridge] Upload API failed: ${uploadErr.message}`);
+      throw uploadErr;
+    }
+
+    // Step 5: Fill accompanying text using WebBridge fill (supports contenteditable natively)
+    if (text && text.trim()) {
+      await this._sleep(800);
+      try {
+        await wb.fill("textarea, [contenteditable='true']", text);
+        log.info(`[WebBridge] Filled input with text via fill API`);
+      } catch (fillErr) {
+        log.warn(`[WebBridge] Fill API failed: ${fillErr.message} — using evaluate fallback`);
+        await wb.evaluate(`
+          const input = document.querySelector('textarea, [contenteditable="true"]');
+          if (input) {
+            if (input.isContentEditable) {
+              input.focus();
+              const sel = window.getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(input);
+              sel.removeAllRanges();
+              sel.addRange(range);
+              document.execCommand('insertText', false, ${JSON.stringify(text)});
+            } else {
+              const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+              const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+              setter.call(input, ${JSON.stringify(text)});
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+        `);
+      }
+    }
+
+    // v6.1-fix: Capture the last response text BEFORE sending, so we can
+    // distinguish between the previous response and the new one.
+    const initialRes = await wb.evaluate(`
+      const containers = document.querySelectorAll('.markdown-container .markdown, .segment-assistant, [class*="assistant"]');
+      const last = containers[containers.length - 1];
+      return last ? last.innerText : '';
+    `);
+    const initialText = initialRes.data?.value || '';
+    log.info(`[WebBridge] Captured initial text (${initialText.length} chars) before sending`);
+
+    // Step 6: Send message — click send button or press Enter
+    await this._sleep(500);
+    try {
+      const sendResult = await wb.evaluate(`
+        (() => {
+          // Strategy 1: Find send button by SVG icon or aria-label
+          const allButtons = document.querySelectorAll('button');
+          for (const btn of allButtons) {
+            const aria = btn.getAttribute('aria-label') || '';
+            if (/send|enviar|发送|submit/i.test(aria)) {
+              btn.click();
+              return { method: 'aria-button' };
+            }
+            // Check for SVG arrow icon inside button
+            const svg = btn.querySelector('svg');
+            if (svg && !btn.disabled && btn.getBoundingClientRect().width < 60) {
+              btn.click();
+              return { method: 'svg-button' };
+            }
+          }
+          
+          // Strategy 2: Press Enter on input
+          const input = document.querySelector('textarea, [contenteditable="true"]');
+          if (input) {
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+            input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+            return { method: 'enter-key' };
+          }
+          
+          return { method: 'none', error: 'No send mechanism found' };
+        })()
+      `);
+      log.info(`[WebBridge] Sent message via: ${JSON.stringify(sendResult.data?.value)}`);
+    } catch (e) {
+      log.warn(`[WebBridge] Send failed: ${e.message}`);
+    }
+
+    // Step 7: Poll for response using evaluate (most reliable)
+    log.info('[WebBridge] Waiting for response...');
+    let response = '';
+    let lastText = '';
+    let stableFor = 0;
+    const pollInterval = 1000;
+    const maxWait = 120000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxWait) {
+      await this._sleep(pollInterval);
+
+      const evalRes = await wb.evaluate(`
+        const containers = document.querySelectorAll('.markdown-container .markdown, .segment-assistant, [class*="assistant"]');
+        const last = containers[containers.length - 1];
+        return last ? last.innerText : '';
+      `);
+      const currentText = evalRes.data?.value || '';
+
+      // v6.1-fix: Ignore text that matches the initial (pre-send) response.
+      // This prevents the previous response from being detected as the new one.
+      if (currentText && currentText === initialText) {
+        continue;
+      }
+
+      if (currentText && currentText !== lastText) {
+        lastText = currentText;
+        stableFor = 0;
+      } else {
+        stableFor += pollInterval;
+      }
+
+      // Check for completion: copy/regenerate buttons visible
+      const doneCheck = await wb.evaluate(`
+        const btn = document.querySelector('.segment-assistant-actions button, [class*="copy"], [class*="regenerate"]');
+        return !!btn;
+      `);
+      const hasDoneButton = doneCheck.data?.value === true;
+
+      if (hasDoneButton && stableFor > 3000 && currentText.length > 10) {
+        response = currentText;
+        break;
+      }
+      if (stableFor > 20000 && currentText.length > 10) {
+        response = currentText;
+        break;
+      }
+    }
+
+    // Cleanup
+    try { fs.unlinkSync(tmpFile); } catch {}
+
+    return {
+      success: true,
+      response: response || lastText,
+      chatUrl: 'https://www.kimi.com/?lang=en',
+      mode: options.mode || 'instant',
+    };
+  }
+
+  _sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
   async sendMessage(userId, text, options = {}) {
     if (!text || !text.trim()) {
       throw new Error('Message text is required');
@@ -1662,6 +2735,10 @@ class KimiBridge {
     session.processing = true;
     session.lastActivity = Date.now();
 
+    // v7.6-fix: Reset network interceptor to prevent stale data from previous messages
+    const interceptor = await this._getOrCreateInterceptor(userId);
+    if (interceptor) interceptor.reset();
+
     try {
       // Verify session
       await this._verifySession(page);
@@ -1684,7 +2761,7 @@ class KimiBridge {
 
       // Handle newChat option (only for instant/thinking modes)
       if (options.newChat && !isAgentOrSwarm) {
-        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
         session.chatUrl = page.url();
         this._saveChatUrl(userId, session.chatUrl);
@@ -1737,21 +2814,66 @@ class KimiBridge {
       }
       await page.waitForTimeout(500 + Math.floor(Math.random() * 1000));
 
+      // v7.7-INFALÍVEL: Capture full snapshot before sending
+      const preSendSnapshot = await this._capturePreSendSnapshot(page);
+      const preSendAssistantCount = preSendSnapshot.length;
+
       // Press Enter to send
       await inputLocator.press('Enter');
-      log.info(`Message sent for user ${hashUserId(userId)} (initialText=${initialText.length} chars)`);
+      log.info(`Message sent for user ${hashUserId(userId)} (initialText=${initialText.length} chars, snapshot=${preSendAssistantCount} assistants)`);
+
+      // v7.6-fix: Assistant detection for logging/compatibility
+      let targetAssistantIndex = -1;
+      let newAssistantWaitCount = 0;
+      while (targetAssistantIndex < 0 && newAssistantWaitCount < 100) { // 10s
+        const assistants = await page.evaluate(() => {
+          const nodes = document.querySelectorAll('.segment-assistant');
+          return Array.from(nodes).map((el, i) => ({
+            index: i,
+            textLength: el.innerText?.length || 0,
+            hasMarkdown: !!el.querySelector('.markdown-container, .markdown'),
+          }));
+        });
+        const currentCount = assistants.length;
+        if (currentCount > preSendAssistantCount) {
+          const newAssistant = assistants[preSendAssistantCount];
+          if (newAssistant && (newAssistant.textLength > 0 || newAssistant.hasMarkdown)) {
+            targetAssistantIndex = preSendAssistantCount;
+            log.info(`[sendMessage] New assistant detected at index ${targetAssistantIndex}, textLen=${newAssistant.textLength}`);
+          }
+        }
+        await new Promise(r => setTimeout(r, 100));
+        newAssistantWaitCount++;
+      }
 
       // Wait for response with combined signal + streaming
-      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null, initialText);
+      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null, initialText, targetAssistantIndex);
 
-      // Extract response
-      let response = await this._extractResponse(page);
+      // v7.7-INFALÍVEL: Extract using snapshot diff (PRIMARY)
+      let response = '';
+      try {
+        const extracted = await this._extractResponseDiff(page, preSendSnapshot);
+        if (extracted && extracted.trim().length > 0) {
+          response = extracted.trim();
+          log.info(`[sendMessage] _extractResponseDiff success: ${response.length} chars`);
+        }
+      } catch (e) {
+        log.warn(`[sendMessage] _extractResponseDiff failed: ${e.message}`);
+      }
+
+      // Fallback: old extraction strategy
+      if (!response) {
+        const extractOptions = targetAssistantIndex >= 0
+          ? { preferAssistantIndex: targetAssistantIndex, userId }
+          : { userId };
+        response = await this._extractResponse(page, extractOptions);
+      }
 
       // CRITICAL: _extractResponse can return incomplete text. Fallback to polled text.
       if (lastText && lastText.length > 0) {
         const ratio = response.length > 0 ? response.length / lastText.length : 0;
         if (ratio < 0.5 && lastText.length > response.length) {
-          log.warn(`sendMessage: _extractResponse incomplete (${response.length} vs polled ${lastText.length}), using polled text as fallback`);
+          log.warn(`sendMessage: extraction incomplete (${response.length} vs polled ${lastText.length}), using polled text as fallback`);
           response = lastText;
         }
       }
@@ -2028,6 +3150,19 @@ class KimiBridge {
       const profileDir = userDataDir;
       log.info(`Iniciando Chrome com perfil persistente: ${profileDir}`);
 
+      // v7.3-fix: Auto-load Luna Extension for reliable DOM observation
+      const extensionPath = require('path').join(__dirname, 'luna-extension');
+      const extensionArgs = [];
+      try {
+        const fs = require('fs');
+        if (fs.existsSync(extensionPath) && fs.existsSync(require('path').join(extensionPath, 'manifest.json'))) {
+          extensionArgs.push('--load-extension=' + extensionPath);
+          log.info(`Extension will be loaded from: ${extensionPath}`);
+        }
+      } catch (e) {
+        log.warn(`Could not load extension: ${e.message}`);
+      }
+
       const proc = spawn(chromePath, [
         `--remote-debugging-port=${startPort}`,
         '--no-first-run',
@@ -2036,6 +3171,7 @@ class KimiBridge {
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
+        ...extensionArgs,
         'https://www.kimi.com/',
       ], { detached: true, stdio: 'ignore', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
       proc.unref();
@@ -2103,7 +3239,7 @@ class KimiBridge {
     // Not logged in — navigate to kimi.com and bring to front
     log.info(`User not logged in, navigating to Kimi login page`);
     try {
-      await page.goto('https://www.kimi.com/', { waitUntil: 'domcontentloaded', timeout: 0 });
+      await page.goto('https://www.kimi.com/?lang=en', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(1500);
       await page.bringToFront().catch(() => {});
     } catch (e) {
@@ -2299,6 +3435,36 @@ class KimiBridge {
     }, 5 * 60 * 1000); // every 5 minutes
     // Also save immediately on start
     this._saveCookiesToFile().catch(() => {});
+  }
+
+  /**
+   * v5.6-fix: Background polling to keep pages alive and detect new messages.
+   * Prevents Chrome mobile from suspending the tab when user switches apps.
+   * Polls every 30s: brings page to front and evaluates a no-op to keep alive.
+   */
+  _startBackgroundPolling() {
+    if (this.bgPollTimer) clearInterval(this.bgPollTimer);
+    this.bgPollTimer = setInterval(async () => {
+      for (const [userId, session] of this.userSessions) {
+        if (!session.page || session.page.isClosed()) continue;
+        if (session.processing) continue; // Don't interfere with active streams
+        try {
+          // Keep page alive: evaluate a no-op to prevent suspension
+          await session.page.evaluate(() => {
+            window.__lunaKeepAlive = Date.now();
+            // Force a tiny DOM mutation to keep the renderer active
+            const el = document.createElement('span');
+            el.style.display = 'none';
+            el.id = '__luna-keepalive-' + Date.now();
+            document.body.appendChild(el);
+            setTimeout(() => el.remove(), 100);
+          }).catch(() => {});
+        } catch (e) {
+          // Ignore errors — page may be navigating
+        }
+      }
+    }, 30000); // Every 30 seconds
+    log.info('Background polling started (30s interval)');
   }
 
   /**
@@ -2562,6 +3728,366 @@ class KimiBridge {
   }
 
   /**
+   * v7.0: Inject the MutationObserver-based event queue into the browser.
+   * This observer runs independently of the stream and populates window.__lunaEventQueue.
+   */
+  async _injectEventQueueObserver(page) {
+    try {
+      // v7.0-ext: Check if Chrome extension already injected the observer
+      const hasExtension = await page.evaluate(() => {
+        return typeof window.__lunaEventQueue !== 'undefined' && window.__lunaObserverVersion;
+      });
+      if (hasExtension) {
+        log.info(`[v7.0] Chrome extension observer active (v${await page.evaluate(() => window.__lunaObserverVersion)})`);
+        return true;
+      }
+
+      // Fallback: inject manually (for users without the extension)
+      const observerPath = path.join(__dirname, 'kimi-dom-observer.js');
+      const observerScript = fs.readFileSync(observerPath, 'utf8');
+      await page.addInitScript(observerScript);
+      await page.evaluate(observerScript);
+      log.info('[v7.0] Event queue observer injected (fallback — consider installing the Chrome extension for 100% reliability)');
+      return true;
+    } catch (e) {
+      log.warn(`[v7.0] Event queue observer injection failed: ${e.message}. Install the Luna Extension for reliable DOM observation.`);
+      return false;
+    }
+  }
+
+  // ============================================================
+  // v7.0: DECOUPLED DOM EVENT QUEUE — DOM reader independent from stream
+  // ============================================================
+
+  /**
+   * v7.5: Initialize or retrieve the KimiNetworkInterceptor for a user.
+   * The interceptor uses Playwright's native page.on('response') to capture
+   * API responses server-side. This is immune to page anti-tampering.
+   */
+  async _getOrCreateInterceptor(userId) {
+    const session = this.userSessions.get(userId);
+    if (!session || !session.page || session.page.isClosed()) return null;
+
+    let interceptor = this.networkInterceptors.get(userId);
+    if (!interceptor || interceptor.page !== session.page) {
+      // Page changed or interceptor doesn't exist — create new one
+      if (interceptor) interceptor.stop();
+      interceptor = new KimiNetworkInterceptor(session.page);
+      await interceptor.start();
+      this.networkInterceptors.set(userId, interceptor);
+      log.info(`[KimiNetworkInterceptor] Created for user ${hashUserId(userId)}`);
+    }
+    return interceptor;
+  }
+
+  /**
+   * v7.5: Reset the interceptor before sending a new message.
+   * Clears accumulated reasoning/content so the next message starts fresh.
+   */
+  _resetInterceptor(userId) {
+    const interceptor = this.networkInterceptors.get(userId);
+    if (interceptor) {
+      interceptor.reset();
+      log.info(`[KimiNetworkInterceptor] Reset for user ${hashUserId(userId)}`);
+    }
+  }
+
+  /**
+   * v7.0: Start a persistent DOM poller that runs independently of the stream.
+   * This is the core of the decoupled architecture: the DOM is read continuously,
+   * and the stream only consumes events from the queue.
+   */
+  _startDomPoller(userId) {
+    const session = this.userSessions.get(userId);
+    if (!session || !session.page || session.page.isClosed()) return;
+    if (session.domPollerActive) return; // Already running
+
+    session.domPollerActive = true;
+    session.domPollerStartTime = Date.now();
+    log.info(`[DomPoller] Starting for user ${hashUserId(userId)}`);
+
+    const runLoop = async () => {
+      while (session.domPollerActive && session.page && !session.page.isClosed()) {
+        try {
+          // v7.5: Poll DOM state via _pollThinkingAndResponse (uses Network Interceptor as primary)
+          const poll = await this._pollThinkingAndResponse(session.page, userId);
+
+          // v7.0: Only enqueue state events if not skipping non-critical
+          if (!session.domPollerSkipNonCritical) {
+            this._enqueueDomEvent(userId, {
+              type: 'state_change',
+              thinking: poll.thinking,
+              response: poll.response,
+              isGenerating: poll.isGenerating,
+              canSteer: poll.canSteer,
+              source: poll.source,
+              timestamp: Date.now(),
+            });
+
+            // Detect completion candidate
+            this._checkCompletionCandidate(userId, poll);
+          }
+
+          // v7.0: SECONDARY — Consume events from browser-side MutationObserver
+          try {
+            const observerEvents = await session.page.evaluate(() => {
+              if (!window.__lunaEventQueue) return [];
+              return window.__lunaEventQueue.swap();
+            });
+
+            for (const ev of observerEvents) {
+              // Translate observer events to internal format
+              switch (ev.type) {
+                case 'tool_call': {
+                  if (ev.data && ev.data.tool) {
+                    this._enqueueDomEvent(userId, {
+                      type: 'action_detected',
+                      action: { tool: ev.data.tool, params: ev.data.params || {} },
+                      source: 'json_block',
+                      timestamp: ev.ts || Date.now(),
+                    });
+                  }
+                  break;
+                }
+                case 'tool_response': {
+                  if (ev.data && ev.data.response) {
+                    this._enqueueDomEvent(userId, {
+                      type: 'response_detected',
+                      response: typeof ev.data.response === 'string' ? ev.data.response : JSON.stringify(ev.data.response),
+                      source: 'json_block',
+                      timestamp: ev.ts || Date.now(),
+                    });
+                  }
+                  break;
+                }
+                case 'json_block_added': {
+                  if (ev.data && ev.data.actions) {
+                    for (const action of ev.data.actions) {
+                      this._enqueueDomEvent(userId, {
+                        type: 'action_detected',
+                        action: { tool: action.tool, params: action.params },
+                        source: 'json_block',
+                        timestamp: ev.ts || Date.now(),
+                      });
+                    }
+                  }
+                  if (ev.data && ev.data.responses) {
+                    for (const resp of ev.data.responses) {
+                      this._enqueueDomEvent(userId, {
+                        type: 'response_detected',
+                        response: typeof resp.response === 'string' ? resp.response : JSON.stringify(resp.response),
+                        source: 'json_block',
+                        timestamp: ev.ts || Date.now(),
+                      });
+                    }
+                  }
+                  break;
+                }
+                // v7.0-ext: Chrome extension emits these directly
+                case 'action_detected': {
+                  if (ev.action) {
+                    this._enqueueDomEvent(userId, {
+                      type: 'action_detected',
+                      action: ev.action,
+                      source: ev.source || 'json_block',
+                      timestamp: ev.timestamp || Date.now(),
+                    });
+                  }
+                  break;
+                }
+                case 'response_detected': {
+                  if (ev.response) {
+                    this._enqueueDomEvent(userId, {
+                      type: 'response_detected',
+                      response: typeof ev.response === 'string' ? ev.response : JSON.stringify(ev.response),
+                      source: ev.source || 'json_block',
+                      timestamp: ev.timestamp || Date.now(),
+                    });
+                  }
+                  break;
+                }
+                case 'stream_end': {
+                  this._enqueueDomEvent(userId, {
+                    type: 'completion_candidate',
+                    reason: 'stream_end',
+                    timestamp: ev.ts || Date.now(),
+                  });
+                  break;
+                }
+                case 'tool_container': {
+                  if (ev.data && ev.data.preview) {
+                    this._enqueueDomEvent(userId, {
+                      type: 'action_detected',
+                      action: { tool: 'executeShell', params: { command: ev.data.preview } },
+                      code: ev.data.preview,
+                      source: 'dom_mirror',
+                      timestamp: ev.ts || Date.now(),
+                    });
+                  }
+                  break;
+                }
+              }
+            }
+          } catch (e) {
+            // Observer not available — fallback to direct DOM extraction
+            try {
+              const jsonBlocks = await this._extractJsonBlocksFromDOM(session.page);
+              for (const action of jsonBlocks.actions) {
+                this._enqueueDomEvent(userId, { type: 'action_detected', action, source: 'json_block', timestamp: Date.now() });
+              }
+              for (const resp of jsonBlocks.responses) {
+                this._enqueueDomEvent(userId, { type: 'response_detected', response: resp.response, source: 'json_block', timestamp: Date.now() });
+              }
+            } catch (e2) {}
+            try {
+              const toolBlocks = await this._extractToolMirrorFromDOM(session.page);
+              for (const block of toolBlocks) {
+                this._enqueueDomEvent(userId, { type: 'action_detected', action: this._convertIpythonToAction(block), code: block.code, kimiResult: block.result, kimiImages: block.images, source: 'dom_mirror', timestamp: Date.now() });
+              }
+            } catch (e2) {}
+          }
+        } catch (e) {
+          log.warn(`[DomPoller] Error for user ${hashUserId(userId)}: ${e.message}`);
+        }
+
+        // Poll interval: fast when processing, slow when idle
+        const interval = session.processing ? 400 : 2000;
+        await new Promise(r => setTimeout(r, interval));
+      }
+
+      session.domPollerActive = false;
+      if (session._domPollerStoppedResolve) {
+        session._domPollerStoppedResolve();
+        session._domPollerStoppedResolve = null;
+      }
+      log.info(`[DomPoller] Stopped for user ${hashUserId(userId)}`);
+    };
+
+    runLoop().catch(e => {
+      log.error(`[DomPoller] Fatal error for user ${hashUserId(userId)}: ${e.message}`);
+      session.domPollerActive = false;
+      if (session._domPollerStoppedResolve) {
+        session._domPollerStoppedResolve();
+        session._domPollerStoppedResolve = null;
+      }
+    });
+  }
+
+  /**
+   * v7.0: Stop the DOM poller for a user. Returns a Promise that resolves when stopped.
+   */
+  async _stopDomPoller(userId) {
+    const session = this.userSessions.get(userId);
+    if (!session || !session.domPollerActive) return;
+
+    session.domPollerActive = false;
+    log.info(`[DomPoller] Stop requested for user ${hashUserId(userId)}`);
+
+    // Wait for the poller loop to actually exit
+    if (session.domPollerActive) {
+      await new Promise(resolve => {
+        session._domPollerStoppedResolve = resolve;
+        // Safety: resolve after 2s even if poller didn't stop
+        setTimeout(resolve, 2000);
+      });
+    }
+  }
+
+  /**
+   * v7.0: Enqueue a DOM event for a user.
+   */
+  _enqueueDomEvent(userId, event) {
+    let queue = this.domEventQueues.get(userId);
+    if (!queue) {
+      // v7.0-fix: Auto-create queue if poller runs before sendMessageStream
+      queue = { events: [], lastReadIndex: 0, createdAt: Date.now(), queueId: `auto-${Date.now()}` };
+      this.domEventQueues.set(userId, queue);
+    }
+    queue.events.push(event);
+    // Circular buffer: trim to max 2000 events
+    if (queue.events.length > 2000) {
+      queue.events = queue.events.slice(-2000);
+    }
+  }
+
+  /**
+   * v7.0: Check for completion candidate based on DOM state.
+   * Uses signal voting for robustness.
+   */
+  _checkCompletionCandidate(userId, poll) {
+    const session = this.userSessions.get(userId);
+    if (!session) return;
+
+    const now = Date.now();
+    const text = (poll.thinking || '') + (poll.response || '');
+
+    // Initialize tracking
+    if (!session._completionState) {
+      session._completionState = {
+        lastText: '',
+        textStableSince: 0,
+        lastIsGenerating: false,
+        generatingStoppedAt: 0,
+        signals: { buttonSend: 0, noGeneratingFlag: 0, textStable: 0, networkIdle: 0 },
+      };
+    }
+    const cs = session._completionState;
+
+    // Signal 1: Text stability
+    if (text !== cs.lastText) {
+      cs.textStableSince = 0;
+      cs.signals.textStable = 0;
+    } else if (cs.textStableSince === 0) {
+      cs.textStableSince = now;
+    }
+    const textStableFor = cs.textStableSince ? now - cs.textStableSince : 0;
+    if (textStableFor > 1500) cs.signals.textStable = 2;
+    else if (textStableFor > 500) cs.signals.textStable = 1;
+
+    // Signal 2: Generation stopped
+    if (!poll.isGenerating && cs.lastIsGenerating) {
+      cs.generatingStoppedAt = now;
+    }
+    const generatingStoppedFor = cs.generatingStoppedAt ? now - cs.generatingStoppedAt : 0;
+    if (!poll.isGenerating) {
+      cs.signals.noGeneratingFlag = generatingStoppedFor > 1000 ? 2 : 1;
+    } else {
+      cs.signals.noGeneratingFlag = 0;
+      cs.generatingStoppedAt = 0;
+    }
+
+    // Signal 3: Button state (send visible = completion)
+    cs.signals.buttonSend = poll.canSteer ? 2 : 0;
+
+    // Signal 4: Network idle (inferred from no text changes + not generating)
+    if (!poll.isGenerating && textStableFor > 3000) {
+      cs.signals.networkIdle = 2;
+    } else {
+      cs.signals.networkIdle = 0;
+    }
+
+    cs.lastText = text;
+    cs.lastIsGenerating = poll.isGenerating;
+
+    // Vote: require sum >= 4 for completion, sustained for 800ms
+    const totalSignal = cs.signals.textStable + cs.signals.noGeneratingFlag + cs.signals.buttonSend + cs.signals.networkIdle;
+    if (totalSignal >= 4) {
+      if (!cs.candidateSince) cs.candidateSince = now;
+      else if (now - cs.candidateSince > 800) {
+        // Emit completion candidate
+        this._enqueueDomEvent(userId, {
+          type: 'completion_candidate',
+          signals: { ...cs.signals },
+          timestamp: now,
+        });
+        cs.candidateSince = 0; // Reset to avoid duplicate
+      }
+    } else {
+      cs.candidateSince = 0;
+    }
+  }
+
+  /**
    * v3.9-fix: Inject master localStorage data into page.
    * Kimi uses localStorage tokens (access_token, refresh_token) in addition
    * to cookies. Without these, the page appears logged-out even with cookies.
@@ -2603,23 +4129,39 @@ class KimiBridge {
    *
    * Returns { thinking, response, canSteer, isGenerating, source }
    */
-  async _pollThinkingAndResponse(page) {
+  async _pollThinkingAndResponse(page, userId = null) {
     // v3.6-fix: NO TIMEOUT — if page.evaluate() hangs, we wait. The user explicitly
     // requested no timeouts anywhere in the agent. Kimi may take 10+ minutes for
     // sandbox tools (python, web_search, browser). We wait patiently.
     const pollWithTimeout = async () => {
     try {
-      // Layer 1: Stream interceptor (reads raw API data injected by _injectStreamInterceptor)
+      // v7.5: Layer 1 — Native Playwright Network Interceptor (PRIMARY)
+      // This replaces fragile JavaScript injection with server-side response capture.
+      // Immune to page anti-tampering, SPA navigation, or React resets.
+      let networkData = null;
+      if (userId) {
+        const interceptor = this.networkInterceptors.get(userId);
+        if (interceptor) {
+          networkData = interceptor.getData();
+          if (networkData.hasData) {
+            const { canSteer, isGenerating } = await this._detectUiState(page);
+            log.info(`[_poll] network-intercept: thinking=${networkData.thinking.length}, response=${networkData.response.length}, source=${networkData.source}`);
+            return { ...networkData, canSteer, isGenerating };
+          }
+        }
+      }
+
+      // v7.5: Layer 1b — Legacy JS-injected stream interceptor (DEPRECATED, will be removed)
+      // Kept briefly as transitional fallback while Network Interceptor stabilizes.
       const intercepted = await page.evaluate(() => {
         const s = window.__lunaStream;
         if (s && s.active) {
-          // v3.6-fix: reasoning and content are arrays of deltas — join them into strings
           const thinking = Array.isArray(s.reasoning) ? s.reasoning.join('') : (s.reasoning || '');
           const response = Array.isArray(s.content) ? s.content.join('') : (s.content || '');
           return {
             thinking,
             response,
-            source: 'intercept',
+            source: 'intercept-legacy',
             hasData: thinking.length > 0 || response.length > 0,
             active: s.active,
             contentLen: s.content?.length || 0,
@@ -2628,43 +4170,26 @@ class KimiBridge {
         }
         return null;
       });
-      // DEBUG: Log interceptor state even when empty
-      if (intercepted) {
-        log.info(`[_poll] interceptor: active=${intercepted.active}, hasData=${intercepted.hasData}, contentItems=${intercepted.contentLen}, reasoningItems=${intercepted.reasoningLen}, responseLen=${intercepted.response?.length || 0}`);
-      } else {
-        log.info(`[_poll] interceptor: NOT FOUND (window.__lunaStream missing or inactive)`);
-      }
-      // CRITICAL: When interceptor is active, trust it EXCLUSIVELY.
-      // Do NOT fallback to DOM scraping because the DOM may render
-      // thinking text in containers that look like response containers.
-      // v3.7-fix: Only trust interceptor if it has ACTUAL data.
-      // When interceptor exists but hasn't captured anything yet (hasData=false),
-      // fall through to DOM extraction. This prevents empty responses when
-      // the interceptor is injected but the stream hasn't started yet.
       if (intercepted && intercepted.hasData) {
         const { canSteer, isGenerating } = await this._detectUiState(page);
-        this._log(`[_poll] interceptor: thinking=${intercepted.thinking.length}, response=${intercepted.response.length}, source=${intercepted.source}`);
+        log.info(`[_poll] interceptor-legacy: thinking=${intercepted.thinking.length}, response=${intercepted.response.length}`);
         return { ...intercepted, canSteer, isGenerating };
       }
 
       // Layer 2.5: DOM structure-based extraction (most reliable for Kimi Web v2026-05)
-      // Uses the ACTUAL DOM structure observed via live analysis:
-      //   .segment-assistant:last-of-type
-      //     .block-item
-      //       ├── .toolcall-container.thinking-container
-      //       │   └── .markdown-container.toolcall-content-text   ← THINKING
-      //       └── .segment-content-box
-      //           └── .markdown-container                          ← RESPONSE
+      // Supports TWO DOM structures:
+      //   OLD: .segment-content-box > .container-block > .block-item > ...
+      //   NEW: .segment-content-box > .markdown-container > .markdown > .segment-code
       const structureBased = await page.evaluate(() => {
-        const lastAssistant = document.querySelector('.segment-assistant:last-of-type');
+        const assistants = document.querySelectorAll('.segment-assistant');
+        const lastAssistant = assistants[assistants.length - 1];
         if (!lastAssistant) return null;
 
-        const blockItem = lastAssistant.querySelector('.block-item');
-        if (!blockItem) return null;
-
-        // Extract thinking: inside .toolcall-container.thinking-container
-        const thinkContainer = blockItem.querySelector('.toolcall-container.thinking-container');
         let thinking = '';
+        let response = '';
+
+        // ── Extract thinking (anywhere inside assistant) ──
+        const thinkContainer = lastAssistant.querySelector('.toolcall-container.thinking-container');
         if (thinkContainer) {
           const thinkMd = thinkContainer.querySelector('.markdown-container.toolcall-content-text');
           if (thinkMd) {
@@ -2672,18 +4197,104 @@ class KimiBridge {
           }
         }
 
-        // Extract response: inside .segment-content-box (sibling of thinking container)
-        const contentBox = blockItem.querySelector('.segment-content-box');
-        let response = '';
-        if (contentBox) {
-          const respMd = contentBox.querySelector('.markdown-container');
-          if (respMd) {
-            response = (respMd.innerText || '').trim();
+        // v7.4-fix: Thinking starters heuristic — used to detect leaked thinking text
+        const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
+
+        // ── Extract response from content box ──
+        const contentBox = lastAssistant.querySelector('.segment-content-box');
+        if (!contentBox) return null;
+
+        // Strategy A: NEW structure — .markdown-container > .markdown > .segment-code
+        const markdownContainers = contentBox.querySelectorAll('.markdown-container');
+        let rawResponse = '';
+        for (const md of markdownContainers) {
+          // Skip if this markdown is inside the thinking container
+          if (thinkContainer && md.closest('.toolcall-container.thinking-container')) continue;
+
+          const codeBlocks = md.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
+          for (const cb of codeBlocks) {
+            const text = (cb.innerText || cb.textContent || '').trim();
+            if (text) rawResponse += text + '\n\n';
+          }
+          const paragraphs = md.querySelectorAll('.paragraph, p, [class*="text"]');
+          for (const p of paragraphs) {
+            const text = (p.innerText || p.textContent || '').trim();
+            if (text) rawResponse += text + '\n\n';
+          }
+        }
+
+        // Strategy B: OLD structure — .container-block > .block-item
+        if (!rawResponse) {
+          const containerBlock = contentBox.querySelector('.container-block');
+          const blockItems = containerBlock
+            ? containerBlock.querySelectorAll('.block-item')
+            : contentBox.querySelectorAll('.block-item');
+          for (const item of blockItems) {
+            const itemThink = item.querySelector('.toolcall-container.thinking-container');
+            if (itemThink) continue; // skip thinking block
+
+            const codeBlocks = item.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
+            for (const cb of codeBlocks) {
+              const text = (cb.innerText || cb.textContent || '').trim();
+              if (text) rawResponse += text + '\n\n';
+            }
+            const paragraphs = item.querySelectorAll('.paragraph, p, [class*="text"]');
+            for (const p of paragraphs) {
+              const text = (p.innerText || p.textContent || '').trim();
+              if (text) rawResponse += text + '\n\n';
+            }
+          }
+        }
+
+        rawResponse = rawResponse.trim();
+
+        // v7.4-fix: If we detected thinking (thinkContainer exists), any free-text
+        // at the START of rawResponse that looks like thinking should be MOVED to thinking.
+        // In thinking mode, the assistant ALWAYS thinks first, then responds with code/JSON.
+        if (thinkContainer && rawResponse) {
+          // Find first code block or JSON block — everything before is thinking
+          const codeBlockIdx = rawResponse.indexOf('```');
+          const jsonStartIdx = rawResponse.search(/\{\s*"/);
+          const firstRealIdx = codeBlockIdx >= 0 && jsonStartIdx >= 0
+            ? Math.min(codeBlockIdx, jsonStartIdx)
+            : (codeBlockIdx >= 0 ? codeBlockIdx : jsonStartIdx);
+
+          if (firstRealIdx > 10) {
+            const beforeReal = rawResponse.slice(0, firstRealIdx).trim();
+            const afterReal = rawResponse.slice(firstRealIdx).trim();
+            // If the text before the real response looks like thinking, move it
+            if (thinkStarters.test(beforeReal) || beforeReal.length < 400) {
+              thinking = thinking ? thinking + '\n\n' + beforeReal : beforeReal;
+              response = afterReal;
+            } else {
+              response = rawResponse;
+            }
+          } else if (firstRealIdx === 0) {
+            // Response starts directly with code/JSON — no leaked thinking
+            response = rawResponse;
+          } else if (!rawResponse.includes('```') && !rawResponse.includes('{')) {
+            // No code/JSON at all — entire rawResponse is likely thinking
+            thinking = thinking ? thinking + '\n\n' + rawResponse : rawResponse;
+            response = '';
+          } else {
+            response = rawResponse;
+          }
+        } else {
+          response = rawResponse;
+        }
+
+        // v7.4-fix: Final safety net — if response is still thinking-like and short, swap
+        if (!thinkContainer && response && !thinking) {
+          const isThink = thinkStarters.test(response) && response.length < 500 &&
+                          !response.includes('"response"') && !response.includes('"tool"');
+          if (isThink) {
+            thinking = response;
+            response = '';
           }
         }
 
         if (thinking || response) {
-          return { thinking, response, source: 'dom-structure' };
+          return { thinking, response: response.trim(), source: 'dom-structure' };
         }
         return null;
       });
@@ -2828,14 +4439,37 @@ class KimiBridge {
           }
         }
 
-        // Strategy C: extract response — last markdown NOT inside think
+        // v7.3-fix: Strategy C — extract response from markdowns, but NEVER treat
+        // thinking-like text as response. We scan ALL markdowns and pick the one
+        // that contains the actual response (JSON block, code block, or structured text).
         const mdContainers = lastAssistant.querySelectorAll('.markdown-container, [class*="markdown"]');
+        const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
+        
         for (let i = mdContainers.length - 1; i >= 0; i--) {
           const md = mdContainers[i];
-          if (!isInsideThinkContainer(md, lastAssistant)) {
-            const text = md.innerText?.trim();
-            if (text) { response = text; break; }
+          if (isInsideThinkContainer(md, lastAssistant)) continue;
+          const text = md.innerText?.trim();
+          if (!text) continue;
+          
+          // v7.3: Skip markdowns that are clearly thinking (start with thinking patterns)
+          // AND are short (< 300 chars) — these are almost certainly internal thoughts.
+          // The REAL response usually contains JSON, code blocks, or is longer/structured.
+          const isShortThink = text.length < 300 && thinkStarters.test(text);
+          if (isShortThink) {
+            if (!thinking) thinking = text;
+            continue;
           }
+          
+          // Prefer markdowns with JSON or code blocks (these are the actual response)
+          const hasJsonBlock = text.includes('"response"') || text.includes('"tool"') || text.includes('"action"');
+          const hasCodeBlock = text.includes('```');
+          if (hasJsonBlock || hasCodeBlock || text.length > 300) {
+            response = text;
+            break;
+          }
+          
+          // Fallback: use this markdown as response if we haven't found anything better
+          if (!response) response = text;
         }
 
         // Strategy D: if no markdown found, use all text minus thinking
@@ -2848,11 +4482,36 @@ class KimiBridge {
           }
         }
 
+        // v7.3-fix: Final safety net — if response is clearly thinking, swap or split.
+        // This catches cases where ALL markdowns were thinking-like or DOM changed.
+        if (!thinking && response) {
+          const isThink = thinkStarters.test(response) && response.length < 500 && !response.includes('"response"') && !response.includes('"tool"');
+          if (isThink) {
+            thinking = response;
+            response = '';
+          }
+        }
+
+        // v7.3-fix: If we detected thinking in markdowns but response is empty,
+        // there might be another markdown we skipped. Re-scan for non-thinking.
+        if (thinking && !response) {
+          for (let i = mdContainers.length - 1; i >= 0; i--) {
+            const md = mdContainers[i];
+            if (isInsideThinkContainer(md, lastAssistant)) continue;
+            const text = md.innerText?.trim();
+            if (!text || text === thinking) continue;
+            if (!thinkStarters.test(text) || text.length > 300) {
+              response = text;
+              break;
+            }
+          }
+        }
+
         // ── Heuristic: if we still have everything in response and nothing in thinking,
         // try to detect thinking vs response by content patterns ──
-        if (!thinking && response.length > 500) {
+        if (!thinking && response.length > 200) {
           // Common thinking starters (PT/EN/ES)
-          const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
+          const thinkStartersLong = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
           // Look for transition to structured response: code block, JSON, or markdown headers
           const codeBlockIdx = response.indexOf('```');
           const jsonStartIdx = response.search(/\{\s*"/);
@@ -2860,7 +4519,7 @@ class KimiBridge {
           const transitionIdx = codeBlockIdx > 50 ? codeBlockIdx
             : (jsonStartIdx > 50 ? jsonStartIdx
             : (mdHeaderIdx > 50 ? mdHeaderIdx : -1));
-          if (transitionIdx > 100 && thinkStarters.test(response)) {
+          if (transitionIdx > 50 && thinkStartersLong.test(response)) {
             thinking = response.slice(0, transitionIdx).trim();
             response = response.slice(transitionIdx).trim();
           }
@@ -3295,7 +4954,21 @@ class KimiBridge {
           });
         }
 
-        for (const el of allCodeEls) {
+        // v5.3-fix: Exclude code blocks inside the thinking container.
+        // The thinking text may contain examples that look like JSON —
+        // we must NOT emit them as responses/actions.
+        const thinkContainer = lastAssistant.querySelector('.toolcall-container.thinking-container, .thinking-container, [class*="thinking-container"]');
+        const filteredCodeEls = allCodeEls.filter(el => {
+          if (!thinkContainer) return true;
+          let parent = el.parentElement;
+          while (parent && parent !== lastAssistant) {
+            if (parent === thinkContainer) return false;
+            parent = parent.parentElement;
+          }
+          return true;
+        });
+
+        for (const el of filteredCodeEls) {
           let text = '';
           // Try innerText first, then textContent
           text = (el.innerText || el.textContent || '').trim();
@@ -3308,23 +4981,117 @@ class KimiBridge {
 
           // Clean up JSON wrapper artifacts from DOM extraction
           const cleaned = text
-            .replace(/^JSON\s*\n\s*Copy\s*\n/i, '')
-            .replace(/^json\s*\n\s*Copy\s*\n/i, '');
+            .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+            .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '');
 
-          // Try to parse as JSON
-          let parsed = null;
-          try {
-            parsed = JSON.parse(cleaned);
-          } catch {
-            // Try extracting first JSON object
-            const firstBrace = cleaned.indexOf('{');
-            const lastBrace = cleaned.lastIndexOf('}');
+          // v5.3-fix: Tolerant JSON parser that handles literal newlines inside strings
+          // Kimi sometimes renders JSON code blocks with real newlines inside string values
+          function tolerantJsonParse(str) {
+            // v5.3-fix: Only parse COMPLETE JSON blocks.
+            // If the string doesn't end with '}', it's still being streamed — skip it.
+            const trimmed = str.trim();
+            if (!trimmed.endsWith('}')) return null;
+
+            // 1. Try standard JSON parse first
+            try { return JSON.parse(str); } catch {}
+            // 2. Try extracting first JSON object
+            const firstBrace = str.indexOf('{');
+            const lastBrace = str.lastIndexOf('}');
             if (firstBrace >= 0 && lastBrace > firstBrace) {
-              try {
-                parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-              } catch {}
+              const extracted = str.slice(firstBrace, lastBrace + 1);
+              try { return JSON.parse(extracted); } catch {}
+            }
+            // 3. Regex-based extraction for tool/action JSON blocks
+            // This handles malformed JSON with literal newlines inside strings
+            const toolMatch = str.match(/"tool"\s*:\s*"([^"]+)"/);
+            if (!toolMatch) return null;
+            const tool = toolMatch[1];
+            // Extract the entire params object - find "params": { ... }
+            const paramsStart = str.indexOf('"params"');
+            if (paramsStart === -1) return { tool, params: {} };
+            let braceDepth = 0;
+            let paramsStr = '';
+            let inStr = false;
+            let strChar = null;
+            let escaped = false;
+            for (let i = paramsStart; i < str.length; i++) {
+              const ch = str[i];
+              if (escaped) {
+                paramsStr += ch;
+                escaped = false;
+                continue;
+              }
+              if (ch === '\\') {
+                paramsStr += ch;
+                escaped = true;
+                continue;
+              }
+              if (!inStr) {
+                if (ch === '"' || ch === "'") {
+                  inStr = true; strChar = ch;
+                } else if (ch === '{') {
+                  braceDepth++;
+                } else if (ch === '}') {
+                  braceDepth--;
+                  if (braceDepth === 0) {
+                    paramsStr += ch;
+                    break;
+                  }
+                }
+                paramsStr += ch;
+              } else {
+                if (ch === strChar) {
+                  inStr = false; strChar = null;
+                }
+                paramsStr += ch;
+              }
+            }
+            // Replace literal newlines inside the params string with escaped newlines
+            // We do this by walking again and only escaping newlines that are inside quotes
+            let fixedParams = '';
+            inStr = false; strChar = null; escaped = false;
+            for (let i = 0; i < paramsStr.length; i++) {
+              const ch = paramsStr[i];
+              if (escaped) {
+                fixedParams += ch;
+                escaped = false;
+                continue;
+              }
+              if (ch === '\\') {
+                fixedParams += ch;
+                escaped = true;
+                continue;
+              }
+              if (!inStr) {
+                if (ch === '"' || ch === "'") {
+                  inStr = true; strChar = ch;
+                }
+                fixedParams += ch;
+              } else {
+                if (ch === strChar) {
+                  inStr = false; strChar = null;
+                  fixedParams += ch;
+                } else if (ch === '\n') {
+                  fixedParams += '\\n';
+                } else if (ch === '\r') {
+                  fixedParams += '\\r';
+                } else if (ch === '\t') {
+                  fixedParams += '\\t';
+                } else {
+                  fixedParams += ch;
+                }
+              }
+            }
+            try {
+              const params = JSON.parse(fixedParams);
+              return { tool, params };
+            } catch {
+              // Incomplete JSON — don't emit partial actions
+              return null;
             }
           }
+
+          const parsed = tolerantJsonParse(cleaned);
 
           if (!parsed) continue;
 
@@ -3356,6 +5123,122 @@ class KimiBridge {
       log.warn(`_extractJsonBlocksFromDOM failed: ${e.message}`);
       return { responses: [], actions: [] };
     }
+  }
+
+  /**
+   * v7.5: Robust JSON tool call extractor — replaces fragile regex with actual JSON parsing.
+   * Searches for JSON objects in text, including inside code blocks (```json ... ```).
+   * Returns array of {tool, params} objects, or empty array if none found.
+   */
+  _extractJsonToolCalls(text) {
+    if (!text || typeof text !== 'string') return [];
+    const results = [];
+    const foundKeys = new Set(); // Deduplication
+
+    // Helper: try to parse a candidate string
+    const tryParse = (candidate) => {
+      try {
+        const parsed = JSON.parse(candidate.trim());
+        if (parsed.tool && typeof parsed.tool === 'string') {
+          const key = JSON.stringify({ tool: parsed.tool, params: parsed.params || parsed.arguments || {} });
+          if (!foundKeys.has(key)) {
+            foundKeys.add(key);
+            results.push({
+              tool: parsed.tool,
+              params: parsed.params || parsed.arguments || parsed,
+              raw: candidate.trim(),
+            });
+          }
+        }
+      } catch (e) {
+        // Not valid JSON or no tool field
+      }
+    };
+
+    // Strategy 1: Extract from code blocks (```json ... ```)
+    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+    let match;
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      tryParse(match[1]);
+    }
+
+    // Strategy 2: Extract raw JSON objects from text
+    // Look for { ... } blocks that contain "tool" field
+    const jsonRegex = /\{[\s\S]*?"tool"[\s\S]*?\}/g;
+    while ((match = jsonRegex.exec(text)) !== null) {
+      // Try to find the complete JSON by counting braces
+      const start = match.index;
+      let braceCount = 0;
+      let end = start;
+      for (let i = start; i < text.length; i++) {
+        if (text[i] === '{') braceCount++;
+        if (text[i] === '}') braceCount--;
+        if (braceCount === 0) { end = i + 1; break; }
+      }
+      if (end > start) {
+        tryParse(text.slice(start, end));
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * v5.6-fix: Extract clean text from JSON blocks in the final response.
+   * If the DOM shows raw JSON like {"response": "..."}, returns just the text.
+   * Otherwise returns the original text unchanged.
+   */
+  _extractParsedText(text) {
+    if (!text || typeof text !== 'string') return text;
+    let cleaned = text.trim();
+
+    // Fast path: doesn't look like JSON at all
+    if (!cleaned.includes('{') && !cleaned.includes('```json')) return text;
+
+    // v5.6-fix: Remove DOM-extracted code block headers that Kimi Web sometimes includes
+    cleaned = cleaned
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*$/gm, '')
+      .replace(/```/g, '')
+      .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+      .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '');
+
+    // Try to parse as JSON
+    try {
+      const parsed = JSON.parse(cleaned);
+      // v5.7-fix: If JSON contains a tool call, return the FULL JSON so the parser can extract it.
+      // Extracting only 'response' discards tool calls completely.
+      if (parsed.tool && typeof parsed.tool === 'string') {
+        return cleaned; // Return raw JSON — parser will extract tool call
+      }
+      if (parsed.response && typeof parsed.response === 'string') {
+        return parsed.response.trim();
+      }
+    } catch {}
+
+    // Try extracting first JSON object
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      try {
+        const parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+        if (parsed.tool && typeof parsed.tool === 'string') {
+          return cleaned.slice(firstBrace, lastBrace + 1); // Return raw JSON
+        }
+        if (parsed.response && typeof parsed.response === 'string') {
+          return parsed.response.trim();
+        }
+      } catch {}
+    }
+
+    // Try regex extraction of "response" field (only if no tool field detected)
+    const hasToolField = /"tool"\s*:/.test(cleaned);
+    if (!hasToolField) {
+      const match = cleaned.match(/"response"\s*:\s*"([\s\S]*?)"\s*[,}]/);
+      if (match) return match[1].trim();
+    }
+
+    return text;
   }
 
   /**
@@ -3499,7 +5382,7 @@ class KimiBridge {
   async canSteer(userId) {
     const session = this.userSessions.get(userId);
     if (!session || !session.page || session.page.isClosed()) return false;
-    const { canSteer } = await this._pollThinkingAndResponse(session.page);
+    const { canSteer } = await this._pollThinkingAndResponse(session.page, userId);
     return canSteer;
   }
 
@@ -3565,13 +5448,16 @@ class KimiBridge {
     const page = await this._getOrCreateUserPage(userId);
     const session = this.userSessions.get(userId);
 
-    // Reset stream interceptor state to prevent cross-message contamination
+    // v7.5: Initialize Network Interceptor for this message
+    // This replaces fragile JS injection with native Playwright response capture.
+    const interceptor = await this._getOrCreateInterceptor(userId);
+    if (interceptor) interceptor.reset();
+
+    // v7.5: Also reset legacy stream interceptor (transitional, will be removed)
     await page.evaluate(() => {
       if (window.__lunaResetStream) {
         window.__lunaResetStream();
       } else if (window.__lunaStream) {
-        // Fallback for pages created before the update
-        // v3.7-fix: Must reset to empty ARRAYS, not strings, or .push() breaks
         window.__lunaStream.reasoning = [];
         window.__lunaStream.content = [];
         window.__lunaStream.events = [];
@@ -3580,41 +5466,38 @@ class KimiBridge {
       }
     });
 
-    // Wait for any ongoing processing
-    // v5.3-fix: If stream was cancelled, don't wait — force reset processing
+    // v7.0-fix: Wait for any ongoing processing. Unlike v6.x, we don't throw
+    // STREAM_CANCELLED here — we wait for the previous stream to drain its
+    // events or for the soft-cancel signal to propagate.
     if (session.processing) {
-      if (this.cancelledStreams.get(userId)) {
-        log.warn(`User ${hashUserId(userId)} was cancelled — forcing processing reset`);
-        session.processing = false;
-        this.cancelledStreams.delete(userId);
-      } else {
-        log.warn(`User ${hashUserId(userId)} already processing — waiting`);
-        const startWait = Date.now();
-        while (session.processing) {
-          if (Date.now() - startWait > 60000) {
-            throw new Error('Timeout waiting for previous message');
-          }
-          // v5.3-fix: Check cancellation while waiting
-          if (this.cancelledStreams.get(userId)) {
-            log.warn(`User ${hashUserId(userId)} cancelled while waiting — forcing reset`);
-            session.processing = false;
-            this.cancelledStreams.delete(userId);
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
+      log.warn(`User ${hashUserId(userId)} already processing — waiting for drain`);
+      const startWait = Date.now();
+      while (session.processing) {
+        if (Date.now() - startWait > 60000) {
+          throw new Error('Timeout waiting for previous message');
         }
+        await new Promise(r => setTimeout(r, 500));
       }
     }
 
     session.processing = true;
     session.lastActivity = Date.now();
-    this.cancelledStreams.delete(userId); // clear any stale cancel flag
+    this.cancelledStreams.delete(userId);
+    this.streamStopFlags.delete(userId);
+
+    // v7.0: Initialize per-message event queue
+    const queueId = `q-${Date.now()}`;
+    this.domEventQueues.set(userId, { events: [], lastReadIndex: 0, createdAt: Date.now(), queueId });
+    const queue = this.domEventQueues.get(userId);
+
+    // v7.0: Start DOM poller — runs INDEPENDENTLY of the stream
+    this._startDomPoller(userId);
 
     try {
       await this._verifySession(page);
 
       if (options.newChat) {
-        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
         session.chatUrl = page.url();
         this._saveChatUrl(userId, session.chatUrl);
@@ -3625,34 +5508,60 @@ class KimiBridge {
       }
 
       const actualMode = await this._detectActualMode(page) || session.mode || 'instant';
-      log.info(`User ${hashUserId(userId)} streaming message (mode=${actualMode})`);
+      log.info(`[v7.0] User ${hashUserId(userId)} streaming message (mode=${actualMode})`);
 
-      // Verify input exists
+      // v6.1-fix: Inject text file contents directly into the prompt
+      if (options.files && options.files.length > 0) {
+        for (const file of options.files) {
+          if (file.name && file.name.endsWith('.txt') && file.data && file.data.includes('base64')) {
+            try {
+              const base64Match = file.data.match(/^data:.*?;base64,(.+)$/);
+              if (!base64Match) {
+                log.warn(`[sendMessageStream] Data URI does not contain valid base64: ${file.name}`);
+                continue;
+              }
+              const decoded = Buffer.from(base64Match[1], 'base64').toString('utf8');
+              const placeholderRegex = /\[(?:Arquivo anexado|Anexo|File attached):\s*[^\]]+\]/i;
+              if (placeholderRegex.test(text)) {
+                text = text.replace(placeholderRegex, decoded);
+                log.info(`[sendMessageStream] Injected ${decoded.length} chars from ${file.name} into prompt`);
+              } else {
+                text = text + '\n\n---\n' + decoded;
+                log.info(`[sendMessageStream] Appended ${decoded.length} chars from ${file.name} to prompt`);
+              }
+              file._injected = true;
+            } catch (e) {
+              log.error(`[sendMessageStream] Failed to decode ${file.name}: ${e.message}`);
+            }
+          }
+        }
+        options.files = options.files.filter(f => !f._injected);
+      }
+
       const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
       const inputCount = await inputLocator.count();
       if (inputCount === 0) {
         throw new Error('Input field not found on Kimi Web');
       }
 
-      // Bring page to front (Chrome throttles inactive tabs)
       await page.bringToFront();
-
-      // Capture initial text BEFORE sending — so we can detect when the new response starts.
-      // CRITICAL: Must capture before Enter, because Kimi may respond instantly.
       const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
 
-      // Send message
+      // v7.7-INFALÍVEL: Capture FULL snapshot before sending (all assistant texts)
+      // This replaces fragile assistant counting with snapshot diffing.
+      const preSendSnapshot = await this._capturePreSendSnapshot(page);
+      const preSendAssistantCount = preSendSnapshot.length;
+      log.info(`[sendMessageStream] Pre-send snapshot: ${preSendAssistantCount} assistants captured`);
+
       await inputLocator.fill('');
       await page.waitForTimeout(300);
 
       if (text.length <= MAX_TEXT_TYPE_LENGTH) {
         await inputLocator.type(text, { delay: 50 });
       } else {
-        // For large texts in contenteditable, use fill but also dispatch input events
         log.info(`Text too long (${text.length} chars), using fill with event dispatch`);
         await inputLocator.fill(text);
         await page.waitForTimeout(200);
-        // Dispatch input event to ensure Kimi detects the text
         await page.evaluate(() => {
           const el = document.querySelector('textarea, [contenteditable="true"]');
           if (el) {
@@ -3663,322 +5572,337 @@ class KimiBridge {
       }
       await page.waitForTimeout(500);
       await inputLocator.press('Enter');
-      log.info(`Message sent, starting stream poll`);
+      log.info(`Message sent, starting v7.0 stream consumer`);
 
-      // Stream polling loop — NO TIMEOUT. Runs until real completion or real error.
-      const pollInterval = 400; // Poll every 400ms for responsiveness (v3.3: reduced from 800ms)
+      // v7.7: Keep assistant detection for logging/compatibility, but extraction
+      // will use snapshot diff which doesn't depend on correct index.
+      let newAssistantWaitCount = 0;
+      let targetAssistantIndex = -1;
+      while (true) {
+        const assistants = await page.evaluate(() => {
+          const nodes = document.querySelectorAll('.segment-assistant');
+          return Array.from(nodes).map((el, i) => ({
+            index: i,
+            textLength: el.innerText?.length || 0,
+            hasMarkdown: !!el.querySelector('.markdown-container, .markdown'),
+          }));
+        });
+        const currentCount = assistants.length;
+        if (currentCount > preSendAssistantCount) {
+          const newAssistant = assistants[preSendAssistantCount];
+          if (newAssistant && (newAssistant.textLength > 0 || newAssistant.hasMarkdown)) {
+            targetAssistantIndex = preSendAssistantCount;
+            log.info(`[sendMessageStream] New assistant detected (index ${targetAssistantIndex}, textLen=${newAssistant.textLength})`);
+            break;
+          }
+        }
+        if (++newAssistantWaitCount > 100) { // 10s timeout
+          log.warn(`[sendMessageStream] New assistant not detected after 10s, proceeding anyway (pre=${preSendAssistantCount}, current=${currentCount})`);
+          break;
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
 
+      await page.waitForTimeout(600);
+
+      // v7.0: Stream consumer — reads from event queue, NOT from DOM directly
       let lastThinking = '';
       let lastResponse = '';
       let lastCanSteer = false;
       let isComplete = false;
-      let buttonsVisible = false;
+      let stopConsuming = false;
+      let pollCount = 0;
+      let textHasChanged = false;
 
-      // Track DOM-extracted ipython actions to avoid duplicate emits
+      // Track emitted actions for deduplication
       const emittedActionCodes = new Set();
-      let domActionsCount = 0;
-      // v5.3: Track JSON code blocks (responses + actions) for FIFO real-time streaming
       const emittedResponseHashes = new Set();
       const emittedJsonActionHashes = new Set();
+      let domActionsCount = 0;
 
-      // Phase 0: Wait for text to start changing — NO TIMEOUT. Waits forever until Kimi starts.
-      let textHasChanged = false;
-      let pollCount = 0;
-      while (true) {
-        // v5.3-fix: Check if user cancelled the stream
-        if (this.cancelledStreams.get(userId)) {
-          log.warn(`[sendMessageStream] Phase 0 cancelled by user ${hashUserId(userId)}`);
-          this.cancelledStreams.delete(userId);
-          throw new Error('STREAM_CANCELLED');
+      // Register soft-cancel signal
+      this.streamStopFlags.set(userId, () => { stopConsuming = true; });
+
+      // Phase 0: Wait for first text change via queue events
+      // v7.6-fix: Add timeout to prevent getting stuck if Kimi never generates text
+      const phase0StartTime = Date.now();
+      const PHASE0_TIMEOUT = 60 * 1000; // 60s max wait for first text
+      while (!textHasChanged && !stopConsuming) {
+        while (queue.lastReadIndex < queue.events.length) {
+          const ev = queue.events[queue.lastReadIndex++];
+          if (ev.type === 'state_change') {
+            const combined = (ev.thinking || '') + (ev.response || '');
+            if (combined !== initialText && combined.length > 0) {
+              textHasChanged = true;
+              lastThinking = ev.thinking || '';
+              lastResponse = ev.response || '';
+              break;
+            }
+            if (ev.isGenerating && pollCount > 3) {
+              textHasChanged = true;
+              break;
+            }
+          }
         }
-        const poll = await this._pollThinkingAndResponse(page);
-        const combined = poll.thinking + poll.response;
-        // Exit if text changed and is non-empty
-        if (combined !== initialText && combined.length > 0) {
-          textHasChanged = true;
+        // v7.6-fix: Timeout if Kimi never generates text (stuck generation)
+        if (Date.now() - phase0StartTime > PHASE0_TIMEOUT) {
+          log.warn(`[sendMessageStream] Phase 0 timeout (${PHASE0_TIMEOUT}ms) — Kimi never generated text. Proceeding anyway.`);
+          textHasChanged = true; // Force continue
           break;
         }
-        // v3.6-fix: Also exit if Kimi is actively generating but hasn't produced text yet
-        // (e.g., during long tool executions where text may be empty initially).
-        // This prevents infinite loops when the poll returns empty but generation is in progress.
-        if (poll.isGenerating && pollCount > 3) {
-          textHasChanged = true;
-          break;
-        }
-        // Heartbeat: yield waiting status every 5 polls so TUI knows we're alive
         if (++pollCount % 5 === 0) {
           yield { type: 'waiting', message: 'Aguardando resposta do Kimi...' };
         }
         await new Promise(r => setTimeout(r, 500));
       }
 
-      // Phase 1: Stream until truly complete — INFINITELY patient.
-      // Kimi may execute Python for 10 minutes. That's valid activity.
-      // We only stop when: buttons visible + not generating + text stable + no spinners.
-      // FALLBACK: if text is stable for 15s without buttons, force completion to avoid infinite loops.
-      let textStableSince = 0;
-      let lastTextChangeTime = Date.now();
-      const FORCE_COMPLETE_NO_BUTTONS_MS = 300000; // [DONO ABSOLUTO] 5min fallback — tarefas longas podem demorar
-      const FORCE_COMPLETE_ABSOLUTE_MS = 999999999;  // [DONO ABSOLUTO] sem limite
-      const streamStartTime = Date.now();
+      // Phase 1: Consume events from queue until completion or cancel
+      const messageStartTime = Date.now();
+      const MESSAGE_SAFETY_TIMEOUT = 5 * 60 * 1000; // 5 min global per message
+
+      // v7.0: Soft cancel drain tracking
+      let softCancelDrainStart = null;
+      const SOFT_CANCEL_DRAIN_TIMEOUT = 15000; // 15s max to drain pending tools
 
       while (!isComplete) {
-        // v5.3-fix: Check if user cancelled the stream
-        if (this.cancelledStreams.get(userId)) {
-          log.warn(`[sendMessageStream] Phase 1 cancelled by user ${hashUserId(userId)}`);
-          this.cancelledStreams.delete(userId);
-          throw new Error('STREAM_CANCELLED');
-        }
-        const poll = await this._pollThinkingAndResponse(page);
-
-        // Track text changes for fallback completion
-        const textChanged = poll.thinking !== lastThinking || poll.response !== lastResponse;
-        if (textChanged) {
-          lastTextChangeTime = Date.now();
-          textStableSince = 0;
-        }
-
-        // Yield thinking deltas
-        if (poll.thinking && poll.thinking !== lastThinking) {
-          const delta = poll.thinking.slice(lastThinking.length);
-          if (delta) {
-            yield { type: 'thinking_delta', text: delta, fullThinking: poll.thinking };
-          } else if (poll.thinking.length < lastThinking.length) {
-            // v4.2-fix: DOM shrunk — don't repeat, just update tracking
-            log.info(`[stream] thinking DOM shrank ${lastThinking.length} -> ${poll.thinking.length}, skipping repeat`);
-          }
-          lastThinking = poll.thinking;
-        }
-
-        // v4.0-fix: Enhanced response detection with detailed logging
-        const hasResponse = poll.response && poll.response !== lastResponse;
-        const hasThinking = poll.thinking && poll.thinking !== lastThinking;
-        log.info(`[stream] poll: thinking=${poll.thinking?.length||0} response=${poll.response?.length||0} source=${poll.source||'unknown'} canSteer=${poll.canSteer} isGen=${poll.isGenerating}`);
-
-        // Yield response deltas
-        if (hasResponse) {
-          const delta = poll.response.slice(lastResponse.length);
-          log.info(`[stream] response changed: last=${lastResponse.length} -> new=${poll.response.length}, delta=${delta?.length || 0}`);
-          if (delta) {
-            yield { type: 'response_delta', text: delta };
-          } else if (poll.response.length < lastResponse.length) {
-            yield { type: 'response_delta', text: poll.response };
-          }
-          lastResponse = poll.response;
-        }
-
-        // v4.0-fix: Fallback — if no response but thinking contains JSON response format, treat thinking as response
-        // This happens when Kimi returns content as reasoning instead of content
-        if (!hasResponse && hasThinking && poll.thinking.length > 10) {
-          const thinkingPreview = poll.thinking.slice(0, 100);
-          const looksLikeResponse = poll.thinking.includes('{"response"') || poll.thinking.includes('[[response]]') || !poll.thinking.includes('vou pensar');
-          log.info(`[stream] response empty, thinking=${poll.thinking.length}, looksLikeResponse=${looksLikeResponse}, preview=${thinkingPreview}`);
-          if (looksLikeResponse && lastResponse !== poll.thinking) {
-            const delta = poll.thinking.slice(lastResponse.length);
-            if (delta) {
-              log.info(`[stream] FALLBACK: yielding thinking as response_delta, delta=${delta.length}`);
-              yield { type: 'response_delta', text: delta };
-              lastResponse = poll.thinking;
-            }
-          }
-        }
-
-        // Yield steer availability
-        if (poll.canSteer !== lastCanSteer) {
-          yield { type: 'can_steer', value: poll.canSteer };
-          lastCanSteer = poll.canSteer;
-        }
-
-        // ── DOM MIRROR v3.2: Detect ipython code + result + images ──
-        // Kimi Web executes Python in her sandbox and renders code, stdout,
-        // and images in the DOM. We extract ALL of it and let the soul decide
-        // whether to execute locally or use Kimi's result directly.
-        try {
-          const codeBlocks = await this._extractToolMirrorFromDOM(page);
-          for (const block of codeBlocks) {
-            // Skip incomplete code (still being streamed into the DOM)
-            if (block.language === 'python' && !this._isPythonCodeComplete(block.code)) {
-              continue;
-            }
-            if (block.language === 'bash' && !this._isBashCodeComplete(block.code)) {
-              continue;
-            }
-            const hash = crypto.createHash('sha256').update(block.code).digest('hex').slice(0, 16);
-            if (!emittedActionCodes.has(hash)) {
-              emittedActionCodes.add(hash);
-              domActionsCount++;
-              const action = this._convertIpythonToAction(block);
-              log.info(`[DOM MIRROR] Detected ${block.language} block (${block.code.length} chars, result=${block.result?.length||0}, images=${block.images?.length||0})`);
-              yield {
-                type: 'action_detected',
-                action,
-                source: 'dom_mirror',
-                code: block.code,
-                kimiResult: block.result,
-                kimiImages: block.images,
-              };
-            }
-          }
-        } catch (e) {
-          // Non-critical: if DOM extraction fails, continue streaming
-          log.warn(`[DOM MIRROR] Extraction error: ${e.message}`);
-        }
-
-        // ── v5.3: REAL-TIME JSON BLOCK STREAMING ──
-        // Detect {"response": "..."} and {"tool": "..."} code blocks as they're written.
-        // FIFO: emit immediately, in order of appearance. Response first, then action.
-        try {
-          const jsonBlocks = await this._extractJsonBlocksFromDOM(page);
-
-          // Emit responses (in order)
-          for (const respBlock of jsonBlocks.responses) {
-            const hash = crypto.createHash('sha256').update(respBlock.raw).digest('hex').slice(0, 16);
-            if (!emittedResponseHashes.has(hash)) {
-              emittedResponseHashes.add(hash);
-              log.info(`[JSON STREAM] Response detected (${respBlock.response.length} chars)`);
-              yield {
-                type: 'response_detected',
-                response: respBlock.response,
-                source: 'json_block',
-              };
-            }
-          }
-
-          // Emit actions (in order)
-          for (const actionBlock of jsonBlocks.actions) {
-            const hash = crypto.createHash('sha256').update(actionBlock.raw).digest('hex').slice(0, 16);
-            if (!emittedJsonActionHashes.has(hash)) {
-              emittedJsonActionHashes.add(hash);
-              log.info(`[JSON STREAM] Action detected: ${actionBlock.tool}`);
-              yield {
-                type: 'action_detected',
-                action: { tool: actionBlock.tool, params: actionBlock.params },
-                source: 'json_block',
-                code: actionBlock.raw,
-                kimiResult: '',
-                kimiImages: [],
-              };
-            }
-          }
-        } catch (e) {
-          log.warn(`[JSON STREAM] Extraction error: ${e.message}`);
-        }
-
-        // Check buttons visibility
-        try {
-          const hasButtons = await page.locator('.segment-assistant-actions .icon-button').count() > 0;
-          if (hasButtons) buttonsVisible = true;
-        } catch {}
-
-        // ── Robust completion detection ──
-        // Conditions: buttons visible + not generating + text stable + no loading indicators
-        if (buttonsVisible && !poll.isGenerating) {
-          // Reset stability timer if text changed recently
-          if (textChanged) {
-            textStableSince = 0;
-          } else if (textStableSince === 0) {
-            textStableSince = Date.now();
-          }
-
-          // Require 3 seconds of stable text + no spinners before declaring done
-          const stableFor = Date.now() - textStableSince;
-          if (textStableSince > 0 && stableFor >= 3000) {
-            const hasLoading = await this._hasActiveLoadingIndicators(page);
-            if (!hasLoading) {
-              // Double-check after 500ms to avoid race conditions
-              await new Promise(r => setTimeout(r, 500));
-              const recheck = await this._pollThinkingAndResponse(page);
-              const recheckLoading = await this._hasActiveLoadingIndicators(page);
-              if (!recheck.isGenerating && recheck.response === lastResponse && !recheckLoading) {
-                isComplete = true;
-                log.info(`[sendMessageStream] Completion via buttonsVisible (stable=${stableFor}ms)`);
-                break;
+        // v7.0: HARD cancel check (from new message) — drain actions then throw
+        if (stopConsuming) {
+          log.warn(`[sendMessageStream] Hard cancel signaled for user ${hashUserId(userId)} — draining pending actions`);
+          while (queue.lastReadIndex < queue.events.length) {
+            const ev = queue.events[queue.lastReadIndex++];
+            if (ev.type === 'action_detected') {
+              const dedupKey = this._dedupKeyForAction(ev);
+              if (!emittedActionCodes.has(dedupKey)) {
+                emittedActionCodes.add(dedupKey);
+                domActionsCount++;
+                yield { type: 'action_detected', action: ev.action, source: ev.source, code: ev.code, kimiResult: ev.kimiResult, kimiImages: ev.kimiImages };
               }
             }
           }
-        } else {
-          // Reset stability if generating again
-          textStableSince = 0;
+          throw new Error('STREAM_CANCELLED');
         }
 
-        // ── FALLBACK completion: force done if text stable for 15s without buttons ──
-        // This prevents infinite loops when button selectors are stale or response is too fast.
-        const timeSinceLastChange = Date.now() - lastTextChangeTime;
-        const totalStreamTime = Date.now() - streamStartTime;
-        if (!isComplete && !poll.isGenerating && timeSinceLastChange >= FORCE_COMPLETE_NO_BUTTONS_MS) {
-          const hasLoading = await this._hasActiveLoadingIndicators(page);
-          if (!hasLoading) {
-            log.warn(`[sendMessageStream] FALLBACK completion: text stable for ${timeSinceLastChange}ms, buttonsVisible=${buttonsVisible}, isGenerating=${poll.isGenerating}, lastResponse=${lastResponse.length} chars`);
+        // v7.0 Opção 2: SOFT cancel check (user clicked red button)
+        // We stop Kimi generation but keep draining the queue until:
+        //   a) No more new events AND Kimi stopped generating, OR
+        //   b) Drain timeout reached
+        if (session.softCancelRequested) {
+          if (!softCancelDrainStart) {
+            softCancelDrainStart = Date.now();
+            log.info(`[sendMessageStream] Soft-cancel drain started for user ${hashUserId(userId)}`);
+          }
+          const hasNewEvents = queue.lastReadIndex < queue.events.length;
+          const lastStateEvent = queue.events.slice().reverse().find(e => e.type === 'state_change');
+          const kimiStillGenerating = lastStateEvent?.isGenerating ?? true;
+          const drainElapsed = Date.now() - softCancelDrainStart;
+
+          if (!hasNewEvents && !kimiStillGenerating) {
+            log.info(`[sendMessageStream] Soft-cancel drain complete — no new events and Kimi stopped. Exiting gracefully.`);
+            isComplete = true;
+            break;
+          }
+          if (drainElapsed > SOFT_CANCEL_DRAIN_TIMEOUT) {
+            log.warn(`[sendMessageStream] Soft-cancel drain timeout (${SOFT_CANCEL_DRAIN_TIMEOUT}ms) — forcing exit`);
             isComplete = true;
             break;
           }
         }
 
-        // ── ABSOLUTE timeout: force done after 5 minutes regardless ──
-        if (!isComplete && totalStreamTime >= FORCE_COMPLETE_ABSOLUTE_MS) {
-          log.warn(`[sendMessageStream] ABSOLUTE timeout reached (${totalStreamTime}ms) — forcing completion`);
+        // Global safety timeout per message
+        if (Date.now() - messageStartTime > MESSAGE_SAFETY_TIMEOUT) {
+          log.warn(`[sendMessageStream] Message safety timeout reached (${MESSAGE_SAFETY_TIMEOUT}ms)`);
           isComplete = true;
           break;
         }
 
-        // Heartbeat every ~10 polls so TUI knows we're alive
+        // Process all new events in queue
+        while (queue.lastReadIndex < queue.events.length && !stopConsuming) {
+          const ev = queue.events[queue.lastReadIndex++];
+
+          switch (ev.type) {
+            case 'state_change': {
+              const t = ev.thinking || '';
+              const r = ev.response || '';
+
+              // Yield thinking deltas
+              if (t && t !== lastThinking) {
+                const delta = t.slice(lastThinking.length);
+                if (delta) {
+                  yield { type: 'thinking_delta', text: delta, fullThinking: t };
+                } else if (t.length < lastThinking.length) {
+                  log.info(`[stream] thinking DOM shrank ${lastThinking.length} -> ${t.length}, skipping repeat`);
+                }
+                lastThinking = t;
+              }
+
+              // Yield response deltas
+              if (r && r !== lastResponse) {
+                const delta = r.slice(lastResponse.length);
+                if (delta) {
+                  const hasJsonIndicator = r.includes('JSON') || r.includes('```json') || r.includes('"response"') || r.includes('"tool"');
+                  if (!hasJsonIndicator) {
+                    yield { type: 'response_delta', text: delta };
+                  } else {
+                    log.info(`[stream] Skipping response_delta — response contains JSON block (${r.length} chars)`);
+                  }
+                } else if (r.length < lastResponse.length) {
+                  yield { type: 'response_delta', text: r };
+                }
+                lastResponse = r;
+              }
+
+              // Yield steer availability
+              if (ev.canSteer !== lastCanSteer) {
+                yield { type: 'can_steer', value: ev.canSteer };
+                lastCanSteer = ev.canSteer;
+              }
+
+              log.info(`[stream] queue poll: thinking=${t.length} response=${r.length} source=${ev.source||'unknown'} canSteer=${ev.canSteer} isGen=${ev.isGenerating}`);
+              break;
+            }
+
+            case 'action_detected': {
+              const dedupKey = this._dedupKeyForAction(ev);
+              if (!emittedActionCodes.has(dedupKey)) {
+                emittedActionCodes.add(dedupKey);
+                domActionsCount++;
+                if (ev.source === 'dom_mirror') {
+                  log.info(`[DOM MIRROR] Detected ${ev.action?.tool || 'unknown'} block`);
+                } else {
+                  log.info(`[JSON STREAM] Action detected: ${ev.action?.tool || 'unknown'}`);
+                }
+                yield {
+                  type: 'action_detected',
+                  action: ev.action,
+                  source: ev.source,
+                  code: ev.code,
+                  kimiResult: ev.kimiResult,
+                  kimiImages: ev.kimiImages,
+                };
+              }
+              break;
+            }
+
+            case 'response_detected': {
+              const hash = crypto.createHash('sha256').update(ev.response).digest('hex').slice(0, 16);
+              if (!emittedResponseHashes.has(hash)) {
+                emittedResponseHashes.add(hash);
+                log.info(`[JSON STREAM] Response detected (${ev.response.length} chars)`);
+                yield { type: 'response_detected', response: ev.response, source: ev.source };
+              }
+              break;
+            }
+
+            case 'completion_candidate': {
+              log.info(`[sendMessageStream] Completion candidate received (signals=${JSON.stringify(ev.signals)})`);
+              isComplete = true;
+              break;
+            }
+          }
+        }
+
+        if (isComplete) break;
+
+        // Heartbeat
         if (++pollCount % 10 === 0) {
           yield { type: 'waiting', message: 'Processando...' };
         }
 
-        await new Promise(r => setTimeout(r, pollInterval));
+        await new Promise(r => setTimeout(r, 100));
       }
 
-      // v4.2-fix: Final extraction — ALWAYS try _extractResponse FIRST
-      // before any fallback. This prevents thinking text from poisoning lastResponse.
+      // v7.7-INFALÍVEL: Final extraction using snapshot diff (PRIMARY strategy)
+      // This captures ALL new content since preSendSnapshot, regardless of how
+      // many assistants were created or how the DOM structure changed.
       let finalResponse = '';
+      let extractionSource = 'none';
+
       try {
-        const extracted = await this._extractResponse(page);
+        const extracted = await this._extractResponseDiff(page, preSendSnapshot);
         if (extracted && extracted.trim().length > 0) {
           finalResponse = extracted.trim();
-          log.info(`[sendMessageStream] _extractResponse success: ${finalResponse.length} chars`);
+          extractionSource = 'snapshot-diff';
+          log.info(`[sendMessageStream] _extractResponseDiff success: ${finalResponse.length} chars`);
         }
       } catch (e) {
-        log.warn(`_extractResponse failed: ${e.message}`);
+        log.warn(`[sendMessageStream] _extractResponseDiff failed: ${e.message}`);
       }
 
-      // Only fallback to lastResponse/lastThinking if _extractResponse returned empty
+      // Fallback: if snapshot diff returned nothing or failed, try old strategies
       if (!finalResponse) {
-        if (lastResponse && lastResponse.length > 0) {
-          finalResponse = lastResponse;
-          log.info(`[sendMessageStream] using lastResponse (${finalResponse.length} chars)`);
-        } else if (lastThinking && lastThinking.length > 10) {
-          finalResponse = lastThinking;
-          log.info(`[sendMessageStream] lastResponse empty, using lastThinking as response (${finalResponse.length} chars)`);
+        try {
+          const extractOptions = targetAssistantIndex >= 0 ? { preferAssistantIndex: targetAssistantIndex, userId } : { userId };
+          const extracted = await this._extractResponse(page, extractOptions);
+          if (extracted && extracted.trim().length > 0) {
+            finalResponse = extracted.trim();
+            extractionSource = 'target-assistant';
+            log.info(`[sendMessageStream] _extractResponse fallback success: ${finalResponse.length} chars (assistant ${targetAssistantIndex})`);
+          }
+        } catch (e) {
+          log.warn(`_extractResponse fallback failed: ${e.message}`);
         }
       }
-      
-      const hasActionTag = finalResponse.includes('[[action]]');
-      const hasResponseTag = finalResponse.includes('[[response]]');
-      log.info(`[sendMessageStream] finalResponse=${finalResponse.length} hasResponseTag=${hasResponseTag} hasActionTag=${hasActionTag} domActions=${domActionsCount}`);
 
-      // ── DOM MIRROR FINAL: Actions were already emitted as 'action_detected' events ──
-      // during streaming. The soul handles execution via domActionResults.
-      // We do NOT append [[action]] tags to finalResponse to avoid double-execution.
-      // If no DOM actions were detected, the response flows normally as CHAT.
-      if (domActionsCount > 0) {
-        log.info(`[DOM MIRROR] ${domActionsCount} action(s) were emitted during streaming. finalResponse remains pure text.`);
-      }
+      // Smart fallback: if extracted thinking-like but lastResponse has JSON/code
+      const hasJsonOrCode = (text) => text && (text.includes('"tool"') || text.includes('"response"') || text.includes('```'));
+      const looksLikeThinking = (text) => text && text.length < 100 && !text.includes('{') && !text.includes('```');
       
+      if (finalResponse && lastResponse && hasJsonOrCode(lastResponse) && looksLikeThinking(finalResponse)) {
+        log.warn(`[sendMessageStream] Extracted thinking-like text (${finalResponse.length} chars) but lastResponse has JSON/code (${lastResponse.length} chars). Using lastResponse.`);
+        finalResponse = lastResponse;
+        extractionSource = 'lastResponse-swap';
+      }
+
+      // CRITICAL fallback: only use lastResponse if we actually saw it change during this stream
+      if (!finalResponse) {
+        const sawResponseDuringStream = lastResponse && lastResponse.length > 0 && lastResponse !== initialText;
+        if (sawResponseDuringStream) {
+          finalResponse = lastResponse;
+          extractionSource = 'lastResponse-fallback';
+          log.info(`[sendMessageStream] Using lastResponse as fallback: ${finalResponse.length} chars`);
+        } else if (lastThinking && lastThinking.length > 10) {
+          finalResponse = lastThinking;
+          extractionSource = 'lastThinking-fallback';
+        }
+      }
+
+      log.info(`[sendMessageStream] finalResponse=${finalResponse.length} domActions=${domActionsCount}`);
+
       session.chatUrl = page.url();
       this._saveChatUrl(userId, session.chatUrl);
 
-      // v3.4: Detect context limit warning from Kimi Web
-      const isContextLimit = /getting too long|conversation.*too long|try starting a new session|context limit|token limit/i.test(finalResponse);
+      const parsedText = this._extractParsedText(finalResponse);
+      if (parsedText && parsedText !== finalResponse) {
+        log.info(`[sendMessageStream] Parsed JSON response: ${finalResponse.length} -> ${parsedText.length} chars`);
+        finalResponse = parsedText;
+      }
+
+      // v7.5-fix: Robust late action detection using _extractJsonToolCalls instead of regex.
+      // This catches JSON tool calls anywhere in the text, including inside code blocks.
+      const lateActions = this._extractJsonToolCalls(finalResponse);
+      for (const action of lateActions) {
+        const actionHash = this._dedupKeyForAction({ action: { tool: action.tool, params: action.params } });
+        if (!emittedActionCodes.has(actionHash)) {
+          emittedActionCodes.add(actionHash);
+          domActionsCount++;
+          log.info(`[JSON STREAM] Late action detected in finalResponse: ${action.tool}`);
+          yield {
+            type: 'action_detected',
+            action: { tool: action.tool, params: action.params },
+            source: 'json_block',
+          };
+        }
+      }
+
+      const isContextLimit = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i.test(finalResponse);
       if (isContextLimit) {
-        log.warn(`[sendMessageStream] Context limit detected — Kimi says: "${finalResponse.slice(0, 100)}..."`);
+        log.warn(`[sendMessageStream] Context limit detected`);
         yield { type: 'context_limit', response: finalResponse, thinking: lastThinking };
       } else {
         yield { type: 'done', response: finalResponse, thinking: lastThinking };
       }
 
     } catch (err) {
-      // v5.3-fix: STREAM_CANCELLED is not a real error — don't clear input, don't throw
       if (err.message === 'STREAM_CANCELLED') {
         log.info(`[sendMessageStream] Stream cancelled gracefully for user ${hashUserId(userId)}`);
       } else {
@@ -3987,9 +5911,26 @@ class KimiBridge {
       }
     } finally {
       session.processing = false;
+      session.softCancelRequested = false; // v7.0: clear soft cancel flag
       session.lastActivity = Date.now();
       this.cancelledStreams.delete(userId);
+      this.streamStopFlags.delete(userId);
+      // v7.0: NÃO paramos o DOM poller aqui — ele continua rodando independentemente
+      // O poller só para quando _stopDomPoller é chamado explicitamente ou página fecha
     }
+  }
+
+  /**
+   * v7.0: Helper para gerar chave de deduplicação de ação.
+   */
+  _dedupKeyForAction(ev) {
+    if (ev.source === 'dom_mirror') {
+      const code = ev.code || '';
+      return crypto.createHash('sha256').update(code).digest('hex').slice(0, 16);
+    }
+    const code = ev.action?.params?.code || ev.action?.params?.script || ev.action?.params?.command || ev.code || '';
+    const normalized = (typeof code === 'string' ? code : JSON.stringify(code)).replace(/\s+/g, ' ').trim();
+    return crypto.createHash('sha256').update(`${ev.action?.tool || ''}:${normalized}`).digest('hex').slice(0, 16);
   }
 
   /**
@@ -3997,23 +5938,67 @@ class KimiBridge {
    * v5.3-fix: Sets cancel flag, clicks stop button on Kimi Web, and forces processing reset.
    * This is the REAL cancellation — unlike the old server-side-only cancel.
    */
-  async cancelStream(userId) {
-    log.info(`[cancelStream] Cancelling stream for user ${hashUserId(userId)}`);
-    this.cancelledStreams.set(userId, true);
+  async cancelStream(userId, soft = false) {
+    log.info(`[cancelStream] v7.0 ${soft ? 'soft' : 'hard'}-cancel for user ${hashUserId(userId)}`);
+
+    const session = this.userSessions.get(userId);
+
+    if (soft) {
+      // v7.0 Opção 2 — STOP KIMI + DRAIN:
+      // User clicked red button. We STOP Kimi from generating more text,
+      // but let the stream continue to drain any pending tools from the queue.
+      // Input is freed immediately so user can type the next message.
+      log.info(`[cancelStream] Soft-cancel (stop+drain) for user ${hashUserId(userId)}`);
+
+      // 1. Click stop button on Kimi Web — stop generating more tokens
+      await this.abortGeneration(userId);
+
+      // 2. Set flag so sendMessageStream knows to drain and exit gracefully
+      if (session) {
+        session.softCancelRequested = true;
+        session.processing = false; // free input
+        session.lastActivity = Date.now();
+        log.info(`[cancelStream] Soft-cancel: Kimi stopped, input freed for user ${hashUserId(userId)}, stream will drain pending tools`);
+      }
+
+      // 3. Do NOT call stopFn — the stream stays alive to drain the queue
+      return true;
+    }
+
+    // HARD CANCEL (new message sent, or explicit kill):
+    // Stop Kimi generation AND kill the stream.
 
     // 1. Click stop button on Kimi Web to halt generation
     await this.abortGeneration(userId);
 
-    // 2. Force reset processing state so next message doesn't wait forever
-    const session = this.userSessions.get(userId);
-    if (session) {
-      session.processing = false;
-      session.lastActivity = Date.now();
-      log.info(`[cancelStream] Forced processing=false for user ${hashUserId(userId)}`);
+    // 2. Signal the stream to stop consuming NEW events.
+    const stopFn = this.streamStopFlags.get(userId);
+    if (stopFn) {
+      stopFn();
+      log.info(`[cancelStream] Hard-cancel signal sent to stream for user ${hashUserId(userId)}`);
+    } else {
+      // Fallback: if no stream is actively listening, set legacy cancel flag
+      this.cancelledStreams.set(userId, true);
     }
 
-    // 3. Give Kimi a moment to actually stop before next message
-    await new Promise(r => setTimeout(r, 800));
+    // 3. Tell poller to skip non-critical events so queue drains faster
+    if (session) {
+      session.domPollerSkipNonCritical = true;
+      session.lastActivity = Date.now();
+      
+      // Wait for stream to drain (max 3s)
+      const drainStart = Date.now();
+      while (session.processing && Date.now() - drainStart < 3000) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+      if (session.processing) {
+        log.warn(`[cancelStream] Stream did not drain in 3s — forcing processing=false`);
+        session.processing = false;
+      }
+      
+      // Reset skip flag after drain
+      session.domPollerSkipNonCritical = false;
+    }
 
     this.cancelledStreams.delete(userId);
     return true;
@@ -4098,7 +6083,7 @@ class KimiBridge {
     const session = this.userSessions.get(userId);
     const actualMode = await this._detectActualMode(page) || session.mode || 'instant';
     await this._waitForResponse(page, actualMode);
-    return this._extractResponse(page);
+    return this._extractResponse(page, { userId });
   }
 
   /**
@@ -4171,7 +6156,7 @@ class KimiBridge {
       // Wait for text to start — NO TIMEOUT. Waits forever until Kimi starts.
       let textHasChanged = false;
       while (true) {
-        const poll = await this._pollThinkingAndResponse(page);
+        const poll = await this._pollThinkingAndResponse(page, null);
         const combined = poll.thinking + poll.response;
         if (combined !== initialText && combined.length > 0) {
           textHasChanged = true;
@@ -4183,14 +6168,12 @@ class KimiBridge {
         await new Promise(r => setTimeout(r, 500));
       }
 
-      // Stream until complete
+      // Stream until complete — NO TIMEOUTS, wait forever for Kimi
       let lastTextChangeTime = Date.now();
-      const FORCE_COMPLETE_NO_BUTTONS_MS = 300000; // [DONO ABSOLUTO] 5min fallback — tarefas longas podem demorar
-      const FORCE_COMPLETE_ABSOLUTE_MS = 999999999;  // [DONO ABSOLUTO] sem limite
       const streamStartTime = Date.now();
 
       while (!isComplete) {
-        const poll = await this._pollThinkingAndResponse(page);
+        const poll = await this._pollThinkingAndResponse(page, null);
 
         const textChanged = poll.thinking !== lastThinking || poll.response !== lastResponse;
         if (textChanged) {
@@ -4224,7 +6207,7 @@ class KimiBridge {
             const hasLoading = await this._hasActiveLoadingIndicators(page);
             if (!hasLoading) {
               await new Promise(r => setTimeout(r, 500));
-              const recheck = await this._pollThinkingAndResponse(page);
+              const recheck = await this._pollThinkingAndResponse(page, null);
               const recheckLoading = await this._hasActiveLoadingIndicators(page);
               if (!recheck.isGenerating && recheck.response === lastResponse && !recheckLoading) {
                 isComplete = true;
@@ -4236,23 +6219,7 @@ class KimiBridge {
           textStableSince = 0;
         }
 
-        // Fallback completion
-        const timeSinceLastChange = Date.now() - lastTextChangeTime;
-        const totalStreamTime = Date.now() - streamStartTime;
-        if (!isComplete && !poll.isGenerating && timeSinceLastChange >= FORCE_COMPLETE_NO_BUTTONS_MS) {
-          const hasLoading = await this._hasActiveLoadingIndicators(page);
-          if (!hasLoading) {
-            log.warn(`[anonymousConsult] FALLBACK completion: stable=${timeSinceLastChange}ms, buttons=${buttonsVisible}`);
-            isComplete = true;
-            break;
-          }
-        }
-        if (!isComplete && totalStreamTime >= FORCE_COMPLETE_ABSOLUTE_MS) {
-          log.warn(`[anonymousConsult] ABSOLUTE timeout (${totalStreamTime}ms)`);
-          isComplete = true;
-          break;
-        }
-
+          // NO FALLBACK TIMEOUTS — wait forever for Kimi to finish
         if (++pollCount % 10 === 0) {
           log.info(`[anonymousConsult] Still processing... response=${lastResponse.length} chars`);
         }
@@ -4262,7 +6229,7 @@ class KimiBridge {
       // Final clean extraction
       let finalResponse = lastResponse;
       try {
-        const extracted = await this._extractResponse(page);
+        const extracted = await this._extractResponse(page, { userId });
         if (extracted && extracted.trim().length > 50) {
           const ratio = lastResponse.length > 0 ? extracted.length / lastResponse.length : 1;
           if (ratio >= 0.5 || lastResponse.length < 200) {
