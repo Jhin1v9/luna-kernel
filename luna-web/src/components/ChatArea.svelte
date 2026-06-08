@@ -899,7 +899,8 @@
         }
         // v4.0-fix: Sort by timestamp to ensure chronological order
         loaded.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-        messages.set(loaded);
+        // v10.3-fix: don't render unlimited history — slice to last 100 until virtualization lands
+        messages.set(loaded.slice(-100));
       } else {
         messages.set([]);
       }
