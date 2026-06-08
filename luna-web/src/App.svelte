@@ -174,6 +174,15 @@
         {#if $currentSessionId}
           <ChatArea
             sessionId={$currentSessionId}
+            on:openConfig={() => configOpen = true}
+            on:newChat={handleNewSession}
+            on:editTitle={() => {
+              const currentSession = $sessions.find(s => s.id === $currentSessionId);
+              const newTitle = prompt('Editar nome da conversa:', currentSession?.title || '');
+              if (newTitle && newTitle.trim()) {
+                handleRename($currentSessionId, newTitle.trim());
+              }
+            }}
           />
         {:else}
           <WelcomeScreen

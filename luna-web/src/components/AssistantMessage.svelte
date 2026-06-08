@@ -18,6 +18,7 @@
 
   let contentEl;
   let copiedCode = null;
+  let copiedMessage = false; // v8.4-fix: Copy whole message state
 
   const renderer = {
     code(code, language) {
@@ -74,91 +75,16 @@
     }
   };
 
-  // v8.2-fix: Robust JSON parser that finds ALL valid JSON objects in text by counting braces.
-  // Replaces regex-based extraction which fails on nested JSON.
-  function extractJsonBlocks(text) {
-    const blocks = [];
-    let i = 0;
-    while (i < text.length) {
-      if (text[i] === '{') {
-        let depth = 1;
-        let j = i + 1;
-        let inString = false;
-        let escape = false;
-        while (j < text.length && depth > 0) {
-          const c = text[j];
-          if (escape) {
-            escape = false;
-          } else if (c === '\\') {
-            escape = true;
-          } else if (c === '"') {
-            inString = !inString;
-          } else if (!inString) {
-            if (c === '{') depth++;
-            else if (c === '}') depth--;
-          }
-          j++;
-        }
-        if (depth === 0) {
-          const jsonStr = text.slice(i, j);
-          try {
-            const parsed = JSON.parse(jsonStr);
-            blocks.push({ start: i, end: j, parsed, raw: jsonStr });
-          } catch {}
-          i = j;
-          continue;
-        }
-      }
-      i++;
-    }
-    return blocks;
-  }
-
   function renderMarkdown(text) {
     if (!text) return '';
 
-    // v8.2-fix: Strip Kimi JSON wrappers before processing
+    // v8.5-fix: ChatArea.svelte already strips tool blocks via stripToolBlocksFromBuffer.
+    // AssistantMessage should just render what it receives.
     let working = text.trim();
-    working = working.replace(/^\s*(?:JSON|json)\s*(?:Copy|复制|複製)?\s*/im, '');
-    working = working.replace(/^```json\s*/i, '').replace(/```\s*$/g, '');
-
-    // v8.2-fix: Extract all JSON objects by brace-counting (handles nested JSON)
-    const jsonBlocks = extractJsonBlocks(working);
-
-    // Build transformed text by replacing JSON blocks with badges or responses
-    let result = '';
-    let lastEnd = 0;
-    for (const block of jsonBlocks) {
-      // Append text before this JSON block
-      result += working.slice(lastEnd, block.start);
-
-      const parsed = block.parsed;
-      if (parsed.response !== undefined && typeof parsed.response === 'string') {
-        // JSON response block → show the response text
-        result += parsed.response;
-      } else if (parsed.tool !== undefined && parsed.response === undefined) {
-        // Tool call JSON → show badge
-        const toolName = parsed.tool || 'tool';
-        const p = parsed.params || {};
-        const paramSummary = Object.keys(p).slice(0, 2).join(', ') || '';
-        result += `<span class="md-tool-badge" data-tool="${toolName}">🔧 ${toolName}${paramSummary ? ' (' + paramSummary + ')' : ''}</span>`;
-      } else {
-        // Other JSON → keep as code block for readability
-        result += `<code class="md-inline-code">${block.raw.slice(0, 120)}${block.raw.length > 120 ? '...' : ''}</code>`;
-      }
-      lastEnd = block.end;
-    }
-    // Append remaining text after last JSON block
-    result += working.slice(lastEnd);
-
-    // v8.2-fix: Deduplicate consecutive identical tool badges
-    // When the same tool JSON appears twice in the text (e.g. DOM mirror + streaming delta),
-    // this prevents duplicate badges like "🔧 tool 🔧 tool"
-    result = result.replace(/(<span class="md-tool-badge"[^>]*>[\s\S]*?<\/span>)(?:\s*\1)+/g, '$1');
 
     // Unescape literal \n sequences
-    text = result.replace(/\\n/g, '\n');
-    let html = text
+    let html = working.replace(/\\n/g, '\n');
+    html = html
       .replace(/^### (.*$)/gim, '<h3 class="md-h3">$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="md-h2">$1</h2>')
       .replace(/^# (.*$)/gim, '<h1 class="md-h1">$1</h1>')
@@ -225,6 +151,17 @@
     }
   }
 
+  // v8.4-fix: Copy entire message content
+  async function copyMessage() {
+    try {
+      await navigator.clipboard.writeText(content || '');
+      copiedMessage = true;
+      setTimeout(() => copiedMessage = false, 2000);
+    } catch (err) {
+      console.error('Copy message failed:', err);
+    }
+  }
+
   onMount(() => {
     highlightCode();
   });
@@ -272,7 +209,9 @@
     flex-direction: column;
     align-items: flex-start;
     margin-right: auto;
-    max-width: 90%;
+    max-width: min(75%, 800px);
+    word-break: break-word;
+    overflow-wrap: break-word;
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
   .assistant-message {
@@ -553,6 +492,34 @@
     color: #a5b4fc;
     font-family: var(--font-mono, 'SF Mono', monospace);
     word-break: break-all;
+  }
+
+  /* v8.4-fix: Copy message button */
+  .copy-message-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    color: var(--luna-text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.2s;
+    z-index: 2;
+  }
+  .assistant-message:hover .copy-message-btn {
+    opacity: 1;
+  }
+  .copy-message-btn:hover {
+    background: rgba(255,255,255,0.12);
+    color: var(--luna-text);
+    border-color: rgba(255,255,255,0.15);
   }
 
   @keyframes fadeInUp {

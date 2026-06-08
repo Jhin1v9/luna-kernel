@@ -7,8 +7,11 @@
   import ThinkingBubble from './ThinkingBubble.svelte';
   import ToolCard from './ToolCard.svelte';
   import PlanCard from './PlanCard.svelte';
+  import TypingIndicator from './TypingIndicator.svelte';
 
   export let messages = [];
+  export let showTyping = false;
+  export let currentMode = 'instant';
   export let onApprovePlan = () => {};
   export let onRejectPlan = () => {};
   export let onRevisePlan = () => {};
@@ -85,6 +88,8 @@
               params={message.params}
               result={message.result}
               duration={message.duration}
+              status={message.status || 'running'}
+              liveOutput={message.liveOutput || ''}
             />
           {:else if message.type === 'plan'}
             <PlanCard
@@ -106,6 +111,12 @@
           {/if}
         </div>
       {/each}
+      <!-- v8.3-fix: Typing indicator for INSTANT mode when no thinking bubble is present -->
+      {#if showTyping && currentMode === 'instant' && !messages.some(m => m.type === 'thinking')}
+        <div class="message-wrapper">
+          <TypingIndicator text="Luna está respondendo" />
+        </div>
+      {/if}
     </div>
   {/if}
 

@@ -227,6 +227,29 @@
     isDragging = false;
   }
 
+  // v9.3-fix: Clipboard paste support — images from screenshot tools (Ctrl+V)
+  async function handlePaste(e) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles = [];
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (blob) {
+          // Generate a filename with timestamp
+          const ext = item.type.replace('image/', '').replace('jpeg', 'jpg');
+          const filename = `clipboard-${Date.now()}.${ext}`;
+          const file = new File([blob], filename, { type: item.type });
+          imageFiles.push(file);
+        }
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      files = [...files, ...imageFiles];
+    }
+  }
+
   onMount(() => {
     autoResize();
     textareaEl?.focus();
@@ -342,6 +365,7 @@
       bind:value={text}
       on:input={handleInput}
       on:keydown={handleKeydown}
+      on:paste={handlePaste}
       {placeholder}
       {disabled}
       rows="1"

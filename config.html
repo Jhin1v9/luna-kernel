@@ -390,6 +390,27 @@
       </div>
 
       <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
+        <div class="flex items-center gap-3 mb-3">
+          <span class="w-8 h-8 rounded-full bg-luna-600 flex items-center justify-center text-sm font-bold">5</span>
+          <h3 class="text-lg font-semibold text-white">👨‍👦 Compartilhar com a família</h3>
+        </div>
+        <div class="space-y-3">
+          <p class="text-sm text-gray-300">Baixe o pacote Self-Host e copie para outro PC:</p>
+          <div class="bg-luna-900 rounded-lg p-4 font-mono text-xs text-luna-300 border border-luna-700 overflow-x-auto">
+            <span style="color:#6b7280"># No PC de origem (este PC)</span><br>
+            <span style="color:#60a5fa">cd</span> ~/Downloads<br>
+            <span style="color:#60a5fa">unzip</span> luna-selfhost.zip -d luna-kernel<br>
+            <span style="color:#60a5fa">cd</span> luna-kernel<br>
+            <span style="color:#60a5fa">npm</span> install<br>
+            <span style="color:#60a5fa">node</span> luna-server.js<br><br>
+            <span style="color:#6b7280"># Acesse: http://localhost:3458</span><br>
+            <span style="color:#6b7280"># Login: abner / Senha: 7741</span>
+          </div>
+          <p class="text-sm text-gray-300">O pacote já vem com o <code>.env</code> pré-configurado. Todos usam a mesma conta e tokens.</p>
+        </div>
+      </div>
+
+      <div class="bg-luna-800 rounded-xl border border-luna-700 p-6">
         <h3 class="text-lg font-semibold text-white mb-3">🔧 Problemas comuns</h3>
         <div class="space-y-3 text-sm">
           <div class="flex gap-3"><span class="text-red-400 font-mono text-xs whitespace-nowrap">Timeout 30000ms</span><p class="text-gray-400">Kimi Web demorou. A Luna tenta novamente automaticamente. Verifique se Chrome está na porta 9222.</p></div>

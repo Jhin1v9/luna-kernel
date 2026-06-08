@@ -29,12 +29,15 @@
   const ORIGINAL_FETCH = window.fetch;
   window.fetch = async function(...args) {
     const response = await ORIGINAL_FETCH.apply(this, args);
-    const url = args[0];
+    // v3.8-fix: Support Request objects (Kimi passes Request, not string)
+    let url = args[0];
+    if (url instanceof Request) url = url.url;
     if (typeof url === 'string' && (
       url.includes('/api/chat') ||
       url.includes('/ChatService/Chat') ||
       url.includes('/kimi.gateway.chat') ||
       url.includes('/apiv2/kimi.chat') ||
+      url.includes('/apiv2/kimi.gateway.chat') ||
       url.includes('/kimi.chat.v1.ChatService') ||
       url.includes('/ChatService/ChatCompletion')
     )) {
@@ -142,6 +145,7 @@
         this._lunaUrl.includes('/ChatService/Chat') ||
         this._lunaUrl.includes('/kimi.gateway.chat') ||
         this._lunaUrl.includes('/apiv2/kimi.chat') ||
+        this._lunaUrl.includes('/apiv2/kimi.gateway.chat') ||
         this._lunaUrl.includes('/kimi.chat.v1.ChatService') ||
         this._lunaUrl.includes('/ChatService/ChatCompletion')
       )) {

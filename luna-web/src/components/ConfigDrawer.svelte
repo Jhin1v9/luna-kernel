@@ -440,17 +440,20 @@
               <p>🚀 Baixe a Luna completa para rodar no seu PC.</p>
               <p>O pacote inclui:</p>
               <ul>
-                <li>✅ Script de instalacao automatico</li>
+                <li>✅ Todos os arquivos do kernel (sem precisar de Git)</li>
                 <li>✅ .env pre-configurado com seus tokens</li>
                 <li>✅ Web interface + Telegram bot</li>
                 <li>✅ Kimi Bridge com Chrome</li>
+                <li>✅ README com tutorial completo</li>
               </ul>
+              <p style="margin-top:12px; color: var(--luna-primary);">👨‍👦 Compartilhe com a familia:</p>
+              <p>Copie o <code>luna-selfhost.zip</code> para o PC do seu pai/mae/irmao. Ele so precisa descompactar, rodar <code>npm install</code> e <code>node luna-server.js</code>. Todos usam a mesma conta!</p>
             </div>
             <button class="btn-primary btn-wide" on:click={handleDownloadSelfHost} disabled={downloadLoading}>
               {downloadLoading ? '⏳ Gerando pacote...' : '📥 Baixar Luna Local'}
             </button>
             <div class="selfhost-note">
-              Requer: Node.js v20+, Git, Google Chrome
+              Requer: Node.js v20+, Google Chrome (Git opcional)
             </div>
           </div>
         {/if}
@@ -485,11 +488,12 @@
               </ul>
               <h4>Modos de resposta</h4>
               <p><strong>⭐ thinking</strong> — A Luna pensa antes de responder (mais preciso)</p>
-              <p><strong>⚡ instant</strong> — Resposta rapida sem thinking</p>
+              <p><strong>⚡ instant</strong> — Resposta rapida sem thinking <span class="badge-recommended">Recomendado</span></p>
               <p><strong>🤖 agent</strong> — Modo agente com multi-step actions</p>
               <p><strong>🐝 swarm</strong> — Multi-agente coordenado</p>
-              <h4>Self-Host</h4>
+              <h4>Self-Host e Compartilhamento</h4>
               <p>Va em <strong>Configuracoes → Self-Host Local</strong> para baixar a Luna completa e rodar no seu PC.</p>
+              <p><strong>👨‍👦 Compartilhar com a familia:</strong> Baixe o pacote, copie o ZIP para outro PC, descompacte, rode <code>npm install</code> e <code>node luna-server.js</code>. Pronto — todos usam a mesma conta e tokens!</p>
             </div>
           </div>
         {/if}
@@ -970,6 +974,27 @@
     display: flex;
     gap: 10px;
     justify-content: flex-end;
+  }
+  .badge-recommended {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-radius: 999px;
+    white-space: nowrap;
+    box-shadow: 0 0 8px rgba(16,185,129,0.35);
+    animation: pulse-badge 2s ease-in-out infinite;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  @keyframes pulse-badge {
+    0%, 100% { box-shadow: 0 0 6px rgba(16,185,129,0.3); }
+    50% { box-shadow: 0 0 12px rgba(16,185,129,0.6); }
   }
   @media (max-width: 768px) {
     .config-drawer {

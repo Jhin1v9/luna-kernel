@@ -5,7 +5,7 @@
 (function setupLunaDomObserver() {
   if (window.__lunaDomObserver) return;
 
-  const VERSION = '2.0.0-v8.1';
+  const VERSION = '2.0.0-v8.6';
   const DEBOUNCE_MS = 50;
   const TOOL_DEDUP_TTL_MS = 60000; // 60s TTL for deduplicating tool calls
   const SELECTORS = {
@@ -238,6 +238,13 @@
           deltaLength: streamInfo.textDelta.length,
           thinking: streamInfo.thinking.slice(0, 200)
         });
+        // v8.6: Send full state for real-time consumption by bridge
+        sendEvent('stream_state', {
+          thinking: streamInfo.thinking,
+          response: streamInfo.response,
+          isStreaming: true,
+          textDelta: streamInfo.textDelta
+        });
       }
 
       // Periodic dedup cleanup
@@ -306,9 +313,24 @@
       const btnState = detectButtonState();
       const wasStreaming = _lastStreamState.isStreaming;
       const nowStreaming = streamInfo.isStreaming;
+      // v8.6: Send periodic stream_state for bridge real-time sync
+      if (nowStreaming) {
+        sendEvent('stream_state', {
+          thinking: streamInfo.thinking,
+          response: streamInfo.response,
+          isStreaming: true
+        });
+      }
       if (wasStreaming && !nowStreaming && !btnState.stopVisible && !_streamEndEmitted) {
         _streamEndEmitted = true;
         sendEvent('stream_end', { finalTextLength: _lastStreamText.length });
+        // v8.6: Also send final state
+        sendEvent('stream_state', {
+          thinking: streamInfo.thinking,
+          response: streamInfo.response,
+          isStreaming: false,
+          isComplete: true
+        });
       }
       if (nowStreaming) {
         _streamEndEmitted = false; // Reset when streaming resumes

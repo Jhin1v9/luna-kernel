@@ -10,6 +10,7 @@
   let filterStatus = 'all';
   let searchQuery = '';
   let showCreateForm = false;
+  let panelMode = 'search'; // v8.4-fix: 'search' | 'create' toggle
   
   // Form
   let formTitle = '';
@@ -143,7 +144,22 @@
     </div>
     {/if}
 
+    <!-- v8.4-fix: Mode Toggle (Search / Create) -->
+    <div class="mode-toggle-bar">
+      <div class="mode-toggle">
+        <button class="mode-btn" class:active={panelMode === 'search'} on:click={() => { panelMode = 'search'; showCreateForm = false; }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Buscar
+        </button>
+        <button class="mode-btn" class:active={panelMode === 'create'} on:click={() => { panelMode = 'create'; showCreateForm = true; }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Criar
+        </button>
+      </div>
+    </div>
+
     <!-- Toolbar -->
+    {#if panelMode === 'search'}
     <div class="toolbar">
       <div class="search-box">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -157,11 +173,8 @@
         <button class="filter-tab" class:active={filterStatus === 'in_progress'} on:click={() => filterStatus = 'in_progress'}>Andamento</button>
         <button class="filter-tab" class:active={filterStatus === 'completed'} on:click={() => filterStatus = 'completed'}>Concluídas</button>
       </div>
-      <button class="btn-create" on:click={() => showCreateForm = true}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Nova Tarefa
-      </button>
     </div>
+    {/if}
 
     <!-- Content -->
     <div class="modal-body">
@@ -170,7 +183,7 @@
           <div class="loading-spinner"></div>
           <span>Carregando tarefas...</span>
         </div>
-      {:else if showCreateForm}
+      {:else if panelMode === 'create' || showCreateForm}
         <div class="create-form">
           <h3 class="form-title">✅ Nova Tarefa</h3>
           <div class="form-grid">
@@ -682,6 +695,42 @@
   }
   .empty-text {
     font-size: 15px;
+  }
+
+  /* v8.4-fix: Mode toggle bar */
+  .mode-toggle-bar {
+    display: flex;
+    justify-content: center;
+    padding: 16px 28px 0;
+  }
+  .mode-toggle {
+    display: inline-flex;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 4px;
+    gap: 4px;
+  }
+  .mode-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--luna-text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .mode-btn:hover {
+    color: var(--luna-text);
+  }
+  .mode-btn.active {
+    background: rgba(6, 182, 212, 0.15);
+    color: #06b6d4;
   }
 
   @media (max-width: 640px) {

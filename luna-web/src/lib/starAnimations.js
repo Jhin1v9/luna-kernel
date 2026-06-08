@@ -84,7 +84,7 @@ export const MODE_SHIFT_INTENSITY = {
 };
 
 export const MODE_BEHAVIOR = {
-  instant:            { twinkleMult: 1.6, brightnessMult: 1.25, drift: true,  speed: 2.5 },
+  instant:            { twinkleMult: 2.8, brightnessMult: 1.55, drift: true,  speed: 3.0, starBurst: true },
   thinking:           { twinkleMult: 1.0, brightnessMult: 1.00, drift: false, speed: 0 },
   agent:              { twinkleMult: 1.1, brightnessMult: 1.05, drift: true,  speed: 0.6 },
   swarm:              { twinkleMult: 1.9, brightnessMult: 1.20, drift: true,  speed: 1.2 },

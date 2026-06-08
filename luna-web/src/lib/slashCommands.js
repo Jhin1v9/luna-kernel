@@ -17,6 +17,8 @@ export const SLASH_COMMANDS = [
   { cmd: '/turnoff',     desc: 'Desligar agente (fecha Chrome)',     icon: '🌙', category: 'System', handler: 'turnOffAgent' },
   { cmd: '/ajuda',       desc: 'Mostrar ajuda',                      icon: '❓', category: 'System', handler: 'help' },
   { cmd: '/modo',        desc: 'Trocar modo (instant/thinking/agent/swarm)', icon: '⚡', category: 'System', handler: 'changeMode' },
+  { cmd: '/refresh',     desc: 'Reconectar e limpar estado do agente', icon: '🔄', category: 'System', handler: 'refreshAgent' },
+  { cmd: '/fullrefresh', desc: 'Refresh + continuar ultima acao',     icon: '🔁', category: 'System', handler: 'fullRefreshAgent' },
 
   // ── File Ops ──
   { cmd: '/read',        desc: 'Ler arquivo — /read path/to/file',   icon: '📖', category: 'File', handler: 'readFile' },
@@ -50,27 +52,27 @@ export const SLASH_COMMANDS = [
   { cmd: '/download',    desc: 'Download arquivo',                   icon: '⬇️', category: 'Web', handler: 'downloadFile' },
 
   // ── Dashboard — Tarefas ──
-  { cmd: '/tarefa',      desc: 'Criar tarefa',                       icon: '📋', category: 'Dashboard', handler: 'dashboardCreateTask' },
-  { cmd: '/tarefas',     desc: 'Listar tarefas',                     icon: '📋', category: 'Dashboard', handler: 'dashboardListTasks' },
-  { cmd: '/tarefa-update', desc: 'Atualizar tarefa',                 icon: '✏️', category: 'Dashboard', handler: 'dashboardUpdateTask' },
-  { cmd: '/tarefa-done', desc: 'Completar tarefa',                   icon: '✅', category: 'Dashboard', handler: 'dashboardCompleteTask' },
+  { cmd: '/tarefa',      desc: 'Criar tarefa',                       icon: '📋', category: 'Dashboard', handler: 'dashboardCreateTask', modal: 'tasks' },
+  { cmd: '/tarefas',     desc: 'Listar tarefas',                     icon: '📋', category: 'Dashboard', handler: 'dashboardListTasks', modal: 'tasks' },
+  { cmd: '/tarefa-update', desc: 'Atualizar tarefa',                 icon: '✏️', category: 'Dashboard', handler: 'dashboardUpdateTask', modal: 'tasks' },
+  { cmd: '/tarefa-done', desc: 'Completar tarefa',                   icon: '✅', category: 'Dashboard', handler: 'dashboardCompleteTask', modal: 'tasks' },
 
   // ── Dashboard — Leads ──
-  { cmd: '/lead',        desc: 'Criar lead',                         icon: '👤', category: 'Dashboard', handler: 'dashboardCreateLead' },
-  { cmd: '/leads',       desc: 'Listar leads',                       icon: '👥', category: 'Dashboard', handler: 'dashboardListLeads' },
+  { cmd: '/lead',        desc: 'Criar lead',                         icon: '👤', category: 'Dashboard', handler: 'dashboardCreateLead', modal: 'leads' },
+  { cmd: '/leads',       desc: 'Listar leads',                       icon: '👥', category: 'Dashboard', handler: 'dashboardListLeads', modal: 'leads' },
 
   // ── Dashboard — Financeiro ──
-  { cmd: '/caixa',       desc: 'Consultar caixa',                    icon: '💰', category: 'Dashboard', handler: 'dashboardGetCashBox' },
-  { cmd: '/caixa-add',   desc: 'Adicionar entrada caixa',            icon: '💵', category: 'Dashboard', handler: 'dashboardAddCashEntry' },
-  { cmd: '/caixa-hist',  desc: 'Historico caixa',                    icon: '📜', category: 'Dashboard', handler: 'dashboardListCashHistory' },
-  { cmd: '/despesa',     desc: 'Criar despesa',                      icon: '💸', category: 'Dashboard', handler: 'dashboardCreateExpense' },
-  { cmd: '/despesas',    desc: 'Listar despesas',                    icon: '📊', category: 'Dashboard', handler: 'dashboardListExpenses' },
-  { cmd: '/pagamento',   desc: 'Criar pagamento',                    icon: '💳', category: 'Dashboard', handler: 'dashboardCreatePayment' },
-  { cmd: '/pagamentos',  desc: 'Listar pagamentos',                  icon: '📋', category: 'Dashboard', handler: 'dashboardListPayments' },
+  { cmd: '/caixa',       desc: 'Consultar caixa',                    icon: '💰', category: 'Dashboard', handler: 'dashboardGetCashBox', modal: 'finance' },
+  { cmd: '/caixa-add',   desc: 'Adicionar entrada caixa',            icon: '💵', category: 'Dashboard', handler: 'dashboardAddCashEntry', modal: 'finance' },
+  { cmd: '/caixa-hist',  desc: 'Historico caixa',                    icon: '📜', category: 'Dashboard', handler: 'dashboardListCashHistory', modal: 'finance' },
+  { cmd: '/despesa',     desc: 'Criar despesa',                      icon: '💸', category: 'Dashboard', handler: 'dashboardCreateExpense', modal: 'finance' },
+  { cmd: '/despesas',    desc: 'Listar despesas',                    icon: '📊', category: 'Dashboard', handler: 'dashboardListExpenses', modal: 'finance' },
+  { cmd: '/pagamento',   desc: 'Criar pagamento',                    icon: '💳', category: 'Dashboard', handler: 'dashboardCreatePayment', modal: 'finance' },
+  { cmd: '/pagamentos',  desc: 'Listar pagamentos',                  icon: '📋', category: 'Dashboard', handler: 'dashboardListPayments', modal: 'finance' },
 
   // ── Dashboard — Votacao ──
-  { cmd: '/votacao',     desc: 'Listar votacoes',                    icon: '🗳️', category: 'Dashboard', handler: 'dashboardListVotingSessions' },
-  { cmd: '/votacao-criar', desc: 'Criar votacao',                    icon: '➕', category: 'Dashboard', handler: 'dashboardCreateVotingSession' },
+  { cmd: '/votacao',     desc: 'Listar votacoes',                    icon: '🗳️', category: 'Dashboard', handler: 'dashboardListVotingSessions', modal: 'voting' },
+  { cmd: '/votacao-criar', desc: 'Criar votacao',                    icon: '➕', category: 'Dashboard', handler: 'dashboardCreateVotingSession', modal: 'voting' },
 
   // ── Dashboard — Ideias ──
   { cmd: '/ideia',       desc: 'Criar ideia',                        icon: '💡', category: 'Dashboard', handler: 'dashboardCreateIdea' },
@@ -93,7 +95,7 @@ export const SLASH_COMMANDS = [
   { cmd: '/usuarios',    desc: 'Listar usuarios',                    icon: '👥', category: 'Dashboard', handler: 'dashboardListUsers' },
   { cmd: '/projetos',    desc: 'Listar projetos',                    icon: '📁', category: 'Dashboard', handler: 'dashboardListProjects' },
   { cmd: '/clientes',    desc: 'Listar clientes',                    icon: '👤', category: 'Dashboard', handler: 'dashboardListClients' },
-  { cmd: '/financeiro',  desc: 'Resumo financeiro',                  icon: '💹', category: 'Dashboard', handler: 'dashboardGetFinanceSummary' },
+  { cmd: '/financeiro',  desc: 'Resumo financeiro',                  icon: '💹', category: 'Dashboard', handler: 'dashboardGetFinanceSummary', modal: 'finance' },
   { cmd: '/config',      desc: 'Configuracoes dashboard',            icon: '⚙️', category: 'Dashboard', handler: 'dashboardGetConfig' },
 
   // ── Agent Tools ──

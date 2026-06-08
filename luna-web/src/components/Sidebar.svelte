@@ -20,10 +20,18 @@
   let contextMenuId = null;
   let contextMenuPos = { x: 0, y: 0 };
   let sidebarEl;
+  let searchQuery = ''; // v8.4-fix: Session search filter
 
   $: sortedSessions = [...sessions].sort((a, b) =>
     new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)
   );
+
+  // v8.4-fix: Filter sessions by search query (case-insensitive)
+  $: filteredSessions = searchQuery.trim()
+    ? sortedSessions.filter(s =>
+        (s.title || 'Sem titulo').toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : sortedSessions;
 
   function startRename(session, e) {
     e.stopPropagation();
@@ -114,19 +122,37 @@
     Nova Sessao
   </button>
 
+  <!-- v8.4-fix: Search Box -->
+  {#if !collapsed}
+    <div class="search-sessions">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <input
+        type="text"
+        placeholder="Buscar conversas..."
+        bind:value={searchQuery}
+        on:keydown={(e) => e.key === 'Escape' && (searchQuery = '')}
+      />
+      {#if searchQuery}
+        <button class="search-clear" on:click={() => searchQuery = ''}>×</button>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Sessions Label -->
-  <div class="section-label">📋 Sessoes</div>
+  <div class="section-label">📋 Sessoes {#if searchQuery}({filteredSessions.length}){/if}</div>
 
   <!-- Session List -->
   <div class="session-list">
-    {#if sortedSessions.length === 0}
+    {#if filteredSessions.length === 0}
       <div class="empty-state">
         <div class="empty-icon">💬</div>
-        <div class="empty-text">Nenhuma sessao ainda</div>
-        <div class="empty-hint">Clique em "Nova Sessao" para comecar</div>
+        <div class="empty-text">{searchQuery ? 'Nenhuma sessao encontrada' : 'Nenhuma sessao ainda'}</div>
+        <div class="empty-hint">{searchQuery ? 'Tente outro termo' : 'Clique em "Nova Sessao" para comecar'}</div>
       </div>
     {:else}
-      {#each sortedSessions as session (session.id)}
+      {#each filteredSessions as session (session.id)}
         <div
           class="session-item"
           class:active={session.id === currentId}
@@ -692,6 +718,52 @@
   }
   .mobile-toggle {
     display: none;
+  }
+
+  /* v8.4-fix: Session search box */
+  .search-sessions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 8px 12px 4px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    transition: all 0.2s;
+  }
+  .search-sessions:focus-within {
+    border-color: var(--luna-accent);
+    background: rgba(255,255,255,0.06);
+  }
+  .search-sessions svg {
+    flex-shrink: 0;
+    color: var(--luna-text-secondary);
+  }
+  .search-sessions input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--luna-text);
+    font-size: 13px;
+    padding: 0;
+  }
+  .search-sessions input::placeholder {
+    color: var(--luna-text-secondary);
+  }
+  .search-clear {
+    background: transparent;
+    border: none;
+    color: var(--luna-text-secondary);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 2px;
+    border-radius: 4px;
+  }
+  .search-clear:hover {
+    color: var(--luna-text);
   }
 
   @media (max-width: 768px) {

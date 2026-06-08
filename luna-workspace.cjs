@@ -521,9 +521,18 @@ class WorkspaceManager {
     let totalChars = 0;
 
     for (const [filePath, entry] of sorted) {
-      const header = `\n--- ${path.relative(ws.path, filePath)} ---\n`;
-      const content = entry.content;
-      const chunk = header + content + '\n';
+      const relPath = path.relative(ws.path, filePath);
+      const header = `\n--- ${relPath} ---\n`;
+      const ext = path.extname(filePath).toLowerCase();
+      // v8.5-fix: Don't inject raw code file contents into context — causes HTML/JSX leak
+      const isCodeFile = ['.jsx', '.tsx', '.html', '.css', '.scss', '.vue', '.svelte'].includes(ext);
+      let chunk;
+      if (isCodeFile) {
+        chunk = header + `[Arquivo de código ${ext} — conteúdo omitido do contexto. Use readFile se precisar ver.]\n`;
+      } else {
+        const content = entry.content;
+        chunk = header + content + '\n';
+      }
 
       if (totalChars + chunk.length > maxTokens * 2) { // rough estimate: 2 chars/token
         lines.push('\n... (mais arquivos no cache, peça para ler se necessário)');

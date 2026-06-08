@@ -53,8 +53,8 @@
   let dt = 16;
 
   // ─── Mode state ────────────────────────────────────────────
-  let lastMode = 'thinking';
-  let targetMode = 'thinking';
+  let lastMode = 'instant';
+  let targetMode = 'instant';
   let modeTransition = 0;       // 0 = fully in lastMode, 1 = fully in targetMode
   let modeTransitionSpeed = 0.015;
   let streamingActive = false;
@@ -133,7 +133,7 @@
       effectiveTarget = 'voice-processing';
     } else {
       // Detect loading state
-      const newIsLoading = lastMode === 'thinking' && streamingActive;
+      const newIsLoading = lastMode === 'instant' && streamingActive;
       if (newIsLoading) {
         effectiveTarget = 'thinking-loading';
       } else {
@@ -164,7 +164,7 @@
       modeTransition = Math.min(1, modeTransition + modeTransitionSpeed);
     }
 
-    isLoading = (lastMode === 'thinking' && streamingActive);
+    isLoading = (lastMode === 'instant' && streamingActive);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -506,10 +506,45 @@
       ss.draw(ctx);
     }
 
+    // ── Luna brilhante (modo instant) ──
+    if (targetMode === 'instant' || (lastMode === 'instant' && modeTransition < 1)) {
+      const moonAlpha = targetMode === 'instant' ? 1 : (1 - modeTransition);
+      drawLuna(ctx, w, h, t, moonAlpha);
+    }
+
     // Reset
     ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
     ctx.lineCap = 'butt';
+  }
+
+  function drawLuna(ctx, w, h, t, alpha) {
+    const cx = w * 0.85;
+    const cy = h * 0.15;
+    const pulse = Math.sin(t * 1.5) * 0.15 + 0.85;
+
+    // Glow sutil atrás do emoji
+    const glowR = 60 * pulse;
+    const glowGrad = ctx.createRadialGradient(cx, cy, 10, cx, cy, glowR);
+    glowGrad.addColorStop(0, `rgba(6,182,212,${0.2 * alpha * pulse})`);
+    glowGrad.addColorStop(1, 'rgba(6,182,212,0)');
+    ctx.fillStyle = glowGrad;
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Emoji da lua 🌙 com sombra ciano
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.85;
+    ctx.font = '48px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#06b6d4';
+    ctx.shadowBlur = 20 * pulse;
+    ctx.fillText('🌙', cx, cy);
+    ctx.restore();
+    ctx.shadowBlur = 0;
   }
 
   // ═══════════════════════════════════════════════════════════

@@ -32,7 +32,7 @@
     <!-- Logo -->
     <div class="welcome-logo">
       <span class="logo-moon">🌙</span>
-      <h1 class="welcome-title">Luna</h1>
+      <h1 class="welcome-title moon-glow">LUNA</h1>
       <p class="welcome-subtitle">Seu assistente autônomo inteligente</p>
     </div>
 
@@ -70,7 +70,7 @@
       <div class="tip-card">
         <span class="tip-icon">⚡</span>
         <div class="tip-text">
-          <strong>Modo Instant</strong>
+          <strong>Modo Instant <span class="badge-recommended">Recomendado</span></strong>
           <span>Respostas rápidas sem raciocínio</span>
         </div>
       </div>
@@ -155,12 +155,24 @@
     font-size: 42px;
     font-weight: 800;
     color: var(--luna-text);
-    letter-spacing: -1px;
+    letter-spacing: 4px;
     margin: 0;
     background: linear-gradient(135deg, var(--luna-text) 0%, var(--accent) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+  }
+  .moon-glow {
+    background: linear-gradient(135deg, #f1f5f9 0%, #cbd5e1 40%, #94a3b8 70%, #e2e8f0 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 12px rgba(226, 232, 240, 0.45)) drop-shadow(0 0 30px rgba(148, 163, 184, 0.25));
+    animation: moonPulse 4s ease-in-out infinite;
+  }
+  @keyframes moonPulse {
+    0%, 100% { filter: drop-shadow(0 0 12px rgba(226, 232, 240, 0.4)) drop-shadow(0 0 30px rgba(148, 163, 184, 0.2)); }
+    50% { filter: drop-shadow(0 0 20px rgba(226, 232, 240, 0.7)) drop-shadow(0 0 50px rgba(148, 163, 184, 0.4)); }
   }
   .welcome-subtitle {
     font-size: 15px;
@@ -316,6 +328,27 @@
     color: var(--luna-text-secondary);
   }
 
+  .badge-recommended {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-radius: 999px;
+    white-space: nowrap;
+    box-shadow: 0 0 8px rgba(16,185,129,0.35);
+    animation: pulse-badge 2s ease-in-out infinite;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  @keyframes pulse-badge {
+    0%, 100% { box-shadow: 0 0 6px rgba(16,185,129,0.3); }
+    50% { box-shadow: 0 0 12px rgba(16,185,129,0.6); }
+  }
   @media (max-width: 640px) {
     .welcome-title { font-size: 32px; }
     .tips-section { grid-template-columns: 1fr; }

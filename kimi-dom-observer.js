@@ -221,9 +221,11 @@
   });
 
   try {
-    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['class', 'data-status', 'data-segment-id', 'style'] });
+    // v8.5-fix: REMOVED attributeOldValue — it forces the browser to clone old attribute
+    // values on every mutation, causing massive memory pressure and GC pauses during Kimi streaming.
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-status', 'data-segment-id', 'style'] });
   } catch (e) {
-    try { observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeOldValue: true }); } catch (e2) {}
+    try { observer.observe(document.body, { childList: true, subtree: true, attributes: true }); } catch (e2) {}
   }
 
   const heartbeatInterval = setInterval(() => {
@@ -269,4 +271,83 @@
   };
 
   window.__lunaEventQueue.push({ type: 'observer_ready', data: { url: window.location.href, timestamp: Date.now() } });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // v8.5-fix: ULTRA-LIGHT MutationObserver for real-time streaming
+  // Instead of observing the entire document (heavy), we observe ONLY the
+  // last .segment-assistant element. This gives us instant notifications
+  // when Kimi adds text, without competing with React's main thread.
+  // ═══════════════════════════════════════════════════════════════════════
+  (function setupUltraLightObserver() {
+    if (window.__lunaUltraLightObserver) return;
+
+    let _lastAssistant = null;
+    let _lastText = '';
+    let _lastThinking = '';
+    let _observer = null;
+
+    function findLastAssistant() {
+      const assistants = document.querySelectorAll('.segment-assistant');
+      return assistants.length > 0 ? assistants[assistants.length - 1] : null;
+    }
+
+    function extractText(assistant) {
+      if (!assistant) return { thinking: '', response: '' };
+      // Extract thinking
+      let thinking = '';
+      const thinkContainer = assistant.querySelector('.toolcall-container.thinking-container');
+      if (thinkContainer) {
+        const thinkMd = thinkContainer.querySelector('.markdown-container.toolcall-content-text');
+        if (thinkMd) thinking = (thinkMd.textContent || '').trim();
+      }
+      // Extract response from markdown containers (excluding thinking)
+      let response = '';
+      const mdContainers = assistant.querySelectorAll('.markdown-container');
+      for (const md of mdContainers) {
+        if (thinkContainer && md.closest('.toolcall-container.thinking-container')) continue;
+        const text = (md.textContent || '').trim();
+        if (text) response += text + '\n';
+      }
+      return { thinking: thinking.trim(), response: response.trim() };
+    }
+
+    function onMutations() {
+      const assistant = findLastAssistant();
+      if (!assistant) return;
+
+      // If assistant changed, re-observe
+      if (assistant !== _lastAssistant) {
+        if (_observer) _observer.disconnect();
+        _lastAssistant = assistant;
+        _lastText = '';
+        _lastThinking = '';
+        _observer = new MutationObserver(onMutations);
+        _observer.observe(assistant, { childList: true, subtree: true, characterData: true });
+      }
+
+      const { thinking, response } = extractText(assistant);
+      const queue = window.__lunaEventQueue;
+
+      if (thinking && thinking !== _lastThinking) {
+        queue.push({ type: 'thinking_delta', data: { text: thinking.slice(_lastThinking.length), fullThinking: thinking } });
+        _lastThinking = thinking;
+      }
+
+      if (response && response !== _lastText) {
+        queue.push({ type: 'response_delta', data: { text: response.slice(_lastText.length), fullResponse: response } });
+        _lastText = response;
+      }
+    }
+
+    // Observe the document for NEW assistants being added
+    const docObserver = new MutationObserver(() => {
+      onMutations();
+    });
+    docObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Initial scan
+    onMutations();
+
+    window.__lunaUltraLightObserver = { docObserver, onMutations };
+  })();
 })();

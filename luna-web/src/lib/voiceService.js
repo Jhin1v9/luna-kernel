@@ -1,6 +1,7 @@
 /**
  * Voice Service — Speech Recognition + Audio Visualization
  * Captures microphone input, transcribes speech, and provides real-time audio data.
+ * v2.0: Auto-submit on silence, user-requested stop, conversation mode support.
  */
 
 // ─── State ─────────────────────────────────────────────────
@@ -10,13 +11,20 @@ let analyser = null;
 let microphone = null;
 let dataArray = null;
 let isListening = false;
+let userRequestedStop = false;
 let rafId = null;
+
+// Auto-submit / silence detection
+let silenceTimer = null;
+let lastSpeechTime = 0;
+const SILENCE_THRESHOLD_MS = 2000; // 2 seconds of silence triggers auto-submit
 
 // Callbacks
 let onTranscript = null;
 let onAudioData = null;
 let onStateChange = null;
 let onError = null;
+let onSilence = null; // Called when user stops speaking (auto-submit)
 
 const SAMPLE_SIZE = 64; // Number of frequency bins we expose
 
@@ -65,6 +73,26 @@ function stopAudioLoop() {
   rafId = null;
 }
 
+// ─── Silence Detection ─────────────────────────────────────
+
+function resetSilenceTimer() {
+  if (silenceTimer) clearTimeout(silenceTimer);
+  lastSpeechTime = Date.now();
+  silenceTimer = setTimeout(() => {
+    if (isListening && !userRequestedStop) {
+      // User stopped speaking — trigger auto-submit
+      if (onSilence) onSilence();
+    }
+  }, SILENCE_THRESHOLD_MS);
+}
+
+function clearSilenceTimer() {
+  if (silenceTimer) {
+    clearTimeout(silenceTimer);
+    silenceTimer = null;
+  }
+}
+
 // ─── Speech Recognition Setup ──────────────────────────────
 
 function initRecognition() {
@@ -80,8 +108,10 @@ function initRecognition() {
 
   recognition.onstart = () => {
     isListening = true;
+    userRequestedStop = false;
     if (onStateChange) onStateChange('listening');
     startAudioLoop();
+    resetSilenceTimer();
   };
 
   recognition.onresult = (event) => {
@@ -97,6 +127,11 @@ function initRecognition() {
       }
     }
 
+    // User is still speaking — reset silence timer
+    if (interim.trim().length > 0 || final.trim().length > 0) {
+      resetSilenceTimer();
+    }
+
     if (onTranscript) onTranscript({ final, interim });
   };
 
@@ -105,19 +140,38 @@ function initRecognition() {
     if (onError) onError(event.error);
     // Don't stop on no-speech, just keep listening
     if (event.error === 'no-speech') return;
-    stop();
+    // For other errors, do a full stop
+    _internalStop();
   };
 
   recognition.onend = () => {
-    // Auto-restart if still supposed to be listening
-    if (isListening) {
+    clearSilenceTimer();
+    // Only auto-restart if:
+    // 1. We are supposed to be listening (isListening)
+    // 2. The user did NOT explicitly request stop
+    // 3. We're in conversation mode (onSilence is set)
+    if (isListening && !userRequestedStop && onSilence) {
       try {
         recognition.start();
       } catch {
-        stop();
+        _internalStop();
       }
+    } else if (!userRequestedStop && isListening) {
+      // Not in conversation mode — just stop cleanly
+      _internalStop();
     }
   };
+}
+
+// Internal stop — resets state without calling user callbacks for state
+function _internalStop() {
+  isListening = false;
+  userRequestedStop = false;
+  clearSilenceTimer();
+  stopAudioLoop();
+  if (recognition) {
+    try { recognition.stop(); } catch { /* ignore */ }
+  }
 }
 
 // ─── Public API ────────────────────────────────────────────
@@ -136,10 +190,12 @@ export const voiceService = {
     onAudioData = callbacks.onAudioData || null;
     onStateChange = callbacks.onStateChange || null;
     onError = callbacks.onError || null;
+    onSilence = callbacks.onSilence || null;
 
     try {
       await initAudio();
       if (!recognition) initRecognition();
+      userRequestedStop = false;
       recognition.start();
     } catch (err) {
       console.error('Voice start error:', err);
@@ -149,7 +205,9 @@ export const voiceService = {
   },
 
   stop() {
+    userRequestedStop = true;
     isListening = false;
+    clearSilenceTimer();
     stopAudioLoop();
 
     if (recognition) {
@@ -173,7 +231,8 @@ export const voiceService = {
   },
 
   cleanup() {
-    stop();
+    userRequestedStop = true;
+    _internalStop();
     if (audioContext) {
       audioContext.close();
       audioContext = null;
@@ -185,5 +244,10 @@ export const voiceService = {
     analyser = null;
     dataArray = null;
     recognition = null;
+    onTranscript = null;
+    onAudioData = null;
+    onStateChange = null;
+    onError = null;
+    onSilence = null;
   },
 };

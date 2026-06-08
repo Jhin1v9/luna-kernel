@@ -196,7 +196,83 @@ function checkFileTruncated(content, ext) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. APP.IMPORTS CHECKER
+// 3. AUTO FIXER — Corrige erros óbvios automaticamente sem esperar Kimi
+// ═══════════════════════════════════════════════════════════════════════════
+
+function autoFix(content, ext) {
+  const fixes = [];
+  let fixed = content;
+
+  // Só aplica a arquivos de código
+  const CODE_EXTS = ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.vue', '.svelte'];
+  if (!CODE_EXTS.includes(ext)) return { fixed, fixes, changed: false };
+
+  // 1. Fix `<<Type>` → `<Type>` (erro de digitação em generics)
+  // Padrão: palavra seguida de << seguido de tipo e >
+  const doubleGenericPattern = /(\w+)<<([A-Za-z][A-Za-z0-9_<>|&\[\]]*)>/g;
+  let match;
+  while ((match = doubleGenericPattern.exec(content)) !== null) {
+    const original = match[0];
+    const corrected = `${match[1]}<${match[2]}>`;
+    fixed = fixed.replace(original, corrected);
+    fixes.push(`Generic corrigido: "${original}" → "${corrected}"`);
+  }
+
+  // 2. Fix `useRef<<Type>` → `useRef<Type>`
+  // NOTA: useRef<< já é pego pelo doubleGenericPattern acima, então só adicionamos
+  // fix se ainda restar algum caso não capturado
+  const useRefPattern = /useRef<<([A-Za-z][A-Za-z0-9_<>|&\[\]]*)>/g;
+  while ((match = useRefPattern.exec(content)) !== null) {
+    const original = match[0];
+    if (fixed.includes(original)) {
+      const corrected = `useRef<${match[1]}>`;
+      fixed = fixed.replace(original, corrected);
+      fixes.push(`useRef corrigido: "${original}" → "${corrected}"`);
+    }
+  }
+
+  // 3. Fix `useState<<Type>` → `useState<Type>`
+  // NOTA: useState<< já é pego pelo doubleGenericPattern acima, então só adicionamos
+  // fix se ainda restar algum caso não capturado
+  const useStatePattern = /useState<<([A-Za-z][A-Za-z0-9_<>|&\[\]]*)>/g;
+  while ((match = useStatePattern.exec(content)) !== null) {
+    const original = match[0];
+    if (fixed.includes(original)) {
+      const corrected = `useState<${match[1]}>`;
+      fixed = fixed.replace(original, corrected);
+      fixes.push(`useState corrigido: "${original}" → "${corrected}"`);
+    }
+  }
+
+  // 4. Fix `>>` seguido de letra (não é shift right válido em TS/JS)
+  const doubleClosePattern = />>([A-Za-z])/g;
+  while ((match = doubleClosePattern.exec(content)) !== null) {
+    const original = match[0];
+    const corrected = `>${match[1]}`;
+    fixed = fixed.replace(original, corrected);
+    fixes.push(`>> corrigido: "${original}" → "${corrected}"`);
+  }
+
+  // 5. Fix `}}` sozinho sem `{{` correspondente na mesma linha
+  // Só corrige se NÃO estiver dentro de template literal
+  const lines = fixed.split('\n');
+  const newLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    if (line.includes('}}') && !line.includes('{{') && !line.includes('`')) {
+      // Heuristic: se `}}` aparece sozinho, pode ser erro de digitação
+      // Mas não corrigimos automaticamente — só reportamos
+      // (muito arriscado auto-corrigir sem contexto)
+    }
+    newLines.push(line);
+  }
+  fixed = newLines.join('\n');
+
+  return { fixed, fixes, changed: fixes.length > 0 };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. APP.IMPORTS CHECKER
 // ═══════════════════════════════════════════════════════════════════════════
 
 function checkAppImports(projectPath) {
@@ -390,6 +466,122 @@ function validateProject(projectPath) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 7. SYNTAX GUARD — Detecta erros óbvios de digitação pré-save
+// ═══════════════════════════════════════════════════════════════════════════
+
+function syntaxGuard(content, ext) {
+  const errors = [];
+
+  // Só aplica a arquivos de código
+  const CODE_EXTS = ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.vue', '.svelte'];
+  if (!CODE_EXTS.includes(ext)) return { passed: true, errors };
+
+  const lines = content.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineNum = i + 1;
+
+    // Detecta `<<Type>` — erro comum de digitação em generics TypeScript
+    // useState<<Filter> deveria ser useState<Filter>
+    const doubleGeneric = line.match(/(\w+)<<([A-Za-z][A-Za-z0-9_<>|&]*)>/g);
+    if (doubleGeneric) {
+      for (const match of doubleGeneric) {
+        const fixed = match.replace('<<', '<');
+        errors.push(`Linha ${lineNum}: Erro de digitação em generic: "${match}" deveria ser "${fixed}"`);
+      }
+    }
+
+    // Detecta `>>` em posição que não é shift right
+    const doubleClose = line.match(/>>[A-Za-z]/g);
+    if (doubleClose) {
+      for (const match of doubleClose) {
+        errors.push(`Linha ${lineNum}: Possível erro de digitação: "${match}" — verifique generics aninhados`);
+      }
+    }
+
+    // Detecta `}}` sozinho (fora de template strings é raro em JSX/TS)
+    // Só reporta se NÃO está dentro de template literal
+    if (line.includes('}}') && !line.includes('`${') && !line.includes('`}')) {
+      // Heuristic: se tem `}}` mas não tem `{{` na mesma linha, pode ser erro
+      if (!line.includes('{{')) {
+        errors.push(`Linha ${lineNum}: Possível erro de digitação: "}}" sem "{{" correspondente`);
+      }
+    }
+
+    // Detecta `<{` ou `}>` — padrões inválidos em JSX
+    if (line.match(/<[\[{]/) && ext.match(/\.jsx|\.tsx/)) {
+      errors.push(`Linha ${lineNum}: Padrão JSX suspeito — verifique sintaxe de tags`);
+    }
+  }
+
+  return { passed: errors.length === 0, errors };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. TYPESCRIPT VALIDATOR — Roda tsc --noEmit para validar sintaxe
+// ═══════════════════════════════════════════════════════════════════════════
+
+function typeScriptValidate(filePath) {
+  const errors = [];
+  const ext = path.extname(filePath);
+
+  if (ext !== '.ts' && ext !== '.tsx') {
+    return { passed: true, errors };
+  }
+
+  const dir = path.dirname(filePath);
+
+  // Procura tsconfig.json subindo a árvore
+  let tsconfigDir = dir;
+  let foundTsconfig = false;
+  for (let i = 0; i < 5; i++) {
+    if (fs.existsSync(path.join(tsconfigDir, 'tsconfig.json'))) {
+      foundTsconfig = true;
+      break;
+    }
+    const parent = path.dirname(tsconfigDir);
+    if (parent === tsconfigDir) break;
+    tsconfigDir = parent;
+  }
+
+  try {
+    let cmd;
+    if (foundTsconfig) {
+      // Usa o tsconfig do projeto — mais preciso
+      cmd = `npx tsc --noEmit --skipLibCheck -p ${tsconfigDir}`;
+    } else {
+      // Sem tsconfig — valida só o arquivo
+      cmd = `npx tsc --noEmit --skipLibCheck --jsx react --esModuleInterop --target ES2020 --moduleResolution node ${filePath}`;
+    }
+
+    execSync(cmd, {
+      cwd: foundTsconfig ? tsconfigDir : dir,
+      encoding: 'utf8',
+      timeout: 60000,
+      stdio: 'pipe',
+    });
+    return { passed: true, errors };
+  } catch (e) {
+    const output = e.stdout || e.stderr || e.message || '';
+    // Extrai apenas os erros relevantes ao arquivo
+    const lines = output.split('\n');
+    for (const line of lines) {
+      // Filtro: só incluir erros do arquivo em questão
+      if (line.includes(path.basename(filePath))) {
+        errors.push(line.trim());
+      }
+    }
+    // Se não conseguiu filtrar por basename, inclui tudo (fallback)
+    if (errors.length === 0) {
+      const errorLines = lines.filter(l => /error TS\d+/.test(l));
+      errors.push(...errorLines.slice(0, 10));
+    }
+    return { passed: false, errors: errors.slice(0, 15) };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -400,4 +592,7 @@ module.exports = {
   runBuildCheck,
   checkIndexHtml,
   validateProject,
+  syntaxGuard,
+  typeScriptValidate,
+  autoFix,
 };

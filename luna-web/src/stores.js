@@ -38,12 +38,21 @@ function createPersistentSessionStore() {
 
 export const currentSessionId = createPersistentSessionStore();
 export const isStreaming = writable(false);
-export const currentMode = writable('thinking');
+export const currentMode = writable('instant');
 export const messages = writable([]);
 export const lunaConfig = writable({});
 export const connectionStatus = writable('connected');
 export const user = writable(null);
 export const authToken = writable(localStorage.getItem('luna_token') || null);
+
+// v9.1-fix: lunaStore for ChatHeader status indicators
+export const lunaStore = derived(
+  [connectionStatus, isStreaming],
+  ([$connectionStatus, $isStreaming]) => ({
+    isLoading: $isStreaming,
+    isOnline: $connectionStatus === 'connected'
+  })
+);
 
 export const currentSession = derived(
   [sessions, currentSessionId],
@@ -96,3 +105,6 @@ export const voiceState = writable({
 
 // Real-time audio frequency data (Uint8Array, 64 bins)
 export const voiceAudioData = writable(new Uint8Array(64));
+
+// v9.3: Active modal for rich slash command responses
+export const activeModal = writable(null); // null | 'tasks' | 'leads' | 'finance' | 'voting' | 'ideas' | 'links' | 'emails' | 'whatsapp' | 'config'

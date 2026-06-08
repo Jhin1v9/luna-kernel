@@ -1,293 +1,233 @@
-# Luna Kernel — Agent Documentation
+# AGENTS.md — Luna Web
 
-> **Last Updated**: 2026-06-03  
-> **Version**: v7.7  
-> **Status**: Production-ready
+> "README for machines." This file guides AI coding assistants working on the Luna Web project.
 
 ---
 
-## 1. Architecture Overview
+## Overview
 
-Luna is an autonomous agent that controls Kimi Web (kimi.com) via Chrome, using Playwright's CDP (Chrome DevTools Protocol) connection. The system is composed of:
+Luna Web is a Svelte 4 SPA that serves as the frontend for **Luna** — an AI assistant powered by Kimi Web (via a Chrome/Playwright bridge). The app features real-time SSE streaming, tool execution cards, plan mode, and integrated dashboards (Tasks, Leads, Finance).
 
-| Component | File | Responsibility |
-|-----------|------|---------------|
-| **Luna Server** | `luna-server.js` | Express API, SSE streaming, session management |
-| **Kimi Bridge** | `kimi-bridge.cjs` | Playwright CDP automation, DOM reading, tool execution |
-| **Luna Soul** | `luna-soul.cjs` | Orchestration loop, prompt construction, mode management |
-| **Luna Web** | `luna-web/dist/` | Svelte frontend for chat UI |
-| **Chrome Extension** | `luna-extension/` | Minimal compatibility shim (v7.5+) |
-
----
-
-## 2. Core Design Principles
-
-### 2.1 No JavaScript Injection into the Page
-
-**CRITICAL**: As of v7.5, Luna does **NOT** inject persistent JavaScript into kimi.com pages.
-
-Previous versions (v7.0–v7.4) relied on:
-- `window.__lunaStream` — injected via `page.evaluate()` and `addInitScript()`
-- `window.__lunaEventQueue` — DOM MutationObserver injected into the page
-- `kimi-bridge-interceptor-toolcalls.js` — fetch/XHR interceptor
-
-**These approaches were fragile** because:
-1. kimi.com's React app restores native `fetch` after detecting tampering
-2. SPA navigation (`history.pushState`) clears injected scripts
-3. The extension's `injected.js` was re-injected every 5s as a hacky workaround
-
-**v7.5 Solution**: All network interception and DOM reading happens **server-side** via Playwright/CDP native APIs. The page is treated as a black box — we observe it, never modify it.
-
-### 2.2 CDP-Based Network Interception (Primary)
-
-The `KimiNetworkInterceptor` class uses Chrome DevTools Protocol's `Fetch` domain to intercept API responses **server-side**:
-
+**Architecture:**
 ```
-CDP Session → Fetch.enable({ patterns: [...] })
-              ↓
-         Fetch.requestPaused event
-              ↓
-         Fetch.getResponseBody(requestId)
-              ↓
-         Parse SSE chunks server-side
-              ↓
-         Accumulate reasoning[] + content[]
-```
-
-**Advantages**:
-- Immune to page anti-tampering
-- Survives SPA navigation
-- No reliance on `window.__lunaStream` or any page-global state
-- Falls back to `page.on('response')` if CDP Fetch is unavailable
-
-### 2.3 On-Demand DOM Polling (Secondary)
-
-During active streaming, the DOM poller reads the page state every 2 seconds using **fresh** `page.evaluate()` calls:
-
-```js
-// Each poll is independent — no persistent observers
-const result = await page.evaluate(() => {
-  const assistants = document.querySelectorAll('.segment-assistant');
-  const lastAssistant = assistants[assistants.length - 1];
-  // Extract thinking from .thinking-container
-  // Extract response from .segment-content-box
-  return { thinking, response };
-});
-```
-
-**Key insight**: Because each `evaluate()` is a fresh call, it always reads the CURRENT DOM state. There is no observer that can die or get out of sync.
-
-### 2.4 Assistant Index Tracking
-
-The `sendMessageStream` tracks the **exact assistant index** created during the stream:
-
-```js
-const preSendAssistantCount = await page.evaluate(() =>
-  document.querySelectorAll('.segment-assistant').length
-);
-// ... message sent ...
-const targetAssistantIndex = preSendAssistantCount; // The newly created assistant
-```
-
-This prevents the "wrong assistant" bug where `_extractResponse` would read a confirmation message that appeared AFTER the tool call.
-
----
-
-## 3. Data Flow
-
-```
-User Message → Luna Server → Luna Soul → Kimi Bridge
-                                          ↓
-                                    Create/Reset Network Interceptor
-                                          ↓
-                                    Send Message to Kimi Web
-                                          ↓
-                                    [DOM Poller] ← reads DOM every 2s
-                                          ↓
-                                    [CDP Fetch] ← captures API responses
-                                          ↓
-                                    Stream Consumer reads from DOM Event Queue
-                                          ↓
-                                    Detect completion → _extractResponse()
-                                          ↓
-                                    Network Interceptor (primary) or DOM (fallback)
-                                          ↓
-                                    _extractJsonToolCalls() — robust JSON parser
-                                          ↓
-                                    Execute tool → Send result back to Kimi
-                                          ↓
-                                    Yield 'done' event → Luna Soul → Frontend
+User → Luna Web (Svelte) → luna-server (Node) → luna-soul.cjs → kimi-bridge.cjs → Kimi Web (Chrome)
+                                        ↓
+                                   luna-tools.cjs → Dashboard API (NEXO)
 ```
 
 ---
 
-## 4. Key Components
+## Tech Stack
 
-### 4.1 KimiNetworkInterceptor
-
-**Location**: `kimi-bridge.cjs` (top-level class)
-
-**Purpose**: Server-side network interception using CDP Fetch domain.
-
-**Lifecycle**:
-1. Created per-user, per-page via `_getOrCreateInterceptor(userId)`
-2. `start()` — attaches CDP session and enables Fetch domain
-3. `reset()` — clears accumulated reasoning/content before each new message
-4. `getData()` — returns `{ thinking, response, hasData, source }`
-5. `stop()` — detaches CDP session on cleanup
-
-**Implementation Details**:
-- Uses `page.context().newCDPSession(page)` to create a dedicated CDP session
-- Listens to `Fetch.requestPaused` events matching `*kimi*chat*` and `*api/chat*`
-- Calls `Fetch.getResponseBody(requestId)` to read response body
-- Always calls `Fetch.continueRequest(requestId)` so the page works normally
-- Falls back to `page.on('response')` if CDP Fetch fails
-
-### 4.2 _pollThinkingAndResponse
-
-**Purpose**: Reads the current thinking/response state from the page.
-
-**Priority Order**:
-1. **Network Interceptor** — if `hasData`, return immediately (most reliable)
-2. **Legacy JS Interceptor** — transitional, will be removed in v8.0
-3. **DOM Structure-Based** (Layer 2.5) — reads `.segment-assistant:last-of-type` with thinking/response separation heuristics
-4. **DOM Fallback** (Layer 2–4) — React Fiber inspection + style heuristics
-
-**Thinking/Response Separation**:
-- Thinking is extracted from `.toolcall-container.thinking-container`
-- Response is extracted from `.segment-content-box`, skipping thinking containers
-- If `thinkContainer` exists, any free-text before the first code block/JSON is moved to thinking
-- Safety net: if response looks like thinking (short + thinking starters + no JSON), swap to thinking
-
-### 4.3 _extractResponse
-
-**Purpose**: Extracts the FINAL response after stream completion.
-
-**Strategies** (in order):
-1. **Network Interceptor** — uses accumulated response from CDP Fetch
-2. **Target Assistant Index** — extracts from the specific assistant created during this stream
-3. **Last Assistant** — fallback if target index fails
-4. **Smart Fallback** — if extracted text looks like thinking but `lastResponse` has JSON/code, use `lastResponse`
-
-### 4.4 _extractJsonToolCalls
-
-**Purpose**: Robust JSON tool call extraction without regex.
-
-**Algorithm**:
-1. Extract from code blocks: ` ```json {...} ``` `
-2. Extract raw JSON objects with `"tool"` field using brace-counting `{...}`
-3. Try `JSON.parse()` on each candidate
-4. Deduplicate by tool+params hash
-
-**Why no regex?**
-- Regex breaks with whitespace variations, newlines, escaped quotes
-- `JSON.parse()` is the only reliable way to validate JSON structure
-- Brace-counting ensures complete objects are extracted even when nested
+- **Frontend:** Svelte 4, Vite, vanilla CSS (custom properties), highlight.js
+- **Backend:** Node.js, Express, SSE (Server-Sent Events)
+- **Bridge:** Playwright + Chrome Extension (DOM observation)
+- **Deployment:** PM2 (`luna-server` on port 3458)
 
 ---
 
-## 5. Configuration
-
-### 5.1 Chrome Startup
-
-Chrome is started via `checkChrome()` in `kimi-bridge.cjs` with:
+## Commands
 
 ```bash
-google-chrome \
-  --remote-debugging-port=9222 \
-  --load-extension=/home/jhin/.luna-kernel/luna-extension/ \
-  --user-data-dir=/home/jhin/.luna/chrome-profile \
-  --no-first-run \
-  --no-default-browser-check
+# Dev (hot reload)
+cd /home/jhin/.luna-kernel/luna-web && npm run dev
+
+# Production build
+cd /home/jhin/.luna-kernel/luna-web && npm run build
+
+# Restart server after build
+pm2 restart luna-server
+
+# Check logs
+pm2 logs luna-server
+pm2 logs luna-server --err
 ```
 
-The extension is now a **minimal shim** (v1.0.0-ext-v7.5) that only creates `window.__lunaEventQueue` for legacy code compatibility.
+---
 
-### 5.2 Environment Variables
+## Project Structure
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHROME_CDP_URL` | `http://127.0.0.1:9222` | Chrome DevTools Protocol endpoint |
-| `KIMI_MAX_PAGES` | `999` | Max concurrent Playwright pages |
-| `LUNA_DATA_DIR` | `~/.luna-kernel` | Kernel data directory |
+```
+luna-web/
+├── src/
+│   ├── components/          # Svelte components
+│   │   ├── ChatArea.svelte       # Main chat — SSE connection, event handlers
+│   │   ├── MessagesList.svelte   # Renders message list
+│   │   ├── AssistantMessage.svelte
+│   │   ├── UserMessage.svelte
+│   │   ├── ThinkingBubble.svelte
+│   │   ├── TypingIndicator.svelte
+│   │   ├── ToolCard.svelte
+│   │   ├── Sidebar.svelte        # Session list + search
+│   │   ├── TaskDashboardModal.svelte
+│   │   ├── LeadDashboardModal.svelte
+│   │   └── ConfigDrawer.svelte
+│   ├── stores.js            # Svelte stores (messages, sessions, currentMode, etc.)
+│   ├── api.js               # HTTP API + SSEManager class
+│   ├── utils.js             # formatTime, scrollManager, etc.
+│   └── App.svelte
+├── dist/                    # GENERATED — never edit manually
+├── public/
+└── index.html
+
+Backend (sibling to luna-web/):
+├── luna-soul.cjs            # Main orchestrator — message loop, tool execution
+├── kimi-bridge.cjs          # Playwright bridge to Kimi Web
+├── luna-tools.cjs           # Tool implementations (file ops, dashboard APIs)
+├── luna-tool-guard.cjs      # Safety guard for destructive operations
+└── luna-chat-routes.js      # Express routes for chat API + SSE
+```
 
 ---
 
-## 6. Best Practices for Agents
+## Code Style
 
-### 6.1 When Modifying the Bridge
-
-1. **Never add page-level JavaScript injection** — use CDP or `page.evaluate()` on demand
-2. **Always prefer Network Interceptor over DOM polling** — it's more reliable
-3. **Use `JSON.parse()` for JSON extraction** — never regex
-4. **Track assistant indices** — don't assume `:last-of-type` is the correct assistant
-5. **Reset state between messages** — call `interceptor.reset()` before each send
-
-### 6.2 When Debugging
-
-1. Check `~/.pm2/logs/luna-server-out.log` for `[KimiNetworkInterceptor]` messages
-2. Verify CDP Fetch is active: look for `Started — listening via CDP Fetch domain`
-3. If CDP Fetch fails, fallback to `page.on('response')` is logged
-4. DOM poller logs show `source=dom-structure` or `source=dom-fallback`
-
-### 6.3 Testing Changes
-
-1. Send a test message with `mode=thinking`
-2. Verify `thinking` and `response` are separate in logs
-3. Verify tool calls execute (files are created)
-4. Send a follow-up message in the same session
-5. Verify no cross-message contamination (thinking from msg 1 doesn't leak into msg 2)
+- **Svelte:** Use `<script>` at top, then template, then `<style>`.
+- **CSS:** Use CSS custom properties (`--luna-*`). Dark theme only.
+- **Naming:** camelCase for JS/variables, kebab-case for CSS classes.
+- **Stores:** Import from `../stores.js`. Never create ad-hoc event buses.
+- **Icons:** Inline SVGs. Never add icon libraries.
 
 ---
 
-## 7. Known Limitations
+## Event Flow (Critical)
 
-1. **CDP Fetch domain availability**: Requires Chrome 100+. Falls back to `page.on('response')` on older versions.
-2. **SSE real-time capture**: CDP Fetch captures response bodies when the request is paused. For very long SSE streams, DOM polling provides better real-time updates.
-3. **Extension still loaded**: The Chrome extension is kept for legacy compatibility but is no longer functionally required.
+```
+1. User sends message → POST /api/chat
+2. luna-soul.cjs starts processMessageStream()
+3. Kimi bridge streams events (thinking_delta, response_delta, action_detected, ...)
+4. luna-chat-routes.js stores events in session memory
+5. SSE endpoint (/api/chat/stream) polls session every 100ms
+6. ChatArea.svelte receives events → updates messages store
+7. MessagesList.svelte renders components by message type
+```
+
+**Key events:**
+- `thinking_start/delta` → ThinkingBubble
+- `response_delta` → accumulated in buffer, flushed to AssistantMessage
+- `action_start/end` → ToolCard (source of truth for tool state)
+- `done` → stream ends
 
 ---
 
-## 8. Changelog
+## Key Patterns
 
-### v7.5 (2026-06-03)
-- **NEW**: `KimiNetworkInterceptor` — CDP Fetch domain-based network interception
-- **NEW**: `_extractJsonToolCalls()` — robust JSON parser replacing regex
-- **CHANGED**: `_extractResponse()` — unified DOM extraction, target assistant tracking
-- **CHANGED**: `_pollThinkingAndResponse()` — Network Interceptor as primary source
-- **REMOVED**: Dependency on `window.__lunaStream` and page-level JS injection
-- **REMOVED**: `_injectStreamInterceptor()`, `_injectDomObserver()`, `_injectEventQueueObserver()`
-- **SIMPLIFIED**: Chrome extension reduced to minimal compatibility shim
+### Response Buffer (v8.3+)
+`response_delta` events are buffered in `ChatArea.svelte` instead of rendered immediately. This prevents raw JSON/tool blocks from appearing during streaming. The buffer is flushed when:
+- A complete JSON wrapper is detected
+- `response_detected` or `done` arrives
 
-### v7.4 (2026-06-03)
-- Fixed `:last-of-type` bug — now uses `querySelectorAll` + array index
-- Fixed thinking/response separation in DOM structure-based extraction
-- Fixed duplicate tab issue — uses `defaultContext` instead of incognito contexts
+### Thinking vs Instant Mode
+- **THINKING/AGENT/SWARM:** Shows ThinkingBubble while processing
+- **INSTANT:** Shows TypingIndicator (dots animation), no thinking text
 
-### v7.3 (2026-06-02)
-- Added thinking/response separation heuristics
-- Added late action detection for fast JSON responses
-- Chrome auto-starts with `--load-extension`
+### Tool Card State
+ToolCard state is driven SOLELY by `action_start` → `action_end` events from the agent executor. Never rely on DOM mirroring for tool status.
 
-### v7.7 (2026-06-03) — INFALÍVEL
-- **Snapshot Diff extraction (`_extractResponseDiff`)**: Instead of guessing which assistant is "correct", capture ALL assistant texts BEFORE sending, then AFTER, and return the DIFFERENCE. This is immune to confirmation messages, multiple assistants, DOM changes, and index shifting.
-- **`_capturePreSendSnapshot`**: New method that captures the full innerText of every assistant before sending a message.
-- **Primary extraction strategy**: Both `sendMessageStream` and `sendMessage` now use `_extractResponseDiff` as the PRIMARY extraction method. Old `_extractResponse` is kept as fallback only.
+### Deduplication
+Multiple layers prevent duplicate tool execution:
+1. `kimi-bridge.cjs`: `emittedActionCodes` Set per stream
+2. `luna-soul.cjs`: `executedDomActionHashes` Set per message loop
+3. `luna-soul.cjs`: `_executedActionCache` Map per session (global, 5min TTL)
+4. `luna-tools.cjs`: Idempotency pre-check for createLead/createTask
 
-### v7.6 (2026-06-03)
-- **Assistant detection timeout**: Increased from 3s/5s to 10s in both `sendMessageStream` and `sendMessage`
-- **Content verification**: New assistant must have `textLength > 0` or `hasMarkdown` before being considered valid
-- **Network interceptor reset**: `sendMessage` now resets the interceptor to prevent stale data from previous messages
-- **`_waitForResponse` targeting**: Accepts optional `targetAssistantIndex` to monitor the correct assistant instead of always `.last()`
-- **Phase 0 timeout**: `sendMessageStream` now has a 60s timeout in Phase 0 to prevent infinite waiting when Kimi never generates text
-- **Tool deduplication**: `luna-soul.cjs` now deduplicates by both code hash AND tool+params hash to prevent infinite loops
+---
 
-### v7.2 (2026-06-02)
-- Late action detection: parses JSON in finalResponse for missed tool calls
+## Safety / Permissions
 
-### v7.1 (2026-06-02)
-- SSE reconnect fix in `ChatArea.svelte`
+### Allowed without approval
+- Read any source file
+- Edit frontend Svelte/CSS
+- Run `vite build` on luna-web
+- Run linters/formatters
+- Restart PM2 processes
 
-### v7.0 (2026-06-02)
-- Decoupled DOM event queue architecture
-- DOM poller runs independently of stream lifecycle
+### Require approval first
+- Modifying `luna-soul.cjs` or `kimi-bridge.cjs` (critical backend)
+- Installing new npm packages
+- Modifying PM2 ecosystem config
+- Git operations (commit, push)
+- Deleting files outside `luna-web/src/`
+
+---
+
+## Testing Changes
+
+1. Make frontend changes in `luna-web/src/`
+2. Run `cd luna-web && npm run build`
+3. If build succeeds: `pm2 restart luna-server`
+4. Open browser at `http://localhost:3458`
+5. Test the specific feature
+6. If broken: check `pm2 logs luna-server` and browser console
+
+**Never commit `dist/` manually** — it is regenerated by `vite build`.
+
+---
+
+## Common Gotchas
+
+- **`dist/` is generated.** Any manual edits are overwritten on build.
+- **SSE dedup:** The frontend `processedEventIds` Set prevents duplicate rendering on reconnects. If events look "stale", check the `messageId` filter.
+- **Buffer flush:** If assistant text seems delayed, the response buffer may be waiting for a complete JSON block. Check `flushResponseBuffer()` in ChatArea.
+- **Chrome Extension:** The extension (`kimi-bridge-interceptor-toolcalls.js`) runs in Chrome's MAIN world. If it fails, the Playwright fallback observer takes over.
+- **Mode switching:** `currentMode` store controls thinking vs instant behavior. Always update it via the store, not direct mutation.
+
+---
+
+## When Stuck
+
+- Ask a clarifying question instead of guessing
+- Check `pm2 logs` first for backend errors
+- Check browser DevTools Network tab for SSE events
+- The backup at `backup-luna-web-20260604-193703/` is the last known good version
+
+---
+
+## Refatoração v10.0 (2026-06-08)
+
+### Arquitetura
+
+```
+kimi-bridge.cjs (refatorado)
+├── bridge-libs/
+│   ├── async-mutex.cjs          # Lock FIFO por userId
+│   ├── circuit-breaker.cjs      # Estados CLOSED/OPEN/HALF_OPEN
+│   ├── process-registry.cjs     # Graceful shutdown (SIGTERM → SIGKILL)
+│   ├── config.cjs               # Constantes centralizadas
+│   ├── input-validator.cjs      # Guard clauses públicos
+│   ├── chrome-launcher.cjs      # Chrome .deb com PID específico
+│   ├── login-manager.cjs        # Verificação de login
+│   ├── dom-extractor.cjs        # Extração DOM (React Fiber removido)
+│   ├── bridge-session-manager.cjs # Gerenciamento de sessões
+│   ├── message-sender.cjs       # Unifica sendMessage/sendImage/stream
+│   └── dom-scripts/
+│       ├── poll-dom-structure.js
+│       └── detect-ui-state.js
+```
+
+### Mudanças críticas
+
+| Antes | Depois |
+|-------|--------|
+| Chrome deve estar aberto antes do servidor iniciar | **Lazy Connect**: servidor inicia sem Chrome, conecta na 1ª mensagem |
+| `pkill -f chrome` mata todos os processos | Kill por PID com graceful shutdown |
+| Timeouts infinitos (`timeout: 0`) | Timeouts absolutos de 30s |
+| `Semaphore` não existia no construtor | `this.semaphore = new Semaphore(this.maxPages)` — bug crítico corrigido |
+| Código monolítico (~6800 linhas) | Classes especializadas em `bridge-libs/` |
+| Sem health endpoint | `/api/system/health` com latência, memória, estado do browser |
+| Sem circuit breaker | Circuit breaker com 3 estados |
+
+### Bug crítico corrigido
+
+**`this.semaphore` faltava no construtor do `KimiBridge`** — quando nenhuma página existente podia ser reutilizada (porque estava atribuída a outro user), o código caía em `this.semaphore.acquire()` com `undefined`, causando `TypeError`. O generator do `sendMessageStream` lançava o erro, mas como o `for await` no `luna-soul.cjs` estava em um `try/catch` que tratava como bridge error, o stream parecia "travado" sem produzir eventos.
+
+### Lazy Connect
+
+O servidor agora inicia sem depender do Chrome:
+1. `lunaSoul.init()` cria `new KimiBridge()` mas NÃO chama `connect()`
+2. `_ensureBridgeConnected(userId)` conecta na primeira mensagem
+3. Chrome é descoberto automaticamente ou iniciado sob demanda via `ChromeLauncher`
+
+### Teste end-to-end validado
+
+Fluxo testado: `POST /api/chat/session` → `POST /api/chat` → lazy connect → CDP → mensagem enviada → resposta extraída → stream finalizado.

@@ -1,13 +1,17 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
-  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage } from '../stores.js';
+  import { get } from 'svelte/store';
+  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal } from '../stores.js';
   import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
   import MessagesList from './MessagesList.svelte';
   import ChatInput from './ChatInput.svelte';
-  import PersonaSelector from './PersonaSelector.svelte';
+  import TaskDashboardModal from './TaskDashboardModal.svelte';
+  import LeadDashboardModal from './LeadDashboardModal.svelte';
+  import FinanceDashboardModal from './FinanceDashboardModal.svelte';
+  import VotingDashboardModal from './VotingDashboardModal.svelte';
 
   export let sessionId = null;
 
@@ -16,11 +20,20 @@
   let thinkingId = null;
   let lastConnectedSessionId = null;
   let toolStartTimes = new Map(); // toolName -> startTimestamp
+  let toolTimeoutTimers = new Map(); // toolName -> timeout timer id
+  const TOOL_TIMEOUT_MS = 60000; // 60s timeout for any tool
   let processedEventIds = new Set(); // v4.2: Track processed SSE event IDs to prevent duplicates
   let userMessageAdded = false; // v5.6-fix: Ensure user message is in store before assistant responses
   let streamingSafetyTimer = null; // v5.7-fix: Detect SSE inactivity (NOT thinking time)
   let currentMessageId = null; // v6.1-fix: Track current message ID to ignore stale SSE events
+  let responseBuffer = ''; // v8.3-fix: Buffer response_delta to avoid showing raw JSON/tool blocks during streaming
+  let showTyping = false; // v8.3-fix: Show typing indicator for INSTANT mode
   const SSE_INACTIVITY_MS = 600000; // v8.2-fix: 10 min — user explicitly wants to wait for long operations
+  let flushedContentHashes = new Set(); // v9.1-fix: Track flushed content hashes to prevent duplicate assistant messages
+  let pendingToolCount = 0; // v9.3-fix: Track only CURRENT turn's tools, not full history
+  let runningToolTimers = new Map(); // v9.4-fix: toolId -> { intervalId, startTime } for real-time execution timer
+  const progressBuffers = new Map(); // v9.5: tool -> { chunks[], raf } for rAF batching of action_progress
+  let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
 
   // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
   // The timer is cleared but NEVER restarted, so SSE never aborts due to silence.
@@ -46,18 +59,238 @@
     return msgs.filter(m => m.type !== 'thinking');
   }
 
+  // v8.3-fix: Flush accumulated response buffer, parsing out any complete JSON blocks.
+  // Only creates/updates assistant bubble with CLEAN text (no raw tool JSON).
+  function flushResponseBuffer(forceText = null) {
+    const text = forceText !== null ? forceText : responseBuffer;
+    if (!text || !text.trim()) return;
+
+    // v9.0-fix: Strip tool blocks using the same logic as AssistantMessage
+    let cleanText = stripToolBlocksFromBuffer(text);
+    // v8.5-fix: removed aggressive meaningfulContent check that discarded short replies
+    if (!cleanText || !cleanText.trim()) {
+      if (forceText !== null) responseBuffer = '';
+      return;
+    }
+
+    // v9.1-fix: Deduplicate by content hash — prevents duplicate messages from multiple SSE events
+    // (response_delta + response_detected + done can all carry the same text)
+    const contentHash = hashContent(cleanText.trim());
+    if (flushedContentHashes.has(contentHash)) {
+      console.log('[flushResponseBuffer] Duplicate content hash detected, skipping');
+      if (forceText !== null) responseBuffer = '';
+      return;
+    }
+    // Also check if any recent assistant message has this exact content
+    const msgs = get(messages);
+    const recentAssistants = msgs.slice().reverse().filter(m => m.type === 'assistant').slice(0, 3);
+    const isDuplicate = recentAssistants.some(m => {
+      const existing = (m.content || '').trim();
+      return existing === cleanText.trim() || existing.includes(cleanText.trim());
+    });
+    if (isDuplicate) {
+      console.log('[flushResponseBuffer] Content already exists in recent assistant message, skipping');
+      if (forceText !== null) responseBuffer = '';
+      return;
+    }
+
+    flushedContentHashes.add(contentHash);
+    // v8.5-fix: Eviction when Set grows too large
+    if (flushedContentHashes.size > 1000) {
+      const iter = flushedContentHashes.values();
+      flushedContentHashes.delete(iter.next().value);
+    }
+
+    if (!currentAssistantId) {
+      currentAssistantId = 'resp-' + Date.now();
+      messages.update(msgs => [...msgs, {
+        id: currentAssistantId,
+        type: 'assistant',
+        content: cleanText,
+        timestamp: new Date().toISOString()
+      }]);
+    } else {
+      // v9.3-fix: forceText means COMPLETE text (response_detected/done) — REPLACE.
+      // No forceText means delta buffer flush — APPEND.
+      if (forceText !== null) {
+        messages.update(msgs =>
+          msgs.map(m => m.id === currentAssistantId
+            ? { ...m, content: cleanText }
+            : m
+          )
+        );
+      } else {
+        messages.update(msgs =>
+          msgs.map(m => m.id === currentAssistantId
+            ? { ...m, content: (m.content || '') + cleanText }
+            : m
+          )
+        );
+      }
+    }
+
+    if (forceText !== null) {
+      responseBuffer = '';
+    }
+  }
+
+  // v9.2-fix: Detect incomplete JSON blocks to prevent leaking raw tool JSON
+  // v8.5-fix: Only block if it looks like a Luna tool wrapper
+  function hasIncompleteJsonBlock(text) {
+    if (!text) return false;
+    const hasToolMarker = text.includes('"tool"') || text.includes('"params"');
+    if (!hasToolMarker) return false;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (!inString) {
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+      }
+    }
+    return depth > 0;
+  }
+
+  // v9.1-fix: Simple content hash for deduplication
+  function hashContent(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return String(hash);
+  }
+
+  // v9.0-fix: Reusable tool block stripper for buffer text
+  function stripToolBlocksFromBuffer(text) {
+    if (!text) return text;
+    let cleaned = text;
+
+    // Pass 1: JSON label + Copy + JSON block
+    cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*\n?/gi, '');
+    cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n?\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*\n?/gi, '');
+
+    // Pass 2: Code fences with tool JSON
+    cleaned = cleaned.replace(/```(?:json|javascript|js|text)?\s*\n?[\s\S]*?"tool"[\s\S]*?\n?```/gi, '');
+
+    // Pass 3: Inline JSON via brace counting — extract response wrappers, skip tool blocks
+    let result = '';
+    let i = 0;
+    while (i < cleaned.length) {
+      if (cleaned[i] === '{') {
+        let depth = 1, j = i + 1;
+        let inString = false, escape = false;
+        while (j < cleaned.length && depth > 0) {
+          const c = cleaned[j];
+          if (escape) escape = false;
+          else if (c === '\\') escape = true;
+          else if (c === '"') inString = !inString;
+          else if (!inString) { if (c === '{') depth++; else if (c === '}') depth--; }
+          j++;
+        }
+        if (depth === 0) {
+          const block = cleaned.slice(i, j);
+          // Extract {"response": "..."} wrappers — keep the response text
+          try {
+            const parsed = JSON.parse(block);
+            if (parsed.response !== undefined && typeof parsed.response === 'string') {
+              result += parsed.response;
+              i = j;
+              continue;
+            }
+          } catch {
+            // v9.3-fix: JSON.parse failed — try regex extraction for malformed response wrappers
+            const respMatch = block.match(/"response"\s*:\s*"((?:\\.|[^"\\])*)"/);
+            if (respMatch) {
+              result += respMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+              i = j;
+              continue;
+            }
+          }
+          // Skip tool call JSON blocks
+          if (/"tool"\s*:/.test(block)) { i = j; continue; }
+        }
+      }
+      result += cleaned[i];
+      i++;
+    }
+
+    // Pass 4: Clean up orphaned labels
+    result = result.replace(/\bCopy\b\s*(?:复制|複製)?\s*\n?/gi, '');
+    result = result.replace(/\bJSON\b\s*\n?/gi, '');
+
+    // Pass 5: Remove orphaned JSON punctuation (braces, brackets that leaked through)
+    // Matches lines that are ONLY JSON punctuation characters
+    result = result.replace(/^[\s]*[\}\]\)\,]+[\s]*$/gm, '');
+    // Remove stray "}" or "]" at start/end of lines
+    result = result.replace(/^[\s]*[\}\]\)]+/gm, '');
+    result = result.replace(/[\{\[\(]+[\s]*$/gm, '');
+
+    // v9.3-fix: Remove orphaned key-value fragments like "response": "..."} or "tool": "..."
+    result = result.replace(/"response"\s*:\s*"[^"]*"\s*\}?/gi, '');
+    result = result.replace(/"tool"\s*:\s*"[^"]*"\s*,?/gi, '');
+
+    // v9.5-fix: Remove inline JSON fragments that leaked through (e.g. tool params snippets)
+    // Matches things like: "params": {"command": "..."} or "params": {"path": "..."}
+    result = result.replace(/"params"\s*:\s*\{[^{}]*"(?:command|path|script|code|query)"[^{}]*\}/gi, '');
+    // Matches trailing JSON fragments like: teShell", "params": {...}
+    result = result.replace(/\w*"\s*,\s*"params"\s*:\s*\{[^{}]*\}/gi, '');
+    // Matches stray tool name fragments
+    result = result.replace(/"tool"\s*:\s*"[^"]*"\s*,?\s*"?\w*"?\s*[:\{\}]?/gi, '');
+
+    result = result.replace(/\n{3,}/g, '\n\n');
+    return result.trim();
+  }
+
+  // v9.5: rAF-batched progress chunk flushing — prevents UI freeze on fast streams
+  // v8.5-fix: Use toolMsgId instead of tool name to avoid collision between same-type tools
+  function flushProgressBuffer(toolMsgId) {
+    const buf = progressBuffers.get(toolMsgId);
+    if (!buf || buf.chunks.length === 0) return;
+    const batch = buf.chunks.splice(0);
+    buf.raf = null;
+    messages.update(msgs => {
+      const lastT = msgs.find(m => m.id === toolMsgId && m.type === 'tool');
+      if (lastT) {
+        return msgs.map(m =>
+          m.id === lastT.id
+            ? { ...m, liveOutput: (m.liveOutput || '') + batch.join('') }
+            : m
+        );
+      }
+      return msgs;
+    });
+  }
+  function queueProgressChunk(toolMsgId, chunk) {
+    let buf = progressBuffers.get(toolMsgId);
+    if (!buf) {
+      buf = { chunks: [], raf: null };
+      progressBuffers.set(toolMsgId, buf);
+    }
+    buf.chunks.push(chunk);
+    if (!buf.raf) {
+      buf.raf = requestAnimationFrame(() => flushProgressBuffer(toolMsgId));
+    }
+  }
+
   function getEventHash(event) {
     // v5.5-fix: Create a unique hash for an event based on its CONTENT + params, not id.
     // The backend generates unique ids per event ('ev-' + Date.now()), so using id
     // in the hash makes deduplication useless — duplicates have different ids.
     // For tool events, include params so two action_start's with different params
     // don't get incorrectly deduplicated.
-    const type = event.type || '';
-    const text = event.text || event.content || event.fullResponse || '';
+    const type = event.type || 'unknown';
     const tool = event.tool || '';
     const paramsKey = event.params ? JSON.stringify(event.params).slice(0, 50) : '';
-    // Use first 100 chars of text + type + tool + params to create a simple hash
-    const raw = `${type}:${tool}:${paramsKey}:${text.slice(0, 100)}`;
+    const text = event.text || event.content || event.fullResponse || '';
+    // v8.5-fix: include currentMessageId to prevent collision across different messages
+    const raw = `${currentMessageId || ''}:${type}:${tool}:${paramsKey}:${text.slice(0, 100)}`;
     let hash = 0;
     for (let i = 0; i < raw.length; i++) {
       const char = raw.charCodeAt(i);
@@ -71,6 +304,11 @@
     if (!event) return;
     if (event.sessionId && event.sessionId !== sessionId) return;
 
+    // v8.5-fix: Ignore fallback polling events while actively streaming
+    if (event.source === 'fallback' && $isStreaming) {
+      return;
+    }
+
     // v6.1-fix: If the event has a messageId that doesn't match the current message,
     // it's a stale event from a previous message — ignore it.
     if (event.messageId && currentMessageId && event.messageId !== currentMessageId) {
@@ -79,21 +317,38 @@
     }
 
     // v5.6-fix: Ignore response events until user message is confirmed in store
-    const isResponseEvent = ['assistant', 'thinking', 'response_detected', 'partial', 'done', 'tool', 'action_start', 'action_end'].includes(event.type);
+    const isResponseEvent = ['assistant', 'thinking', 'response_detected', 'partial', 'done', 'tool', 'action_start', 'action_end', 'action_progress'].includes(event.type);
     if (isResponseEvent && !userMessageAdded) {
       console.log('[SSE] Delaying response event until user message is added:', event.type);
-      setTimeout(() => handleEvent(event), 100);
+      // v9.0-fix: Retry with exponential backoff, max 10 attempts
+      event._retryCount = (event._retryCount || 0) + 1;
+      if (event._retryCount <= 10) {
+        setTimeout(() => handleEvent(event), 100 * event._retryCount);
+      } else {
+        console.warn('[SSE] Dropping event after 10 retries — user message never confirmed:', event.type);
+      }
       return;
     }
 
-    // v4.2-fix: Deduplicate by event hash — prevents duplicate rendering on reconnects
-    const eventHash = getEventHash(event);
-    if (processedEventIds.has(eventHash)) {
+    // v9.0-fix: Deduplicate by event hash — prevents duplicate rendering on reconnects
+    // NOTE: For action_start/action_end, we use a unique id-based key instead of hash
+    // to prevent deduplication of legit sequential tool calls of the same type.
+    let dedupKey;
+    if (event.type === 'action_start' || event.type === 'action_end' || event.type === 'action_progress') {
+      // v10.0-fix: Remove Date.now() from dedupKey — it prevented deduplication entirely,
+      // causing pendingToolCount to get stuck > 0 forever. The backend already generates
+      // unique ids per event, so tool+id is sufficient.
+      dedupKey = `tool:${event.type}:${event.tool || ''}:${event.id || ''}`;
+    } else {
+      dedupKey = getEventHash(event);
+    }
+    if (processedEventIds.has(dedupKey)) {
+      console.log('[SSE] Deduplicated:', event.type, event.tool || '', event.id || '');
       return;
     }
-    processedEventIds.add(eventHash);
-    // Limit set size to prevent memory leaks
-    if (processedEventIds.size > 1000) {
+    processedEventIds.add(dedupKey);
+    // Limit set size to prevent memory leaks — increased to 5000 for long sessions
+    if (processedEventIds.size > 5000) {
       const iter = processedEventIds.values();
       processedEventIds.delete(iter.next().value);
     }
@@ -137,58 +392,31 @@
         playSound('thinkingStart');
         mascotState.set('thinking');
         mascotMessage.set('Hmm... deixa eu pensar...');
-        messages.update(msgs => {
-          // v4.0-fix: If there's already an active thinking bubble, reuse it
-          const existingThink = msgs.find(m => m.type === 'thinking');
-          if (existingThink) {
-            thinkingId = existingThink.id;
-            return msgs;
-          }
-          const cleaned = removeAllThinking(msgs);
-          const newId = 'think-' + Date.now();
-          thinkingId = newId;
-          return [...cleaned, {
-            id: newId,
-            type: 'thinking',
-            content: '',
-            timestamp: new Date().toISOString()
-          }];
-        });
+        // v8.5-fix: Unify INSTANT and THINKING modes — always use typing indicator, never thinking bubble
+        showTyping = true;
+        // Clean up any old thinking bubbles from previous messages
+        messages.update(msgs => removeAllThinking(msgs));
+        thinkingId = null;
         break;
       }
       case 'thinking_delta': {
-        // v5.3-fix: Auto-create thinking bubble if it doesn't exist yet.
-        // The bridge doesn't always emit 'thinking_start', so we create on demand.
-        if (!thinkingId) {
-          const newId = 'think-' + Date.now();
-          thinkingId = newId;
-          messages.update(msgs => [...removeAllThinking(msgs), {
-            id: newId,
-            type: 'thinking',
-            content: event.text || '',
-            timestamp: new Date().toISOString()
-          }]);
-        } else {
-          messages.update(msgs =>
-            msgs.map(m => {
-              if (m.id !== thinkingId) return m;
-              const newText = event.text || '';
-              const current = m.content || '';
-              // v4.2-fix: If delta looks like full replacement (larger than current + 50%),
-              // replace instead of append to avoid repetition on DOM shrink
-              if (newText.length > current.length * 1.5 && newText.includes(current.slice(0, 20))) {
-                return { ...m, content: newText };
-              }
-              return { ...m, content: current + newText };
-            })
-          );
-        }
+        // v8.5-fix: Ignore thinking deltas in both instant and thinking modes
         break;
       }
       case 'response_delta': {
         playSound('messageReceived');
-        // v5.5-fix: Don't immediately kill thinking bubble — give user visual feedback.
-        // If thinking was created less than 2s ago, keep it visible briefly.
+        const deltaText = event.text || '';
+        // v7.0-fix: Don't process empty deltas.
+        if (!deltaText) {
+          break;
+        }
+
+        // v8.3-fix: Buffer response_delta instead of immediately rendering.
+        // This prevents raw JSON/tool blocks from appearing during streaming.
+        responseBuffer += deltaText;
+
+        // Hide thinking/typing when response starts arriving
+        showTyping = false;
         let thinkRemoved = false;
         messages.update(msgs => {
           const thinkMsg = msgs.find(m => m.type === 'thinking');
@@ -200,151 +428,168 @@
         });
         if (thinkRemoved) thinkingId = null;
 
-        const deltaText = event.text || '';
-        // v7.0-fix: Don't create empty assistant bubbles from empty deltas.
-        // Empty deltas can arrive when the DOM observer returns empty text temporarily.
-        if (!currentAssistantId && !deltaText) {
-          break;
-        }
-
-        if (!currentAssistantId) {
-          currentAssistantId = 'resp-' + Date.now();
-          messages.update(msgs => [...msgs, {
-            id: currentAssistantId,
-            type: 'assistant',
-            content: deltaText,
-            timestamp: new Date().toISOString()
-          }]);
-        } else {
-          messages.update(msgs =>
-            msgs.map(m => {
-              if (m.id !== currentAssistantId) return m;
-              const newText = deltaText;
-              const current = m.content || '';
-              // v5.3-fix: If delta looks like full replacement (larger than current + 50%
-              // and contains current start), replace instead of append to avoid duplication
-              // when Kimi DOM shrinks and bridge sends full text instead of delta
-              if (newText.length > current.length * 1.5 && newText.includes(current.slice(0, 20))) {
-                return { ...m, content: newText };
-              }
-              return { ...m, content: current + newText };
-            })
-          );
+        // v9.2-fix: Only flush if there's no incomplete JSON block in the buffer.
+        // Flushing incomplete JSON causes raw tool JSON to leak into the chat.
+        if (!hasIncompleteJsonBlock(responseBuffer)) {
+          flushResponseBuffer();
         }
         break;
       }
       case 'response_detected': {
-        // v5.4-fix: JSON-block responses from Kimi — each one is a COMPLETE message.
-        // If we already have an assistant bubble created recently (from response_delta),
-        // replace it instead of creating a duplicate bubble.
+        // v8.3-fix: response_detected carries the FULL extracted response.
+        // Add to buffer and flush immediately since this is a complete chunk.
         playSound('messageReceived');
-        // v5.5-fix: Same as response_delta — preserve thinking briefly for visual feedback
-        let thinkRemoved = false;
-        messages.update(msgs => {
-          const thinkMsg = msgs.find(m => m.type === 'thinking');
-          if (thinkMsg && Date.now() - new Date(thinkMsg.timestamp).getTime() < 2000) {
-            return msgs;
-          }
-          thinkRemoved = true;
-          return removeAllThinking(msgs);
-        });
-        if (thinkRemoved) thinkingId = null;
+        showTyping = false;
 
         const newContent = event.text || event.response || '';
-        
-        // v7.0-fix: If newContent is empty, don't create an empty bubble.
-        // This can happen when the DOM observer dies and response_detected fires
-        // without extracted text. The 'done' event will provide the fallback.
         if (!newContent || newContent.trim().length === 0) {
-          console.warn('[ChatArea] response_detected with empty content — skipping bubble creation, waiting for done');
+          console.warn('[ChatArea] response_detected with empty content — skipping, waiting for done');
           break;
         }
-        
-        // Check if current assistant bubble was created recently (within last 10s).
-        // response_delta often accumulates partial content before response_detected
-        // emits the complete JSON-extracted version. We should replace, not duplicate.
-        let replaced = false;
-        if (currentAssistantId) {
-          messages.update(msgs => {
-            const currentMsg = msgs.find(m => m.id === currentAssistantId);
-            if (currentMsg && currentMsg.type === 'assistant') {
-              const msgAge = Date.now() - new Date(currentMsg.timestamp).getTime();
-              // If message is recent (< 10s), it's likely from response_delta — replace it
-              if (msgAge < 10000) {
-                replaced = true;
-                return msgs.map(m =>
-                  m.id === currentAssistantId
-                    ? { ...m, content: newContent }
-                    : m
-                );
-              }
-            }
-            return msgs;
-          });
-        }
 
-        if (!replaced) {
-          // No duplicate found — create new bubble
-          currentAssistantId = null;
-          const bubbleId = 'resp-' + Date.now();
-          messages.update(msgs => [...msgs, {
-            id: bubbleId,
-            type: 'assistant',
-            content: newContent,
-            timestamp: new Date().toISOString()
-          }]);
-          currentAssistantId = bubbleId;
-        }
+        // v9.0-fix: response_detected carries the FULL extracted response.
+        // Flush it directly (force) instead of appending to buffer to avoid duplicates.
+        flushResponseBuffer(newContent);
         break;
       }
       case 'action_start': {
         mascotState.set('working');
         mascotMessage.set(event.tool ? `Usando ${event.tool}...` : 'Trabalhando...');
+        pendingToolCount++; // v9.3-fix
         const toolId = 'tool-' + Date.now();
+        const backendToolId = event.toolInstanceId || event.id || ('tool-' + Date.now());
+        toolInstanceMap.set(backendToolId, toolId);
         toolStartTimes.set(event.tool, Date.now());
+
+        // v9.5-fix: Close the current assistant bubble before showing the tool card.
+        // This ensures the NEXT assistant response starts as a NEW message below the tool,
+        // instead of being appended to the previous assistant message.
+        // Also remove the last assistant message if it only contains leaked tool JSON or is empty.
+        messages.update(msgs => {
+          if (msgs.length === 0) return msgs;
+          const lastIdx = msgs.length - 1;
+          const lastMsg = msgs[lastIdx];
+          if (lastMsg && lastMsg.type === 'assistant') {
+            const content = lastMsg.content || '';
+            const stripped = stripToolBlocksFromBuffer(content);
+            const hasToolJson = /"tool"\s*:/.test(content) || /"params"\s*:\s*\{/.test(content) || /"command"\s*:/.test(content);
+            // Remove if it's raw JSON, empty after stripping, or very short (likely just a tool call)
+            if (hasToolJson || !content.trim() || !stripped.trim() || stripped.trim().length < 10) {
+              console.log('[action_start] Removing leaked/empty assistant message before tool card');
+              return msgs.slice(0, -1);
+            }
+          }
+          return msgs;
+        });
+        // CRITICAL: Reset assistant tracking so the next response becomes a NEW message
+        currentAssistantId = null;
+        responseBuffer = '';
+
         messages.update(msgs => [...msgs, {
           id: toolId,
           type: 'tool',
           tool: event.tool,
+          backendToolId,
           params: event.params || {},
           result: null,
           duration: 0,
+          status: 'running', // v9.4-fix
+          liveOutput: '',
           timestamp: new Date().toISOString()
         }]);
+        
+        // v9.4-fix: Start real-time execution timer
+        const timerStart = Date.now();
+        const intervalId = setInterval(() => {
+          const elapsed = ((Date.now() - timerStart) / 1000).toFixed(1);
+          mascotMessage.set(`${event.tool || 'Tool'}... ${elapsed}s`);
+          messages.update(msgs => {
+            const toolMsg = msgs.find(m => m.id === toolId);
+            if (toolMsg && toolMsg.status === 'running') {
+              return msgs.map(m => m.id === toolId ? { ...m, duration: parseFloat(elapsed) } : m);
+            }
+            return msgs;
+          });
+        }, 100);
+        runningToolTimers.set(toolId, { intervalId, startTime: timerStart });
+        break;
+      }
+      case 'action_progress': {
+        if (!event.chunk) break;
+        const targetToolId = toolInstanceMap.get(event.toolInstanceId || event.id);
+        if (targetToolId) {
+          queueProgressChunk(targetToolId, event.chunk);
+        } else {
+          queueProgressChunk(event.tool, event.chunk);
+        }
         break;
       }
       case 'action_end': {
         playSound('toolComplete');
-        mascotState.set('idle');
-        mascotMessage.set('Prontinho!');
-        // Calculate duration locally if backend doesn't send it
-        const startTime = toolStartTimes.get(event.tool);
-        let duration = event.duration;
-        if (!duration && startTime) {
-          duration = (Date.now() - startTime) / 1000; // seconds
+        // v9.4-fix: Stop real-time timer and get accurate duration
+        // v8.5-fix: Use toolInstanceMap to match by backend toolInstanceId
+        const msgs = get(messages);
+        const targetToolId = toolInstanceMap.get(event.toolInstanceId || event.id);
+        let lastTool = targetToolId ? msgs.find(m => m.id === targetToolId) : null;
+        if (lastTool) {
+          toolInstanceMap.delete(event.toolInstanceId || event.id);
+        }
+        // Fallback to old behavior if not found
+        if (!lastTool) {
+          const toolMsgs = msgs.filter(m => m.type === 'tool' && m.tool === event.tool && !m.result);
+          lastTool = toolMsgs[toolMsgs.length - 1];
+        }
+        let duration = 0;
+        if (lastTool) {
+          const timerInfo = runningToolTimers.get(lastTool.id);
+          if (timerInfo) {
+            clearInterval(timerInfo.intervalId);
+            runningToolTimers.delete(lastTool.id);
+            duration = ((Date.now() - timerInfo.startTime) / 1000).toFixed(1);
+          } else {
+            // Fallback to backend duration if available
+            duration = event.result?._meta?.duration ? (event.result._meta.duration / 1000).toFixed(1) : 0;
+          }
         }
         toolStartTimes.delete(event.tool);
+        // v9.5: Flush any pending progress buffer immediately so final output is complete
+        flushProgressBuffer(lastTool ? lastTool.id : event.tool);
+        progressBuffers.delete(lastTool ? lastTool.id : event.tool);
+        const isSuccess = event.result?.success !== false;
         messages.update(msgs => {
-          const toolMsgs = msgs.filter(m => m.type === 'tool' && m.tool === event.tool && !m.result);
-          const lastTool = toolMsgs[toolMsgs.length - 1];
-          if (lastTool) {
+          const tMsgs = msgs.filter(m => m.type === 'tool' && m.tool === event.tool && !m.result);
+          const lastT = tMsgs[tMsgs.length - 1];
+          if (lastT) {
             return msgs.map(m =>
-              m.id === lastTool.id
-                ? { ...m, result: event.result, duration: duration || 0 }
+              m.id === lastT.id
+                ? { ...m, result: event.result, duration: parseFloat(duration), status: isSuccess ? 'completed' : 'failed' }
                 : m
             );
           }
           return msgs;
         });
+        
+        // v9.3-fix: Decrement and check ONLY current turn's tools
+        pendingToolCount = Math.max(0, pendingToolCount - 1);
+        if (pendingToolCount <= 0) {
+          mascotState.set('idle');
+          mascotMessage.set('O que mais posso fazer?');
+          isStreaming.set(false);
+        } else {
+          mascotMessage.set('Próxima tool...');
+        }
         break;
       }
       case 'response_done': {
-        if (currentAssistantId && event.response) {
-          messages.update(msgs =>
-            msgs.map(m => m.id === currentAssistantId ? { ...m, content: event.response } : m)
-          );
+        showTyping = false;
+        // v8.3-fix: Flush any remaining buffer with the final response
+        const finalText = event.response || event.text || '';
+        if (finalText) {
+          responseBuffer = finalText;
+          flushResponseBuffer(finalText);
         }
         currentAssistantId = null;
+        responseBuffer = '';
         break;
       }
       case 'context_limit': {
@@ -364,63 +609,54 @@
         break;
       }
       case 'done': {
-        mascotState.set('idle');
-        mascotMessage.set('O que mais posso fazer?');
+        showTyping = false;
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         const finalResponse = event.result?.response || event.response || event.text;
         console.log('[done] finalResponse length:', finalResponse?.length, 'content:', finalResponse?.substring(0, 100));
+
+        // v8.5-fix: prevent duplicate final message if response_done already handled it
+        const msgs = get(messages);
+        const alreadyHasDone = msgs.some(m => m.messageId === (event.messageId || currentMessageId) && m.type === 'done');
+        if (alreadyHasDone) {
+          console.log('[DEBUG-LUNA] Skipping duplicate done event');
+          break;
+        }
         
-        // v7.0-fix: Robust fallback — always ensure an assistant bubble exists with the final response.
-        // Cases handled:
-        //   1. No assistant bubble at all (currentAssistantId is null) → create one
-        //   2. Assistant bubble exists but is empty → update it
-        //   3. Assistant bubble exists with content → update with final (may be more complete)
-        if (finalResponse) {
-          let hasAssistantBubble = false;
-          let assistantBubbleEmpty = false;
-          messages.update(msgs => {
-            if (currentAssistantId) {
-              const currentMsg = msgs.find(m => m.id === currentAssistantId);
-              if (currentMsg && currentMsg.type === 'assistant') {
-                hasAssistantBubble = true;
-                assistantBubbleEmpty = !currentMsg.content || currentMsg.content.trim().length === 0;
-              }
-            }
-            // Also check if there's ANY assistant message without content
-            const emptyAssistant = msgs.find(m => m.type === 'assistant' && (!m.content || m.content.trim().length === 0));
-            if (emptyAssistant && !currentAssistantId) {
-              currentAssistantId = emptyAssistant.id;
-              assistantBubbleEmpty = true;
-            }
-            return msgs;
-          });
-          
-          if (!hasAssistantBubble || assistantBubbleEmpty) {
-            // Create new bubble if none exists or existing is empty
-            const bubbleId = currentAssistantId || ('resp-' + Date.now());
-            if (!currentAssistantId) {
-              messages.update(msgs => [...msgs, {
-                id: bubbleId,
-                type: 'assistant',
-                content: finalResponse,
-                timestamp: new Date().toISOString()
-              }]);
-              currentAssistantId = bubbleId;
-            } else {
-              messages.update(msgs =>
-                msgs.map(m => m.id === currentAssistantId ? { ...m, content: finalResponse } : m)
-              );
-            }
-          } else if (currentAssistantId) {
-            // Update existing non-empty bubble with final response
-            messages.update(msgs =>
-              msgs.map(m => m.id === currentAssistantId ? { ...m, content: finalResponse } : m)
-            );
+        // v9.3-fix: Only flush if we haven't already rendered this response.
+        // response_done already flushes and resets currentAssistantId —
+        // flushing again here would create a DUPLICATE message.
+        if (finalResponse && currentAssistantId) {
+          responseBuffer = finalResponse;
+          flushResponseBuffer(finalResponse);
+        } else if (finalResponse && !currentAssistantId) {
+          // v9.4-fix: If response_done reset currentAssistantId but we still have
+          // a final response (e.g., no tools were used), create a new assistant message.
+          responseBuffer = finalResponse;
+          flushResponseBuffer(finalResponse);
+        }
+        
+        // v9.3-fix: Use pendingToolCount (current turn only) instead of scanning full history
+        // v8.5-fix: safety timeout for stuck tools
+        const toolStuckTimeout = 300000; // 5 min
+        if (pendingToolCount > 0) {
+          const stuckTool = Array.from(toolStartTimes.values()).some(startTime => (Date.now() - startTime) > toolStuckTimeout);
+          if (stuckTool) {
+            console.warn('[done] Tools stuck for >5min — forcing pendingToolCount = 0');
+            pendingToolCount = 0;
+          } else {
+            console.log('[done] Tools ainda em execução — mantendo isStreaming=true até action_end chegar');
+            mascotState.set('working');
+            mascotMessage.set('Finalizando tools...');
           }
         }
-        isStreaming.set(false);
+        if (pendingToolCount <= 0) {
+          isStreaming.set(false);
+          mascotState.set('idle');
+          mascotMessage.set('O que mais posso fazer?');
+        }
         currentAssistantId = null;
+        responseBuffer = '';
         break;
       }
       case 'login_required': {
@@ -574,6 +810,7 @@
 
     currentAssistantId = null;
     thinkingId = null;
+    responseBuffer = ''; // v9.5-fix: Clear buffer on session switch/reconnect
     processedEventIds.clear(); // v4.2: Clear dedup set on reconnect
     sseManager.disconnect();
     sseManager = new SSEManager();
@@ -584,8 +821,6 @@
       if (history.ok && history.messages) {
         const loaded = [];
         let currentAssistantContent = '';
-        let currentThinkingContent = '';
-        let currentThinkingId = null;
         for (const msg of history.messages) {
           if (msg.role === 'user') {
             loaded.push({
@@ -595,36 +830,12 @@
               files: msg.files || [],
               timestamp: msg.timestamp || new Date().toISOString(),
             });
-          } else if (msg.type === 'thinking_start') {
-            currentThinkingContent = '';
-            currentThinkingId = 'think-' + Math.random().toString(36).slice(2);
-            loaded.push({
-              id: currentThinkingId,
-              type: 'thinking',
-              content: '',
-              timestamp: msg.timestamp || new Date().toISOString(),
-            });
-          } else if (msg.type === 'thinking_delta') {
-            currentThinkingContent = msg.fullThinking || msg.text || currentThinkingContent;
-            if (currentThinkingId) {
-              const thinkMsg = loaded.find(m => m.id === currentThinkingId);
-              if (thinkMsg) thinkMsg.content = currentThinkingContent;
-            }
+          } else if (msg.type === 'thinking_start' || msg.type === 'thinking_delta') {
+            // v8.5-fix: Ignore thinking events in history load
+            continue;
           } else if (msg.type === 'response_delta' && msg.content) {
-            // Remove thinking when response starts
-            if (currentThinkingId) {
-              const idx = loaded.findIndex(m => m.id === currentThinkingId);
-              if (idx !== -1) loaded.splice(idx, 1);
-              currentThinkingId = null;
-            }
             currentAssistantContent = msg.content;
           } else if (msg.type === 'done') {
-            // Remove any leftover thinking
-            if (currentThinkingId) {
-              const idx = loaded.findIndex(m => m.id === currentThinkingId);
-              if (idx !== -1) loaded.splice(idx, 1);
-              currentThinkingId = null;
-            }
             const finalText = msg.result?.response || msg.content || currentAssistantContent || '';
             if (finalText) {
               loaded.push({
@@ -635,7 +846,6 @@
               });
             }
             currentAssistantContent = '';
-            currentThinkingContent = '';
           } else if (msg.type === 'error') {
             loaded.push({
               id: msg.id || 'err-' + Math.random().toString(36).slice(2),
@@ -711,6 +921,9 @@
     // causing the previous response to be "pasted" into the chat again.
     // processedEventIds.clear(); ← REMOVED
 
+    // v9.1-fix: Clear flushed content hashes for new message to allow fresh responses
+    flushedContentHashes.clear();
+
     // v3.7-fix: Auto-create session if none exists
     let activeSessionId = sessionId;
     if (!activeSessionId) {
@@ -744,24 +957,16 @@
     }
 
     // v3.6-fix: Reset assistant tracking before sending new message
+    // v9.5-fix: Also reset responseBuffer to prevent new responses from appending to old ones
     currentAssistantId = null;
     thinkingId = null;
+    responseBuffer = '';
 
     // v4.0-fix: Remove all previous thinking bubbles when sending a new message
     messages.update(msgs => removeAllThinking(msgs));
 
-    // v5.5-fix: Create a synthetic thinking bubble that persists during streaming.
-    // When Kimi generates JSON blocks, the bridge often doesn't emit thinking deltas
-    // because Kimi Web doesn't render thinking text for JSON. This ensures the user
-    // sees visual feedback (🧠 Pensando...) while waiting for the response.
-    const syntheticThinkId = 'think-' + Date.now();
-    thinkingId = syntheticThinkId;
-    messages.update(msgs => [...msgs, {
-      id: syntheticThinkId,
-      type: 'thinking',
-      content: '',
-      timestamp: new Date().toISOString()
-    }]);
+    // v8.5-fix: Unify feedback for all modes — always use typing indicator
+    showTyping = true;
 
     const userMsg = {
       id: 'user-' + Date.now(),
@@ -774,6 +979,8 @@
     userMessageAdded = true;
     await tick(); // Ensure user message is rendered before processing response events
     isStreaming.set(true);
+    mascotState.set('thinking');
+    mascotMessage.set('Hmm... deixa eu pensar...');
 
     try {
       playSound('messageSent');
@@ -798,7 +1005,7 @@
         let result = null;
 
         // System handlers (frontend APIs)
-        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent'].includes(slashDef.handler)) {
+        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent', 'refreshAgent', 'fullRefreshAgent'].includes(slashDef.handler)) {
           switch (slashDef.handler) {
             case 'systemRestart': result = await systemRestart(); break;
             case 'systemStatus': result = await systemStatus(); break;
@@ -811,6 +1018,49 @@
               mascotState.set('sleep');
               mascotMessage.set('🌙 Luna dormindo. Envie uma mensagem para acordar.');
               break;
+            case 'refreshAgent': {
+              isStreaming.set(false);
+              currentAssistantId = null;
+              thinkingId = null;
+              responseBuffer = '';
+              pendingToolCount = 0;
+              processedEventIds.clear();
+              flushedContentHashes.clear();
+              await connectSSE();
+              messages.update(msgs => [...msgs, {
+                id: 'sys-' + Date.now(),
+                type: 'system',
+                content: '🔄 Agent refresh — estado limpo, SSE reconectado.',
+                timestamp: new Date().toISOString()
+              }]);
+              return;
+            }
+            case 'fullRefreshAgent': {
+              isStreaming.set(false);
+              currentAssistantId = null;
+              thinkingId = null;
+              responseBuffer = '';
+              pendingToolCount = 0;
+              processedEventIds.clear();
+              flushedContentHashes.clear();
+              await connectSSE();
+              // Send a continuation message to the backend
+              if (activeSessionId) {
+                try {
+                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode);
+                  await connectSSE();
+                } catch (e) {
+                  console.error('[fullRefresh] Failed to send continuation:', e);
+                }
+              }
+              messages.update(msgs => [...msgs, {
+                id: 'sys-' + Date.now(),
+                type: 'system',
+                content: '🔁 Full refresh — reconectado, retomando execucao do historico...',
+                timestamp: new Date().toISOString()
+              }]);
+              return;
+            }
           }
         }
         // Frontend-only handlers
@@ -851,10 +1101,22 @@
             messages.update(msgs => [...msgs, {
               id: 'sys-' + Date.now(),
               type: 'system',
-              content: '⚡ Modos disponiveis: instant, thinking, agent, swarm',
+              content: '⚡ Modos disponiveis: instant (⭐ Recomendado), thinking, agent, swarm',
               timestamp: new Date().toISOString()
             }]);
           }
+          return;
+        }
+        // v9.3: Modal handlers — open rich dashboard modals instead of plain text
+        else if (slashDef.modal) {
+          isStreaming.set(false);
+          activeModal.set(slashDef.modal);
+          messages.update(msgs => [...msgs, {
+            id: 'sys-' + Date.now(),
+            type: 'system',
+            content: `📊 Abrindo ${slashDef.modal}...`,
+            timestamp: new Date().toISOString()
+          }]);
           return;
         }
         // Plan mode
@@ -992,6 +1254,10 @@
   }
 
   onDestroy(() => {
+    for (const { intervalId } of runningToolTimers.values()) {
+      clearInterval(intervalId);
+    }
+    runningToolTimers.clear();
     sseManager.disconnect();
     stopHeartbeat();
     mascotState.set('sleep');
@@ -999,20 +1265,24 @@
 </script>
 
 <div class="chat-area">
-  <div class="chat-header-row">
-    <ChatHeader
-      title={$messages.find(m => m.type === 'user')?.content?.slice(0, 50) || 'Nova Conversa'}
-      mode={$currentMode}
-      isStreaming={$isStreaming}
-      on:modeChange={(e) => currentMode.set(e.detail)}
-      on:clear={handleClear}
+  <ChatHeader
+    title={$messages.find(m => m.type === 'user')?.content?.slice(0, 50) || 'Nova Conversa'}
+    mode={$currentMode}
+    isStreaming={$isStreaming}
+    sessionId={sessionId}
+    on:modeChange={(e) => currentMode.set(e.detail)}
+    on:clear={handleClear}
     on:export={handleExport}
+    on:openConfig
+    on:newChat
+    on:editTitle
+    on:goHome={() => currentSessionId.set(null)}
   />
-  <PersonaSelector sessionId={sessionId} />
-  </div>
 
   <MessagesList
     messages={$messages}
+    showTyping={showTyping}
+    currentMode={$currentMode}
     onApprovePlan={handleApprovePlan}
     onRejectPlan={handleRejectPlan}
     onRevisePlan={handleRevisePlan}
@@ -1022,6 +1292,24 @@
     onSend={handleSend}
     onCancel={handleCancel}
     disabled={$isStreaming}
+  />
+
+  <!-- v9.3: Rich modal responses for dashboard slash commands -->
+  <TaskDashboardModal
+    open={$activeModal === 'tasks'}
+    onClose={() => activeModal.set(null)}
+  />
+  <LeadDashboardModal
+    open={$activeModal === 'leads'}
+    onClose={() => activeModal.set(null)}
+  />
+  <FinanceDashboardModal
+    open={$activeModal === 'finance'}
+    onClose={() => activeModal.set(null)}
+  />
+  <VotingDashboardModal
+    open={$activeModal === 'voting'}
+    onClose={() => activeModal.set(null)}
   />
 </div>
 
@@ -1033,15 +1321,5 @@
     overflow: hidden;
     position: relative;
   }
-  .chat-header-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 clamp(0.5rem, 2vw, 1rem);
-    gap: 0.5rem;
-    flex-shrink: 0;
-  }
-  .chat-header-row > :global(.chat-header) {
-    flex: 1;
-  }
+  /* Header is now self-contained, no wrapper needed */
 </style>

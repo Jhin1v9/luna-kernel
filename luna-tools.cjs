@@ -36,6 +36,38 @@ if (fs.existsSync(ENV_PATH)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TELEGRAM NOTIFICATIONS (v8.5)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TELEGRAM_SERVICE_PATH = path.join(require('os').homedir(), 'NEXO_DASHBOARD_PRO', 'backend', 'services', 'telegram-notification.service.js');
+let telegramNotify = null;
+try {
+  if (fs.existsSync(TELEGRAM_SERVICE_PATH)) {
+    telegramNotify = require(TELEGRAM_SERVICE_PATH);
+  }
+} catch (e) {
+  console.warn('[luna-tools] Telegram notify service not available:', e.message);
+}
+
+function detectUser() {
+  // Detect who is calling the tool: Luna agent, Abner, Nonoke, Elias, etc.
+  const envUser = process.env.LUNA_USER || process.env.USER || '';
+  const lower = envUser.toLowerCase();
+  if (lower.includes('luna')) return 'luna';
+  if (lower.includes('abner')) return 'abner';
+  if (lower.includes('nonoke')) return 'nonoke';
+  if (lower.includes('elias')) return 'elias';
+  return 'luna';
+}
+
+function notifyChange(type, data) {
+  if (!telegramNotify || !telegramNotify.notifyDashboardChange) return;
+  const user = detectUser();
+  // Fire-and-forget: don't block the tool
+  telegramNotify.notifyDashboardChange(type, data, user).catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -58,7 +90,7 @@ function safeExec(cmd, opts = {}) {
     const output = execSync(cmd, {
       encoding: 'utf8',
       cwd: opts.cwd || process.cwd(),
-      timeout: opts.timeout || 30000,
+      timeout: opts.timeout || 0, // v8.5-fix: no default timeout
       maxBuffer: opts.maxBuffer || 1024 * 1024,
       stdio: ['pipe', 'pipe', 'ignore'],
     });
@@ -491,7 +523,7 @@ function searchFiles(pattern, opts = {}) {
     } else {
       cmd = `grep -rn --color=never -C ${opts.context || opts['-C'] || 2} --exclude-dir={node_modules,.git,dist,build,coverage,venv,.venv,__pycache__} --exclude={*.lock,*.log,*.min.*} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     }
-    const result = safeExec(cmd, { timeout: opts.timeout || 30000 });
+    const result = safeExec(cmd, { timeout: opts.timeout || 0 }); // v8.5-fix: no default timeout
     if (!result.success) {
       if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [] });
       return err(result.error || result.stderr);
@@ -522,7 +554,7 @@ function grep(pattern, opts = {}) {
     } else {
       cmd = `grep -rn --color=never ${includeGlob} -C ${opts['-C'] || opts.context || 2} --exclude-dir={node_modules,.git,dist,build} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     }
-    const result = safeExec(cmd, { timeout: opts.timeout || 30000 });
+    const result = safeExec(cmd, { timeout: opts.timeout || 0 }); // v8.5-fix: no default timeout
     if (!result.success) {
       if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [] });
       return err(result.error || result.stderr);
@@ -696,25 +728,69 @@ function fetchURL(url, opts = {}) {
 // 4. SHELL
 // ═══════════════════════════════════════════════════════════════════════════
 
-function executeShell(command, opts = {}) {
-  try {
-    const output = execSync(command, {
-      encoding: 'utf8',
-      cwd: opts.cwd ? resolvePath(opts.cwd) : process.cwd(),
-      timeout: (opts.timeout || 60) * 1000,
-      maxBuffer: 1024 * 1024 * 5,
+function executeShell(command, opts = {}, onProgress) {
+  return new Promise((resolve) => {
+    const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
+    const timeoutMs = (opts.timeout || 60) * 1000;
+    let stdout = '';
+    let stderr = '';
+    let killed = false;
+
+    const child = spawn(command, { shell: true, cwd, env: process.env });
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      killed = true;
+      child.kill('SIGTERM');
+      // Force kill after 5s if still alive
+      setTimeout(() => child.kill('SIGKILL'), 5000);
+    }, timeoutMs) : null;
+
+    child.stdout.on('data', (chunk) => {
+      const str = chunk.toString('utf8');
+      stdout += str;
+      if (onProgress) onProgress(str, 'stdout');
     });
-    return ok({ command, stdout: output, stderr: '', exitCode: 0 });
-  } catch (e) {
-    return {
-      success: false,
-      command,
-      stdout: e.stdout || '',
-      stderr: e.stderr || '',
-      exitCode: e.status || 1,
-      error: e.message,
-    };
-  }
+
+    child.stderr.on('data', (chunk) => {
+      const str = chunk.toString('utf8');
+      stderr += str;
+      if (onProgress) onProgress(str, 'stderr');
+    });
+
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer);
+      resolve({
+        success: false,
+        command,
+        stdout,
+        stderr,
+        exitCode: 1,
+        error: err.message,
+      });
+    });
+
+    child.on('close', (code, signal) => {
+      if (timer) clearTimeout(timer);
+      if (killed && signal === 'SIGTERM') {
+        resolve({
+          success: false,
+          command,
+          stdout,
+          stderr,
+          exitCode: null,
+          error: `Command timed out after ${opts.timeout || 60}s`,
+        });
+      } else {
+        resolve({
+          success: code === 0,
+          command,
+          stdout,
+          stderr,
+          exitCode: code ?? (signal ? 1 : 0),
+          error: code !== 0 && !killed ? `Process exited with code ${code}` : undefined,
+        });
+      }
+    });
+  });
 }
 
 function runTests(opts = {}) {
@@ -893,7 +969,7 @@ function downloadFile(url, destination, opts = {}) {
   return new Promise((resolve) => {
     const client = url.startsWith('https:') ? https : http;
     const file = fs.createWriteStream(dst);
-    const req = client.get(url, { timeout: opts.timeout || 30000 }, (res) => {
+    const req = client.get(url, { timeout: opts.timeout || 0 }, (res) => { // v8.5-fix: no default timeout
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file.close();
         return downloadFile(res.headers.location, destination, opts).then(resolve);
@@ -1071,6 +1147,22 @@ async function dashboardApi(path, method = 'GET', body = null) {
 }
 
 async function dashboardCreateTask(params) {
+  // v8.4-fix: Idempotency — check if a task with the same title was created in the last 2 minutes
+  try {
+    const recent = await dashboardApi('/tasks?limit=20&sort=createdAt:desc');
+    const tasks = Array.isArray(recent) ? recent : (recent.tasks || []);
+    const now = Date.now();
+    const dup = tasks.find(t =>
+      t.title === (params.title || 'Sem título') &&
+      t.source === 'luna-agent' &&
+      (now - new Date(t.createdAt).getTime()) < 2 * 60 * 1000
+    );
+    if (dup) {
+      return ok({ stdout: `✅ Tarefa já existente: ${dup.title} (ID: ${dup.id})` });
+    }
+  } catch (e) {
+    // Ignore pre-check errors and proceed with creation
+  }
   const task = await dashboardApi('/tasks', 'POST', {
     title: params.title || 'Sem título',
     description: params.description || '',
@@ -1080,6 +1172,7 @@ async function dashboardCreateTask(params) {
     dueDate: params.dueDate || null,
     source: 'luna-agent'
   });
+  notifyChange('task', { title: task.title, description: task.description, priority: task.priority, status: task.status, deadline: task.dueDate });
   return ok({ stdout: `✅ Tarefa criada: ${task.title} (ID: ${task.id})` });
 }
 
@@ -1095,6 +1188,22 @@ async function dashboardListTasks(params) {
 }
 
 async function dashboardCreateLead(params) {
+  // v8.4-fix: Idempotency — check if a lead with the same name/email was created in the last 2 minutes
+  try {
+    const recent = await dashboardApi('/internal/leads?limit=20&sort=createdAt:desc');
+    const leads = recent.leads || [];
+    const now = Date.now();
+    const dup = leads.find(l =>
+      (l.displayName || l.name) === (params.name || params.displayName || 'Sem nome') &&
+      l.source === 'luna-agent' &&
+      (now - new Date(l.createdAt).getTime()) < 2 * 60 * 1000
+    );
+    if (dup) {
+      return ok({ stdout: `✅ Lead já existente: ${dup.displayName || dup.name} (ID: ${dup.id})` });
+    }
+  } catch (e) {
+    // Ignore pre-check errors and proceed with creation
+  }
   const data = await dashboardApi('/internal/leads', 'POST', {
     displayName: params.name || params.displayName || 'Sem nome',
     email: params.email || '',
@@ -1106,6 +1215,7 @@ async function dashboardCreateLead(params) {
     tags: params.tags || []
   });
   const lead = data.lead || data;
+  notifyChange('lead', { name: lead.displayName || lead.name, email: lead.email, phone: lead.phone, value: lead.estimatedValue, status: lead.pipelineStatus || 'new' });
   return ok({ stdout: `✅ Lead criado: ${lead.displayName || lead.name} (ID: ${lead.id})` });
 }
 
@@ -1140,6 +1250,7 @@ async function dashboardCreateIdea(params) {
   }
   const data = await dashboardApi('/ideas', 'POST', body);
   const idea = data.data || data;
+  notifyChange('idea', { title: idea.title || params.title, description: params.description || params.content, type: body.type, priority: body.priority });
   return ok({ stdout: `💡 Ideia criada: "${idea.title || params.title}" (ID: ${idea.id || 'n/a'})` });
 }
 
@@ -1173,6 +1284,7 @@ async function dashboardUpdateTask(params) {
   if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
   if (params.dueDate !== undefined) body.dueDate = params.dueDate;
   await dashboardApi(`/tasks/${id}`, 'PUT', body);
+  notifyChange('task', { ...body, _action: 'update' });
   return ok({ stdout: `✏️ Tarefa ${id} atualizada.` });
 }
 
@@ -1180,6 +1292,7 @@ async function dashboardDeleteTask(params) {
   const id = params.id || params.taskId;
   if (!id) return { error: 'ID da tarefa obrigatório' };
   await dashboardApi(`/tasks/${id}`, 'DELETE');
+  notifyChange('task', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Tarefa ${id} excluída.` });
 }
 
@@ -1187,6 +1300,7 @@ async function dashboardCompleteTask(params) {
   const id = params.id || params.taskId;
   if (!id) return { error: 'ID da tarefa obrigatório' };
   await dashboardApi(`/tasks/${id}`, 'PUT', { status: 'completed' });
+  notifyChange('task', { id, status: 'completed', _action: 'complete' });
   return ok({ stdout: `✅ Tarefa ${id} marcada como concluída.` });
 }
 
@@ -1212,6 +1326,7 @@ async function dashboardUpdateLead(params) {
   if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
   if (params.notes !== undefined) body.notes = params.notes;
   await dashboardApi(`/leads/${id}`, 'PUT', body);
+  notifyChange('lead', { ...body, _action: 'update' });
   return ok({ stdout: `✏️ Lead ${id} atualizado.` });
 }
 
@@ -1219,6 +1334,7 @@ async function dashboardConvertLead(params) {
   const id = params.id || params.leadId;
   if (!id) return { error: 'ID do lead obrigatório' };
   await dashboardApi(`/leads/${id}/convert`, 'POST', {});
+  notifyChange('lead', { id, _action: 'convert' });
   return ok({ stdout: `🔄 Lead ${id} convertido em cliente.` });
 }
 
@@ -1226,6 +1342,7 @@ async function dashboardDeleteLead(params) {
   const id = params.id || params.leadId;
   if (!id) return { error: 'ID do lead obrigatório' };
   await dashboardApi(`/leads/${id}`, 'DELETE');
+  notifyChange('lead', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Lead ${id} excluído.` });
 }
 
@@ -1240,6 +1357,7 @@ async function dashboardCreatePayment(params) {
     status: params.status || 'pending',
   };
   const data = await dashboardApi('/payments', 'POST', body);
+  notifyChange('payment', { amount: body.amount, description: body.description, clientName: body.from, dueDate: body.date, status: body.status });
   return ok({ stdout: `💰 Pagamento registrado: €${body.amount} — ${body.description}` });
 }
 
@@ -1261,6 +1379,7 @@ async function dashboardUpdatePayment(params) {
   if (params.description !== undefined) body.description = params.description;
   if (params.status !== undefined) body.status = params.status;
   await dashboardApi(`/payments/${id}`, 'PUT', body);
+  notifyChange('payment', { id, ...body, _action: 'update' });
   return ok({ stdout: `✏️ Pagamento ${id} atualizado.` });
 }
 
@@ -1268,6 +1387,7 @@ async function dashboardDeletePayment(params) {
   const id = params.id || params.paymentId;
   if (!id) return { error: 'ID do pagamento obrigatório' };
   await dashboardApi(`/payments/${id}`, 'DELETE');
+  notifyChange('payment', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Pagamento ${id} excluído.` });
 }
 
@@ -1292,6 +1412,7 @@ async function dashboardCreateExpense(params) {
   };
   if (params.splitAmong) body.splitAmong = params.splitAmong;
   const data = await dashboardApi('/expenses', 'POST', body);
+  notifyChange('expense', { amount: body.amount, description: body.description, category: body.category, dueDate: body.date, status: body.status });
   return ok({ stdout: `📤 Despesa registrada: €${body.amount} — ${body.description}` });
 }
 
@@ -1314,6 +1435,7 @@ async function dashboardUpdateExpense(params) {
   if (params.status !== undefined) body.status = params.status;
   if (params.category !== undefined) body.category = params.category;
   await dashboardApi(`/expenses/${id}`, 'PUT', body);
+  notifyChange('expense', { id, ...body, _action: 'update' });
   return ok({ stdout: `✏️ Despesa ${id} atualizada.` });
 }
 
@@ -1321,6 +1443,7 @@ async function dashboardDeleteExpense(params) {
   const id = params.id || params.expenseId;
   if (!id) return { error: 'ID da despesa obrigatório' };
   await dashboardApi(`/expenses/${id}`, 'DELETE');
+  notifyChange('expense', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Despesa ${id} excluída.` });
 }
 
@@ -1328,6 +1451,7 @@ async function dashboardPayExpense(params) {
   const id = params.id || params.expenseId;
   if (!id) return { error: 'ID da despesa obrigatório' };
   await dashboardApi(`/expenses/${id}/pay`, 'POST', {});
+  notifyChange('expense', { id, status: 'paid', _action: 'pay' });
   return ok({ stdout: `✅ Despesa ${id} marcada como paga.` });
 }
 
@@ -1421,6 +1545,7 @@ async function dashboardCreateQuote(params) {
     status: params.status || 'draft',
   };
   await dashboardApi('/quotes', 'POST', body);
+  notifyChange('quote', { clientName: body.clientName, description: body.projectName, value: body.totalAmount, status: body.status });
   return ok({ stdout: `📄 Orçamento criado: "${body.projectName}" — €${body.totalAmount}` });
 }
 
@@ -1439,6 +1564,7 @@ async function dashboardUpdateQuote(params) {
   if (params.status !== undefined) body.status = params.status;
   if (params.description !== undefined) body.description = params.description;
   await dashboardApi(`/quotes/${id}`, 'PUT', body);
+  notifyChange('quote', { id, ...body, _action: 'update' });
   return ok({ stdout: `✏️ Orçamento ${id} atualizado.` });
 }
 
@@ -1446,6 +1572,7 @@ async function dashboardDeleteQuote(params) {
   const id = params.id || params.quoteId;
   if (!id) return { error: 'ID do orçamento obrigatório' };
   await dashboardApi(`/quotes/${id}`, 'DELETE');
+  notifyChange('quote', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Orçamento ${id} excluído.` });
 }
 
@@ -1478,6 +1605,7 @@ async function dashboardAddLink(params) {
   };
   if (!body.url) return { error: 'URL obrigatória' };
   await dashboardApi('/links', 'POST', body);
+  notifyChange('link', { title: body.title, url: body.url, description: body.description });
   return ok({ stdout: `🔗 Link adicionado: ${body.url}` });
 }
 
@@ -1495,6 +1623,7 @@ async function dashboardDeleteLink(params) {
   const id = params.id || params.linkId;
   if (!id) return { error: 'ID do link obrigatório' };
   await dashboardApi(`/links/${id}`, 'DELETE');
+  notifyChange('link', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Link ${id} excluído.` });
 }
 
