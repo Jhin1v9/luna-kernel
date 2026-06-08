@@ -4439,8 +4439,8 @@ class KimiBridge {
         }
 
         // Poll interval: relaxed when processing to avoid freezing Kimi page
-        // v8.5-fix: 400ms → 1500ms during processing — DOM evaluate was competing with React main thread
-        const interval = session.processing ? 1500 : 3000;
+        // v10.1-fix: 1500ms → 800ms during processing — better real-time without overloading
+        const interval = session.processing ? 800 : 3000;
         await new Promise(r => setTimeout(r, interval));
       }
 
@@ -6319,7 +6319,7 @@ class KimiBridge {
           yield { type: 'waiting', message: 'Processando...' };
         }
 
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 50)); // v10.1-fix: 100ms → 50ms for lower latency
       }
 
       // v7.7-INFALÍVEL: Final extraction using snapshot diff (PRIMARY strategy)

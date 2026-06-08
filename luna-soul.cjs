@@ -2087,7 +2087,17 @@ class LunaSoul extends EventEmitter {
               const pendingProgressEvents = [];
               const emitProgress = (ev) => pendingProgressEvents.push({ type: 'action_progress', tool: parsedAction.tool, ...ev, sessionId });
               try {
-                actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress);
+                // v10.1-fix: Run action in background and yield progress events every 500ms
+                // so the frontend sees live updates instead of freezing until completion.
+                const actionPromise = this._handleAction(parsedAction, sessionId, options, emitProgress);
+                let actionDone = false;
+                actionPromise.then(r => { actionResult = r; actionDone = true; }).catch(e => { actionResult = { success: false, error: e.message, tool: parsedAction.tool }; actionDone = true; });
+                while (!actionDone) {
+                  await new Promise(r => setTimeout(r, 500));
+                  while (pendingProgressEvents.length > 0) {
+                    yield pendingProgressEvents.shift();
+                  }
+                }
                 while (pendingProgressEvents.length > 0) {
                   yield pendingProgressEvents.shift();
                 }
@@ -2110,7 +2120,7 @@ class LunaSoul extends EventEmitter {
                 }
               } catch (actionErr) {
                 console.error(`[DOM MIRROR] Action error: ${actionErr.message}`);
-                actionResult = { success: false, error: actionErr.message, tool: parsedAction.tool };
+                actionResult = actionResult || { success: false, error: actionErr.message, tool: parsedAction.tool };
               }
 
               // v8.7-fix: ONLY mark as executed AFTER successful execution.

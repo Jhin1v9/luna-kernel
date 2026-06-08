@@ -400,7 +400,22 @@
         break;
       }
       case 'thinking_delta': {
-        // v8.5-fix: Ignore thinking deltas in both instant and thinking modes
+        // v10.1-fix: Show thinking process in real-time
+        const thinkDelta = event.text || '';
+        if (!thinkDelta) break;
+        if (!thinkingId) {
+          thinkingId = 'think-' + Date.now();
+          messages.update(msgs => [...msgs, {
+            id: thinkingId,
+            type: 'thinking',
+            content: thinkDelta,
+            timestamp: event.timestamp || new Date().toISOString(),
+          }]);
+        } else {
+          messages.update(msgs => msgs.map(m =>
+            m.id === thinkingId ? { ...m, content: m.content + thinkDelta } : m
+          ));
+        }
         break;
       }
       case 'response_delta': {
@@ -810,8 +825,10 @@
 
     currentAssistantId = null;
     thinkingId = null;
+    currentMessageId = null; // v10.1-fix: Reset to prevent stale filtering on session switch
     responseBuffer = ''; // v9.5-fix: Clear buffer on session switch/reconnect
     processedEventIds.clear(); // v4.2: Clear dedup set on reconnect
+    flushedContentHashes.clear(); // v10.1-fix: Clear content hashes on reconnect to allow valid replays
     sseManager.disconnect();
     sseManager = new SSEManager();
 
@@ -834,7 +851,7 @@
             // v8.5-fix: Ignore thinking events in history load
             continue;
           } else if (msg.type === 'response_delta' && msg.content) {
-            currentAssistantContent = msg.content;
+            currentAssistantContent += msg.content; // v10.1-fix: concatenate deltas instead of overwriting
           } else if (msg.type === 'done') {
             const finalText = msg.result?.response || msg.content || currentAssistantContent || '';
             if (finalText) {

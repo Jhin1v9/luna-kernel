@@ -111,8 +111,8 @@
           {/if}
         </div>
       {/each}
-      <!-- v8.3-fix: Typing indicator for INSTANT mode when no thinking bubble is present -->
-      {#if showTyping && currentMode === 'instant' && !messages.some(m => m.type === 'thinking')}
+      <!-- v10.1-fix: Typing indicator for ALL modes when Luna is processing -->
+      {#if showTyping && !messages.some(m => m.type === 'thinking')}
         <div class="message-wrapper">
           <TypingIndicator text="Luna está respondendo" />
         </div>
