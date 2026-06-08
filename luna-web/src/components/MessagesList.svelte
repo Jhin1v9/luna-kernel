@@ -23,10 +23,22 @@
   let userScrolledUp = false;
   let showNewMessagesBadge = false;
 
+  // v10.3: lightweight virtualization
+  let viewportHeight = 0;
+  let scrollTop = 0;
+  const ESTIMATED_HEIGHT = 80;
+  const BUFFER = 5;
+
+  $: totalHeight = messages.length * ESTIMATED_HEIGHT;
+  $: startIdx = Math.max(0, Math.floor(scrollTop / ESTIMATED_HEIGHT) - BUFFER);
+  $: endIdx = Math.min(messages.length, Math.ceil((scrollTop + viewportHeight) / ESTIMATED_HEIGHT) + BUFFER);
+  $: visibleMessages = messages.slice(startIdx, endIdx);
+
+  // Auto-scroll to bottom on new messages unless user scrolled up
   $: if (messages.length > 0) {
     tick().then(() => {
       if (!userScrolledUp) {
-        scrollManager.scrollToBottom(listEl, 'smooth');
+        scrollToBottom('smooth');
       } else {
         showNewMessagesBadge = true;
       }
@@ -35,25 +47,29 @@
 
   function handleScroll() {
     if (!listEl) return;
+    scrollTop = listEl.scrollTop;
     const nearBottom = scrollManager.isNearBottom(listEl, 100);
     userScrolledUp = !nearBottom;
     if (nearBottom) showNewMessagesBadge = false;
   }
 
-  function scrollToBottom() {
-    scrollManager.scrollToBottom(listEl, 'smooth');
+  function scrollToBottom(behavior = 'smooth') {
+    if (listEl) {
+      listEl.scrollTop = listEl.scrollHeight;
+    }
     userScrolledUp = false;
     showNewMessagesBadge = false;
   }
 
   onMount(() => {
-    scrollManager.scrollToBottom(listEl, 'auto');
+    scrollToBottom('auto');
   });
 </script>
 
 <div
   class="messages-list"
   bind:this={listEl}
+  bind:clientHeight={viewportHeight}
   on:scroll={handleScroll}
   aria-live="polite"
   aria-label="Mensagens do chat"
@@ -76,70 +92,72 @@
       </div>
     </div>
   {:else}
-    <div class="messages-container">
-      {#if hasMore}
-        <div class="load-more-row">
-          <button
-            class="load-more-btn"
-            on:click={onLoadMore}
-            disabled={loadingMore}
-          >
-            {#if loadingMore}
-              <span class="spinner" /> Carregando...
-            {:else}
-              ↑ Carregar mensagens anteriores
+    <div class="virtual-spacer" style="height: {totalHeight}px;">
+      <div class="virtual-content" style="transform: translateY({startIdx * ESTIMATED_HEIGHT}px);">
+        {#if hasMore && startIdx === 0}
+          <div class="load-more-row">
+            <button
+              class="load-more-btn"
+              on:click={onLoadMore}
+              disabled={loadingMore}
+            >
+              {#if loadingMore}
+                <span class="spinner" /> Carregando...
+              {:else}
+                ↑ Carregar mensagens anteriores
+              {/if}
+            </button>
+          </div>
+        {/if}
+        {#each visibleMessages as message (message.id)}
+          <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'} style="min-height: {ESTIMATED_HEIGHT}px;">
+            {#if message.type === 'user'}
+              <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
+            {:else if message.type === 'assistant'}
+              <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} />
+            {:else if message.type === 'thinking'}
+              <ThinkingBubble text={message.content} />
+            {:else if message.type === 'tool'}
+              <ToolCard
+                tool={message.tool}
+                params={message.params}
+                result={message.result}
+                duration={message.duration}
+                status={message.status || 'running'}
+                liveOutput={message.liveOutput || ''}
+              />
+            {:else if message.type === 'plan'}
+              <PlanCard
+                plan={message.content}
+                status={message.status || 'awaiting_approval'}
+                on:approve={onApprovePlan}
+                on:reject={onRejectPlan}
+                on:revise={(e) => onRevisePlan(e.detail)}
+              />
+            {:else if message.type === 'system' || message.type === 'error'}
+              <div class="system-banner" class:error={message.type === 'error'}>
+                {message.content}
+              </div>
+            {:else if message.type === 'login_required'}
+              <div class="system-banner login-required">
+                🔒 {message.content}
+                <button class="retry-btn" on:click={() => location.reload()}>Recarregar página</button>
+              </div>
             {/if}
-          </button>
-        </div>
-      {/if}
-      {#each messages as message (message.id)}
-        <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}>
-          {#if message.type === 'user'}
-            <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
-          {:else if message.type === 'assistant'}
-            <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} />
-          {:else if message.type === 'thinking'}
-            <ThinkingBubble text={message.content} />
-          {:else if message.type === 'tool'}
-            <ToolCard
-              tool={message.tool}
-              params={message.params}
-              result={message.result}
-              duration={message.duration}
-              status={message.status || 'running'}
-              liveOutput={message.liveOutput || ''}
-            />
-          {:else if message.type === 'plan'}
-            <PlanCard
-              plan={message.content}
-              status={message.status || 'awaiting_approval'}
-              on:approve={onApprovePlan}
-              on:reject={onRejectPlan}
-              on:revise={(e) => onRevisePlan(e.detail)}
-            />
-          {:else if message.type === 'system' || message.type === 'error'}
-            <div class="system-banner" class:error={message.type === 'error'}>
-              {message.content}
-            </div>
-          {:else if message.type === 'login_required'}
-            <div class="system-banner login-required">
-              🔒 {message.content}
-              <button class="retry-btn" on:click={() => location.reload()}>Recarregar página</button>
-            </div>
-          {/if}
-        </div>
-      {/each}
-      <!-- v10.1-fix: Typing indicator for ALL modes when Luna is processing -->
-      {#if showTyping && !messages.some(m => m.type === 'thinking')}
-        <div class="message-wrapper">
-          <TypingIndicator text="Luna está respondendo" />
-        </div>
-      {/if}
+          </div>
+        {/each}
+        <!-- v10.1-fix: Typing indicator for ALL modes when Luna is processing -->
+        {#if showTyping && !messages.some(m => m.type === 'thinking')}
+          <div class="message-wrapper" style="min-height: {ESTIMATED_HEIGHT}px;">
+            <TypingIndicator text="Luna está respondendo" />
+          </div>
+        {/if}
+      </div>
     </div>
   {/if}
 
   {#if showNewMessagesBadge}
-    <button class="new-messages-badge" on:click={scrollToBottom}>
+    <button class="new-messages-badge" on:click={() => scrollToBottom('smooth')}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <polyline points="6 9 12 15 18 9"/>
       </svg>
@@ -160,14 +178,21 @@
     position: relative;
     scroll-behavior: smooth;
   }
-  .messages-container {
+  .virtual-spacer {
+    position: relative;
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  .virtual-content {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
     display: flex;
     flex-direction: column;
     gap: 16px;
-    max-width: 900px;
-    margin: 0 auto;
     width: 100%;
-    padding-bottom: 8px;
   }
   .messages-bottom-spacer {
     height: 12px;
@@ -177,12 +202,13 @@
     .messages-list {
       padding: 10px;
     }
-    .messages-container {
+    .virtual-content {
       gap: 12px;
     }
   }
   .message-wrapper {
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    box-sizing: border-box;
   }
   .message-wrapper.system-msg {
     animation: fadeIn 200ms ease;
