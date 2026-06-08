@@ -36,6 +36,14 @@
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
   let expectingResponse = false; // v10.2-fix: Only show "thinking" when user actually sent a message
 
+  // v10.3: pagination state for session history
+  let messagePagination = {
+    hasMore: false,
+    total: 0,
+    oldestLoadedIndex: 0,
+    loadingMore: false,
+  };
+
   // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
   // The timer is cleared but NEVER restarted, so SSE never aborts due to silence.
   function resetStreamingInactivityTimer() {
@@ -53,6 +61,82 @@
       await connectSSE();
     } catch (e) {
       console.error('[ChatArea] Reconnect failed:', e.message);
+    }
+  }
+
+  async function loadOlderMessages() {
+    if (!sessionId || messagePagination.loadingMore || !messagePagination.hasMore) return;
+    messagePagination.loadingMore = true;
+    try {
+      const before = messagePagination.oldestLoadedIndex;
+      const history = await fetchSessionMessages(sessionId, { limit: 50, before });
+      if (history.ok && history.messages) {
+        const older = [];
+        for (const msg of history.messages) {
+          if (msg.role === 'user') {
+            older.push({
+              id: msg.id || 'msg-' + Math.random().toString(36).slice(2),
+              type: 'user',
+              content: msg.content || '',
+              files: msg.files || [],
+              timestamp: msg.timestamp || new Date().toISOString(),
+            });
+          } else if (msg.type === 'thinking_start' || msg.type === 'thinking_delta') {
+            continue;
+          } else if (msg.type === 'done') {
+            const rawFinal = msg.result?.response || msg.content || '';
+            const finalText = stripToolBlocksFromBuffer(rawFinal);
+            if (finalText?.trim()) {
+              older.push({
+                id: msg.id || 'resp-' + Math.random().toString(36).slice(2),
+                type: 'assistant',
+                content: finalText,
+                timestamp: msg.timestamp || new Date().toISOString(),
+              });
+            }
+          } else if (msg.type === 'error') {
+            older.push({
+              id: msg.id || 'err-' + Math.random().toString(36).slice(2),
+              type: 'error',
+              content: msg.content || 'Erro desconhecido',
+              timestamp: msg.timestamp || new Date().toISOString(),
+            });
+          } else if (msg.type === 'action_start' && msg.tool) {
+            older.push({
+              id: msg.id || 'tool-' + Math.random().toString(36).slice(2),
+              type: 'tool',
+              tool: msg.tool,
+              params: msg.params || {},
+              result: null,
+              timestamp: msg.timestamp || new Date().toISOString(),
+            });
+          } else if (msg.type === 'action_end' && msg.result) {
+            const lastTool = older.slice().reverse().find(m => m.type === 'tool' && !m.result);
+            if (lastTool) {
+              lastTool.result = msg.result;
+            }
+          }
+        }
+        older.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        messages.update(current => {
+          const merged = [...older, ...current];
+          const seen = new Set();
+          return merged.filter(m => {
+            if (seen.has(m.id)) return false;
+            seen.add(m.id);
+            return true;
+          });
+        });
+        messagePagination = {
+          hasMore: history.hasMore || false,
+          total: history.total || messagePagination.total,
+          oldestLoadedIndex: Math.max(0, before - older.length),
+          loadingMore: false,
+        };
+      }
+    } catch (e) {
+      console.error('[loadOlderMessages] Failed:', e);
+      messagePagination.loadingMore = false;
     }
   }
 
@@ -845,7 +929,7 @@
 
     // v3.6-fix: Load full message history from backend instead of clearing
     try {
-      const history = await fetchSessionMessages(sessionId);
+      const history = await fetchSessionMessages(sessionId, { limit: 50 });
       if (history.ok && history.messages) {
         const loaded = [];
         let currentAssistantContent = '';
@@ -864,8 +948,9 @@
           } else if (msg.type === 'response_delta' && msg.content) {
             currentAssistantContent += msg.content; // v10.1-fix: concatenate deltas instead of overwriting
           } else if (msg.type === 'done') {
-            const finalText = msg.result?.response || msg.content || currentAssistantContent || '';
-            if (finalText) {
+            const rawFinal = msg.result?.response || msg.content || currentAssistantContent || '';
+            const finalText = stripToolBlocksFromBuffer(rawFinal);
+            if (finalText?.trim()) {
               loaded.push({
                 id: msg.id || 'resp-' + Math.random().toString(36).slice(2),
                 type: 'assistant',
@@ -901,12 +986,20 @@
         loaded.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
         // v10.3-fix: don't render unlimited history — slice to last 100 until virtualization lands
         messages.set(loaded.slice(-100));
+        messagePagination = {
+          hasMore: history.hasMore || false,
+          total: history.total || 0,
+          oldestLoadedIndex: Math.max(0, (history.total || 0) - loaded.length),
+          loadingMore: false,
+        };
       } else {
         messages.set([]);
+        messagePagination = { hasMore: false, total: 0, oldestLoadedIndex: 0, loadingMore: false };
       }
     } catch (e) {
       console.error('Failed to load session history:', e);
       messages.set([]);
+      messagePagination = { hasMore: false, total: 0, oldestLoadedIndex: 0, loadingMore: false };
     }
 
     sseManager.connect(sessionId, handleEvent);
@@ -1317,6 +1410,9 @@
     messages={$messages}
     showTyping={showTyping}
     currentMode={$currentMode}
+    hasMore={messagePagination.hasMore}
+    loadingMore={messagePagination.loadingMore}
+    onLoadMore={loadOlderMessages}
     onApprovePlan={handleApprovePlan}
     onRejectPlan={handleRejectPlan}
     onRevisePlan={handleRevisePlan}

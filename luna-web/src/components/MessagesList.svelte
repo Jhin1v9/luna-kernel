@@ -12,6 +12,9 @@
   export let messages = [];
   export let showTyping = false;
   export let currentMode = 'instant';
+  export let hasMore = false;
+  export let loadingMore = false;
+  export let onLoadMore = () => {};
   export let onApprovePlan = () => {};
   export let onRejectPlan = () => {};
   export let onRevisePlan = () => {};
@@ -74,6 +77,21 @@
     </div>
   {:else}
     <div class="messages-container">
+      {#if hasMore}
+        <div class="load-more-row">
+          <button
+            class="load-more-btn"
+            on:click={onLoadMore}
+            disabled={loadingMore}
+          >
+            {#if loadingMore}
+              <span class="spinner" /> Carregando...
+            {:else}
+              ↑ Carregar mensagens anteriores
+            {/if}
+          </button>
+        </div>
+      {/if}
       {#each messages as message (message.id)}
         <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}>
           {#if message.type === 'user'}
@@ -263,6 +281,22 @@
   .retry-btn:hover {
     background: rgba(245, 158, 11, 0.3);
   }
+  .load-more-row { display: flex; justify-content: center; padding: 12px 0; }
+  .load-more-btn {
+    background: var(--luna-surface); color: var(--luna-text);
+    border: 1px solid var(--luna-border); border-radius: 999px;
+    padding: 8px 16px; font-size: 13px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: all 0.15s;
+  }
+  .load-more-btn:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
+  .load-more-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--luna-border);
+    border-top-color: var(--luna-text); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .new-messages-badge {
     position: absolute;
     bottom: 80px;

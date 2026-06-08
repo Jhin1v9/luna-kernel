@@ -311,14 +311,16 @@ export async function turnOffAgent(userId = 'web-default') {
   return res.json();
 }
 
-export async function fetchSessionMessages(sessionId) {
+export async function fetchSessionMessages(sessionId, { limit = 50, before } = {}) {
   try {
-    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages`, {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (before !== undefined) params.set('before', String(before));
+    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages?${params}`, {
       headers: authHeaders(false)
     });
     return res.json();
   } catch {
-    return { ok: false, messages: [] };
+    return { ok: false, messages: [], total: 0, hasMore: false };
   }
 }
 
