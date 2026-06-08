@@ -75,12 +75,21 @@
     }
   };
 
+  function sanitizeAssistantContent(text) {
+    if (!text) return '';
+    // v10.3-fix: última barreira — remove blocos JSON de tool que tenham vazado
+    return text
+      .replace(/\{[\s\S]*?"tool"[\s\S]*?\}/g, '')
+      .replace(/\{[\s\S]*?"params"[\s\S]*?\}/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   function renderMarkdown(text) {
     if (!text) return '';
 
-    // v8.5-fix: ChatArea.svelte already strips tool blocks via stripToolBlocksFromBuffer.
-    // AssistantMessage should just render what it receives.
-    let working = text.trim();
+    // v10.3-fix: final sanitize pass before rendering
+    let working = sanitizeAssistantContent(text);
 
     // Unescape literal \n sequences
     let html = working.replace(/\\n/g, '\n');

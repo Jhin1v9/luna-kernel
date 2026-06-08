@@ -4,6 +4,7 @@
   import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, user } from '../stores.js';
   import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
+  import { StreamingParser } from '../lib/streamingParser.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
   import MessagesList from './MessagesList.svelte';
@@ -35,6 +36,8 @@
   const progressBuffers = new Map(); // v9.5: tool -> { chunks[], raf } for rAF batching of action_progress
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
   let expectingResponse = false; // v10.2-fix: Only show "thinking" when user actually sent a message
+
+  const streamingParser = new StreamingParser();
 
   // v10.3: pagination state for session history
   let messagePagination = {
@@ -162,6 +165,7 @@
     userMessageAdded = false;
     showTyping = false;
     expectingResponse = false;
+    streamingParser.reset();
   }
 
   // v8.3-fix: Flush accumulated response buffer, parsing out any complete JSON blocks.
@@ -536,9 +540,11 @@
           break;
         }
 
-        // v8.3-fix: Buffer response_delta instead of immediately rendering.
-        // This prevents raw JSON/tool blocks from appearing during streaming.
-        responseBuffer += deltaText;
+        // v10.3-fix: StreamingParser strips tool JSON in real-time via state-machine
+        const parsedChunk = streamingParser.feed(deltaText);
+        if (parsedChunk) {
+          responseBuffer += parsedChunk;
+        }
 
         // Hide thinking/typing when response starts arriving
         showTyping = false;
@@ -553,8 +559,7 @@
         });
         if (thinkRemoved) thinkingId = null;
 
-        // v9.2-fix: Only flush if there's no incomplete JSON block in the buffer.
-        // Flushing incomplete JSON causes raw tool JSON to leak into the chat.
+        // v9.2-fix: Keep defensive check against incomplete JSON as extra barrier
         if (!hasIncompleteJsonBlock(responseBuffer)) {
           flushResponseBuffer();
         }
@@ -1108,6 +1113,7 @@
     currentAssistantId = null;
     thinkingId = null;
     responseBuffer = '';
+    streamingParser.reset();
 
     // v4.0-fix: Remove all previous thinking bubbles when sending a new message
     messages.update(msgs => removeAllThinking(msgs));
