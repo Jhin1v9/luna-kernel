@@ -36,6 +36,16 @@
   // Quando não há sessão ativa, Luna vai dormir 💤
   $: if (!$currentSessionId) mascotState.set('sleep');
 
+  // v10.3-fix: quando usuário faz login explicitamente, força HOME (ignora localStorage)
+  let lastUser = null;
+  $: {
+    if ($user && !lastUser) {
+      const urlSessionId = getSessionFromURL();
+      if (!urlSessionId) currentSessionId.set(null);
+    }
+    lastUser = $user;
+  }
+
   async function handleNewSession() {
     const res = await sessionAction('create', null, 'Nova Sessão');
     if (res.ok && res.session) {
