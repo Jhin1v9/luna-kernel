@@ -645,6 +645,7 @@ class KimiBridge {
     this.lastRequestTime = new Map(); // userId -> timestamp (rate limiting)
     this.idleTimer = null;
     this.cookieBackupTimer = null;
+    this.healthCheckTimer = null;
     this.persistentUserIds = new Set(); // userIds that should NEVER be cleaned up
     this.cancelledStreams = new Map(); // userId -> true (cancelled mid-stream)
     this.semaphore = new Semaphore(this.maxPages); // v10.0-fix: Semaphore was missing from constructor
@@ -899,6 +900,9 @@ class KimiBridge {
     // Start cookie backup timer (save every 5 minutes)
     this._startCookieBackup();
 
+    // v10.0: Start health check to auto-recover from browser crashes
+    this._startHealthCheck();
+
     // v5.6-fix: Start background polling to keep pages alive (prevents mobile Chrome suspension)
     this._startBackgroundPolling();
 
@@ -919,6 +923,10 @@ class KimiBridge {
     if (this.bgPollTimer) {
       clearInterval(this.bgPollTimer);
       this.bgPollTimer = null;
+    }
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
     }
 
     // Close all user contexts (which also closes their pages)
@@ -3648,6 +3656,42 @@ class KimiBridge {
     }, 5 * 60 * 1000); // every 5 minutes
     // Also save immediately on start
     this._saveCookiesToFile().catch(() => {});
+  }
+
+  /**
+   * v10.0: Health check — verify browser and pages are alive every 30s.
+   * Auto-reconnects if browser died, recovers closed pages.
+   */
+  _startHealthCheck() {
+    if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
+    this.healthCheckTimer = setInterval(async () => {
+      try {
+        // 1. Check browser connection
+        if (!this.browser || !this.browser.isConnected()) {
+          log.warn('[HEALTH-CHECK] Browser disconnected, attempting auto-reconnect...');
+          await this.connect().catch(e => {
+            log.error('[HEALTH-CHECK] Auto-reconnect failed:', e.message);
+          });
+          return;
+        }
+
+        // 2. Check for dead pages and recover
+        for (const [userId, session] of this.userSessions) {
+          if (!session.page || session.page.isClosed()) {
+            log.warn(`[HEALTH-CHECK] Page closed for user ${hashUserId(userId)}, recovering...`);
+            try {
+              await this.recoverSession(userId);
+              log.info(`[HEALTH-CHECK] Recovered session for user ${hashUserId(userId)}`);
+            } catch (e) {
+              log.error(`[HEALTH-CHECK] Failed to recover session for ${hashUserId(userId)}:`, e.message);
+            }
+          }
+        }
+      } catch (e) {
+        log.error('[HEALTH-CHECK] Error:', e.message);
+      }
+    }, 30000); // 30 seconds
+    log.info('Health check started (30s interval)');
   }
 
   /**
