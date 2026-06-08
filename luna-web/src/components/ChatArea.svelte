@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
-  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal } from '../stores.js';
+  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, user } from '../stores.js';
   import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { playSound } from '../sound.js';
@@ -34,6 +34,7 @@
   let runningToolTimers = new Map(); // v9.4-fix: toolId -> { intervalId, startTime } for real-time execution timer
   const progressBuffers = new Map(); // v9.5: tool -> { chunks[], raf } for rAF batching of action_progress
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
+  let expectingResponse = false; // v10.2-fix: Only show "thinking" when user actually sent a message
 
   // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
   // The timer is cleared but NEVER restarted, so SSE never aborts due to silence.
@@ -390,8 +391,11 @@
       }
       case 'thinking_start': {
         playSound('thinkingStart');
-        mascotState.set('thinking');
-        mascotMessage.set('Hmm... deixa eu pensar...');
+        // v10.2-fix: Only show thinking state if user actually sent a message this turn
+        if (expectingResponse) {
+          mascotState.set('thinking');
+          mascotMessage.set('Hmm... deixa eu pensar...');
+        }
         // v8.5-fix: Unify INSTANT and THINKING modes — always use typing indicator, never thinking bubble
         showTyping = true;
         // Clean up any old thinking bubbles from previous messages
@@ -611,6 +615,7 @@
         playSound('error');
         mascotState.set('idle');
         mascotMessage.set('Limite de contexto atingido');
+        expectingResponse = false; // v10.2-fix: Turn aborted
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         messages.update(msgs => [...msgs, {
@@ -669,6 +674,7 @@
           isStreaming.set(false);
           mascotState.set('idle');
           mascotMessage.set('O que mais posso fazer?');
+          expectingResponse = false; // v10.2-fix: Turn complete
         }
         currentAssistantId = null;
         responseBuffer = '';
@@ -678,6 +684,7 @@
         playSound('error');
         mascotState.set('idle');
         mascotMessage.set('Precisa fazer login primeiro!');
+        expectingResponse = false; // v10.2-fix: Turn aborted
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         messages.update(msgs => [...msgs, {
@@ -693,6 +700,7 @@
         playSound('error');
         mascotState.set('idle');
         mascotMessage.set('Ops, algo deu errado...');
+        expectingResponse = false; // v10.2-fix: Turn aborted
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         messages.update(msgs => [...msgs, {
@@ -829,6 +837,9 @@
     responseBuffer = ''; // v9.5-fix: Clear buffer on session switch/reconnect
     processedEventIds.clear(); // v4.2: Clear dedup set on reconnect
     flushedContentHashes.clear(); // v10.1-fix: Clear content hashes on reconnect to allow valid replays
+    mascotState.set('idle'); // v10.2-fix: Reset mascot state on session switch/reconnect
+    mascotMessage.set(null);
+    expectingResponse = false; // v10.2-fix: Not expecting a response until user sends a message
     sseManager.disconnect();
     sseManager = new SSEManager();
 
@@ -900,7 +911,8 @@
     sseManager.connect(sessionId, handleEvent);
     lastConnectedSessionId = sessionId;
     // v5.2: Start heartbeat to keep agent page alive
-    startHeartbeat('web-' + sessionId, 30000);
+    const heartbeatUserId = $user?.id || ('web-' + sessionId);
+    startHeartbeat(heartbeatUserId, 30000);
   }
 
   $: if (sessionId && sessionId !== lastConnectedSessionId) {
@@ -996,6 +1008,7 @@
     userMessageAdded = true;
     await tick(); // Ensure user message is rendered before processing response events
     isStreaming.set(true);
+    expectingResponse = true; // v10.2-fix: Mark that we are expecting a response
     mascotState.set('thinking');
     mascotMessage.set('Hmm... deixa eu pensar...');
 
@@ -1206,6 +1219,9 @@
     } catch (e) {
       console.error('Send error:', e);
       isStreaming.set(false);
+      mascotState.set('idle'); // v10.2-fix: Reset mascot on send error
+      mascotMessage.set('Ops, algo deu errado...');
+      expectingResponse = false; // v10.2-fix: Turn aborted
       messages.update(msgs => [...msgs, {
         id: 'err-' + Date.now(),
         type: 'error',

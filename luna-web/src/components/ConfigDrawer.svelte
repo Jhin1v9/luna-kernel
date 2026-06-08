@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { downloadFile, parseEnvFile, generateEnvFile } from '../utils.js';
-  import { testConnection, downloadSelfHost, systemStatus } from '../api.js';
+  import { testConnection, downloadSelfHost, systemStatus, fetchActiveUsers } from '../api.js';
 
   export let open = false;
   export let config = {};
@@ -29,6 +29,31 @@
   let testLoading = {};
   let downloadLoading = false;
 
+  // Active users panel
+  let activeUsersList = [];
+  let usersLoading = false;
+
+  function timeAgo(isoDate) {
+    const ms = Date.now() - new Date(isoDate).getTime();
+    const sec = Math.floor(ms / 1000);
+    if (sec < 60) return 'agora';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `há ${min} min`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `há ${hr}h`;
+    const day = Math.floor(hr / 24);
+    return `há ${day}d`;
+  }
+
+  async function loadActiveUsers() {
+    usersLoading = true;
+    const res = await fetchActiveUsers();
+    if (res.ok && res.users) {
+      activeUsersList = res.users;
+    }
+    usersLoading = false;
+  }
+
   $: if (open) {
     localConfig = { ...config };
     updateCounts();
@@ -36,6 +61,10 @@
     fetchServiceStatus();
   } else {
     if (typeof document !== 'undefined') document.body.style.overflow = '';
+  }
+
+  $: if (open && activeSection === 'users') {
+    loadActiveUsers();
   }
 
   $: systemPromptValue = localConfig.SYSTEM_PROMPT || '';
@@ -163,6 +192,7 @@
   });
 
   const sections = [
+    { key: 'users', icon: '👥', title: 'Usuarios Ativos' },
     { key: 'telegram', icon: '🤖', title: 'Bot do Telegram' },
     { key: 'dashboard', icon: '📊', title: 'Dashboard NEXO PRO' },
     { key: 'kimi', icon: '🧠', title: 'Kimi Bridge' },
@@ -189,10 +219,10 @@
     transition:fade={{ duration: 200 }}
   />
 
-  <!-- Drawer -->
-  <aside
-    class="config-drawer"
-    transition:fly={{ x: 400, duration: 300, opacity: 1 }}
+  <!-- Modal -->
+  <div
+    class="config-modal"
+    transition:fly={{ y: 30, duration: 300, opacity: 1 }}
     role="dialog"
     aria-modal="true"
     aria-label="Configuracoes"
@@ -210,6 +240,37 @@
 
     <!-- Content -->
     <div class="drawer-content">
+      <!-- 👥 Usuarios Ativos -->
+      <div class="section">
+        <button class="section-header" on:click={() => setSection('users')}>
+          <span>👥 Usuarios Ativos</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'users'}>
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        {#if activeSection === 'users'}
+          <div class="section-body" transition:slideExpand>
+            {#if usersLoading}
+              <div class="loading-state">Carregando...</div>
+            {:else if activeUsersList.length === 0}
+              <div class="empty-state">Nenhum usuario ativo no momento</div>
+            {:else}
+              <div class="users-list">
+                {#each activeUsersList as user}
+                  <div class="user-item">
+                    <div class="user-info">
+                      <span class="user-name">{user.name}</span>
+                      <span class="user-last-seen">{timeAgo(user.lastSeen)}</span>
+                    </div>
+                    <span class="user-status {user.status}">{user.status === 'online' ? 'Online' : 'Ausente'}</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
       <!-- 🤖 Telegram -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('telegram')}>
@@ -509,7 +570,7 @@
       </div>
       <button class="btn-danger" on:click={handleRestart}>🔄 Reiniciar Luna</button>
     </div>
-  </aside>
+  </div>
 {/if}
 
 <!-- Confirmation Dialog -->
@@ -542,19 +603,22 @@
     background: rgba(0, 0, 0, 0.5);
     z-index: 40;
   }
-  .config-drawer {
+  .config-modal {
     position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 460px;
-    max-width: 100vw;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 520px;
+    max-width: 92vw;
+    max-height: 85vh;
     background: var(--luna-elevated);
-    border-left: 1px solid var(--luna-border);
+    border: 1px solid var(--luna-border);
+    border-radius: 16px;
     z-index: 50;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);
   }
   .drawer-header {
     display: flex;
@@ -996,10 +1060,68 @@
     0%, 100% { box-shadow: 0 0 6px rgba(16,185,129,0.3); }
     50% { box-shadow: 0 0 12px rgba(16,185,129,0.6); }
   }
+  /* 👥 Users list */
+  .users-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .user-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--luna-surface);
+    border: 1px solid var(--luna-border);
+    border-radius: 10px;
+    transition: background 0.15s;
+  }
+  .user-item:hover {
+    background: rgba(255,255,255,0.03);
+  }
+  .user-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .user-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--luna-text);
+  }
+  .user-last-seen {
+    font-size: 11px;
+    color: var(--luna-text-secondary);
+    opacity: 0.7;
+  }
+  .user-status {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .user-status.online {
+    background: rgba(16,185,129,0.15);
+    color: #34d399;
+  }
+  .user-status.away {
+    background: rgba(245,158,11,0.15);
+    color: #fbbf24;
+  }
+  .loading-state, .empty-state {
+    text-align: center;
+    padding: 20px;
+    font-size: 13px;
+    color: var(--luna-text-secondary);
+    opacity: 0.7;
+  }
   @media (max-width: 768px) {
-    .config-drawer {
-      width: 100vw;
-      left: 0;
+    .config-modal {
+      width: 96vw;
+      max-height: 92vh;
+      border-radius: 12px;
     }
   }
 </style>

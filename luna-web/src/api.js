@@ -322,6 +322,15 @@ export async function fetchSessionMessages(sessionId) {
   }
 }
 
+export async function fetchActiveUsers() {
+  try {
+    const res = await fetch('/api/users/active', { headers: authHeaders(false) });
+    return res.json();
+  } catch {
+    return { ok: false, users: [] };
+  }
+}
+
 export async function fetchConfig() {
   try {
     const res = await fetch('/api/config', { headers: authHeaders(false) });
