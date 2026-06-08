@@ -30,7 +30,9 @@ export class SSEManager {
     this.currentSessionId = null;
     this.onEventCallback = null;
     this.fallbackTimer = null;
+    this.reconnectTimer = null;
     this.lastMessageCount = 0;
+    this.destroyed = false;
   }
 
   _setStatus(status) {
@@ -53,7 +55,7 @@ export class SSEManager {
     // replay the ENTIRE history. lastMessageCount starts at 0, so slice(0) emits all.
     const initialCount = this.lastMessageCount;
     this.fallbackTimer = setInterval(async () => {
-      if (this.isIntentionallyClosed || this.gracefulClose || this.eventSource) return;
+      if (this.destroyed || this.isIntentionallyClosed || this.gracefulClose || this.eventSource) return;
       try {
         const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages`, {
           headers: authHeaders(false)
@@ -74,6 +76,7 @@ export class SSEManager {
                 text: msg.content,
                 fullResponse: msg.content,
                 source: 'fallback',
+                sessionId,
                 timestamp: msg.timestamp,
               });
             }
@@ -94,6 +97,7 @@ export class SSEManager {
   }
 
   connect(sessionId, onEvent) {
+    if (this.destroyed) return;
     this.onEventCallback = onEvent;
     // v4.1-fix: Prevent duplicate connections for same session
     if (this.eventSource && this.currentSessionId === sessionId) {
@@ -105,6 +109,7 @@ export class SSEManager {
       console.log('[SSE] Disconnecting existing connection before reconnect');
       this.disconnect();
     }
+    if (this.destroyed) return;
     this.currentSessionId = sessionId;
     this.isIntentionallyClosed = false;
     this.gracefulClose = false;
@@ -118,6 +123,7 @@ export class SSEManager {
     this.eventSource.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+        event.sessionId = event.sessionId || sessionId;
         onEvent(event);
         this.reconnectAttempts = 0;
         this._setStatus('connected');
@@ -146,7 +152,10 @@ export class SSEManager {
         const delay = Math.min(this.baseDelay * Math.pow(2, this.reconnectAttempts) + Math.random() * 1000, this.maxDelay);
         this.reconnectAttempts++;
         console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        setTimeout(() => this.connect(sessionId, onEvent), delay);
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          if (!this.destroyed) this.connect(sessionId, onEvent);
+        }, delay);
       } else if (this.gracefulClose) {
         this._setStatus('disconnected');
         console.log('[SSE] Graceful close — no reconnect needed.');
@@ -156,16 +165,21 @@ export class SSEManager {
   }
 
   disconnect() {
+    this.destroyed = true;
     this.isIntentionallyClosed = true;
     this.gracefulClose = true;
-    this.currentSessionId = null;
-    this.onEventCallback = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this._stopFallbackPolling();
     if (this.statusDebounceTimer) clearTimeout(this.statusDebounceTimer);
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
     }
+    this.currentSessionId = null;
+    this.onEventCallback = null;
     this._setStatus('disconnected');
   }
 }

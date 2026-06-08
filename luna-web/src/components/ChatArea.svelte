@@ -144,6 +144,26 @@
     return msgs.filter(m => m.type !== 'thinking');
   }
 
+  function resetSessionState() {
+    currentAssistantId = null;
+    thinkingId = null;
+    currentMessageId = null;
+    responseBuffer = '';
+    processedEventIds.clear();
+    flushedContentHashes.clear();
+    pendingToolCount = 0;
+    for (const { intervalId } of runningToolTimers.values()) clearInterval(intervalId);
+    runningToolTimers.clear();
+    progressBuffers.clear();
+    toolInstanceMap.clear();
+    toolStartTimes.clear();
+    for (const t of toolTimeoutTimers.values()) clearTimeout(t);
+    toolTimeoutTimers.clear();
+    userMessageAdded = false;
+    showTyping = false;
+    expectingResponse = false;
+  }
+
   // v8.3-fix: Flush accumulated response buffer, parsing out any complete JSON blocks.
   // Only creates/updates assistant bubble with CLEAN text (no raw tool JSON).
   function flushResponseBuffer(forceText = null) {
@@ -387,7 +407,9 @@
 
   function handleEvent(event) {
     if (!event) return;
+    // v10.3-fix: strict session isolation — ignore events from other sessions
     if (event.sessionId && event.sessionId !== sessionId) return;
+    if (sseManager.currentSessionId && event.sessionId && event.sessionId !== sseManager.currentSessionId) return;
 
     // v8.5-fix: Ignore fallback polling events while actively streaming
     if (event.source === 'fallback' && $isStreaming) {
@@ -906,6 +928,8 @@
 
   async function connectSSE() {
     if (!sessionId) return;
+    // v10.3-fix: reset all turn state before connecting to new session
+    resetSessionState();
     // NAO reconecta se ja esta conectado na mesma sessao
     if (lastConnectedSessionId === sessionId && sseManager.eventSource) return;
 
