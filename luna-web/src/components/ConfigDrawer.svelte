@@ -32,8 +32,10 @@
   // Active users panel
   let activeUsersList = [];
   let usersLoading = false;
+  let usersRefreshInterval = null;
 
   function timeAgo(isoDate) {
+    if (!isoDate) return 'nunca';
     const ms = Date.now() - new Date(isoDate).getTime();
     const sec = Math.floor(ms / 1000);
     if (sec < 60) return 'agora';
@@ -42,7 +44,21 @@
     const hr = Math.floor(min / 60);
     if (hr < 24) return `há ${hr}h`;
     const day = Math.floor(hr / 24);
-    return `há ${day}d`;
+    if (day < 7) return `há ${day}d`;
+    const week = Math.floor(day / 24);
+    return `há ${week} sem`;
+  }
+
+  function statusLabel(status) {
+    if (status === 'online') return 'Online';
+    if (status === 'away') return 'Ausente';
+    return 'Offline';
+  }
+
+  function statusClass(status) {
+    if (status === 'online') return 'online';
+    if (status === 'away') return 'away';
+    return 'offline';
   }
 
   async function loadActiveUsers() {
@@ -65,6 +81,14 @@
 
   $: if (open && activeSection === 'users') {
     loadActiveUsers();
+    if (!usersRefreshInterval) {
+      usersRefreshInterval = setInterval(() => loadActiveUsers(), 30000);
+    }
+  } else if (!open || activeSection !== 'users') {
+    if (usersRefreshInterval) {
+      clearInterval(usersRefreshInterval);
+      usersRefreshInterval = null;
+    }
   }
 
   $: systemPromptValue = localConfig.SYSTEM_PROMPT || '';
@@ -189,6 +213,10 @@
 
   onDestroy(() => {
     if (typeof document !== 'undefined') document.body.style.overflow = '';
+    if (usersRefreshInterval) {
+      clearInterval(usersRefreshInterval);
+      usersRefreshInterval = null;
+    }
   });
 
   const sections = [
@@ -250,23 +278,32 @@
         </button>
         {#if activeSection === 'users'}
           <div class="section-body" transition:slideExpand>
-            {#if usersLoading}
-              <div class="loading-state">Carregando...</div>
-            {:else if activeUsersList.length === 0}
-              <div class="empty-state">Nenhum usuario ativo no momento</div>
-            {:else}
-              <div class="users-list">
-                {#each activeUsersList as user}
-                  <div class="user-item">
-                    <div class="user-info">
-                      <span class="user-name">{user.name}</span>
-                      <span class="user-last-seen">{timeAgo(user.lastSeen)}</span>
+            <div class="users-panel">
+              <h3 class="users-panel-title">Usuários</h3>
+              <p class="users-panel-subtitle">Status de presença na Luna</p>
+
+              {#if usersLoading && activeUsersList.length === 0}
+                <div class="loading-state">Carregando usuários...</div>
+              {:else}
+                <div class="users-grid">
+                  {#each activeUsersList as u (u.userId)}
+                    <div class="user-card">
+                      <div class="user-avatar" style="background: {u.color || 'var(--luna-primary)'};">
+                        {(u.name || u.userId).charAt(0).toUpperCase()}
+                      </div>
+                      <div class="user-meta">
+                        <div class="user-name">{u.name || u.userId}</div>
+                        <div class="user-role">{u.role || 'usuário'}</div>
+                        <div class="user-last-seen">
+                          {u.status === 'online' ? 'visto agora' : `visto ${timeAgo(u.lastSeen)}`}
+                        </div>
+                      </div>
+                      <span class="user-status {statusClass(u.status)}">{statusLabel(u.status)}</span>
                     </div>
-                    <span class="user-status {user.status}">{user.status === 'online' ? 'Online' : 'Ausente'}</span>
-                  </div>
-                {/each}
-              </div>
-            {/if}
+                  {/each}
+                </div>
+              {/if}
+            </div>
           </div>
         {/if}
       </div>
@@ -1061,38 +1098,36 @@
     50% { box-shadow: 0 0 12px rgba(16,185,129,0.6); }
   }
   /* 👥 Users list */
-  .users-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  .users-panel { padding: 4px 2px; }
+  .users-panel-title { margin: 0 0 4px; font-size: 18px; color: var(--luna-text); }
+  .users-panel-subtitle { margin: 0 0 16px; color: var(--luna-text-secondary); font-size: 13px; }
+  .users-grid { display: flex; flex-direction: column; gap: 10px; }
+  .user-card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px; border-radius: 12px;
+    background: var(--luna-surface); border: 1px solid var(--luna-border);
   }
-  .user-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 12px;
-    background: var(--luna-surface);
-    border: 1px solid var(--luna-border);
-    border-radius: 10px;
-    transition: background 0.15s;
+  .user-avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 16px; flex-shrink: 0;
   }
-  .user-item:hover {
-    background: rgba(255,255,255,0.03);
-  }
-  .user-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
+  .user-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
   .user-name {
     font-size: 13px;
     font-weight: 600;
     color: var(--luna-text);
   }
+  .user-role {
+    font-size: 11px;
+    color: var(--luna-text-secondary);
+    text-transform: capitalize;
+  }
   .user-last-seen {
     font-size: 11px;
     color: var(--luna-text-secondary);
-    opacity: 0.7;
+    opacity: 0.8;
+    margin-top: 2px;
   }
   .user-status {
     font-size: 11px;
@@ -1101,6 +1136,7 @@
     border-radius: 999px;
     text-transform: uppercase;
     letter-spacing: 0.3px;
+    flex-shrink: 0;
   }
   .user-status.online {
     background: rgba(16,185,129,0.15);
@@ -1109,6 +1145,10 @@
   .user-status.away {
     background: rgba(245,158,11,0.15);
     color: #fbbf24;
+  }
+  .user-status.offline {
+    background: rgba(148,163,184,0.12);
+    color: #94a3b8;
   }
   .loading-state, .empty-state {
     text-align: center;
