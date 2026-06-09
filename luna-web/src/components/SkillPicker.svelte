@@ -88,8 +88,8 @@
         <button
           class="chip-remove"
           on:click={() => removeSkill(skill.path)}
-          aria-label="Remover skill"
-          title="Remover skill"
+          aria-label="Remover skill {skill.name}"
+          title="Remover skill {skill.name}"
           type="button"
         >
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -139,6 +139,7 @@
           bind:value={newPath}
           on:keydown={handleInputKeydown}
           placeholder="Caminho da skill (ex: /home/jhin/.luna/skills/coding)"
+          aria-label="Caminho da skill"
           disabled={validating}
         />
         <button
