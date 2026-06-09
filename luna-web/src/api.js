@@ -514,6 +514,11 @@ export async function systemLogs(lines = 50) {
   return res.json();
 }
 
+export async function bridgeStart() {
+  const res = await fetch('/api/system/bridge-start', { method: 'POST', headers: authHeaders(false) });
+  return res.json();
+}
+
 export async function testConnection(type, token) {
   const res = await fetch('/api/system/test-connection', {
     method: 'POST',

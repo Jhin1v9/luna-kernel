@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, user } from '../stores.js';
-  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent } from '../api.js';
+  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, bridgeStart } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { StreamingParser } from '../lib/streamingParser.js';
   import { playSound } from '../sound.js';
@@ -1159,7 +1159,7 @@
         let result = null;
 
         // System handlers (frontend APIs)
-        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent', 'refreshAgent', 'fullRefreshAgent'].includes(slashDef.handler)) {
+        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent', 'refreshAgent', 'fullRefreshAgent', 'bridgeStart'].includes(slashDef.handler)) {
           switch (slashDef.handler) {
             case 'systemRestart': result = await systemRestart(); break;
             case 'systemStatus': result = await systemStatus(); break;
@@ -1171,6 +1171,9 @@
               result = await turnOffAgent('web-' + sessionId);
               mascotState.set('sleep');
               mascotMessage.set('🌙 Luna dormindo. Envie uma mensagem para acordar.');
+              break;
+            case 'bridgeStart':
+              result = await bridgeStart();
               break;
             case 'refreshAgent': {
               isStreaming.set(false);
