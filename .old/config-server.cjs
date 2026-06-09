@@ -34,6 +34,7 @@ const RUNTIME_PATH = path.join(LUNA_DIR, '.luna-runtime.json');
 const USERS_FILE = path.join(__dirname, '..', 'NEXO_DASHBOARD_PRO', 'backend', 'data', 'users.json');
 const JWT_SECRET = process.env.JWT_SECRET || 'nexo-test-secret-2026';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
+const SKILLS_DIR = path.join(os.homedir(), '.luna', 'skills');
 
 // ============================================================
 // Skill validation
@@ -44,20 +45,33 @@ function validateSkillPath(rawPath) {
   }
 
   const home = os.homedir();
+  if (rawPath === '~' || rawPath.startsWith('~/')) {
+    rawPath = rawPath.replace(/^~/, home);
+  } else if (rawPath.startsWith('~')) {
+    return { valid: false, error: 'Caminho ~user não suportado' };
+  }
+
   let resolved;
   try {
-    resolved = path.resolve(rawPath.startsWith('~') ? rawPath.replace(/^~/, home) : rawPath);
+    resolved = path.resolve(rawPath);
   } catch (e) {
     return { valid: false, error: `Caminho inválido: ${e.message}` };
   }
 
-  if (!resolved.startsWith(home)) {
+  let real;
+  try {
+    real = fs.realpathSync(resolved);
+  } catch (e) {
+    return { valid: false, error: `Caminho inválido: ${e.message}` };
+  }
+
+  if (!real.startsWith(home + path.sep)) {
     return { valid: false, error: 'Caminho fora do diretório home do usuário' };
   }
 
-  const skillFile = path.join(resolved, 'SKILL.md');
+  const skillFile = path.join(real, 'SKILL.md');
   if (!fs.existsSync(skillFile)) {
-    return { valid: false, error: `SKILL.md não encontrado em ${resolved}` };
+    return { valid: false, error: `SKILL.md não encontrado em ${real}` };
   }
 
   let content;
@@ -96,7 +110,7 @@ function validateSkillPath(rawPath) {
 
   return {
     valid: true,
-    path: resolved,
+    path: real,
     skill: {
       name: meta.name,
       description: meta.description,
@@ -918,20 +932,21 @@ const server = http.createServer((req, res) => {
 
   // GET /api/skills — list all skills
   if (pathname === '/api/skills' && req.method === 'GET') {
-    const skillsDir = path.join(os.homedir(), '.luna', 'skills');
     const skills = [];
+    const seen = new Set();
     try {
-      const dirs = fs.readdirSync(skillsDir);
+      const dirs = fs.readdirSync(SKILLS_DIR);
       for (const dir of dirs) {
-        const dirPath = path.join(skillsDir, dir);
+        const dirPath = path.join(SKILLS_DIR, dir);
         if (!fs.statSync(dirPath).isDirectory()) continue;
         const result = validateSkillPath(dirPath);
-        if (result.valid) {
+        if (result.valid && !seen.has(result.skill.name)) {
+          seen.add(result.skill.name);
           skills.push({ ...result.skill, path: result.path });
         }
       }
     } catch (e) {
-      // ignore read errors, return empty list
+      console.error('[SKILLS] Erro ao listar skills:', e.message);
     }
     sendJSON(res, 200, { ok: true, skills });
     return;
@@ -942,7 +957,7 @@ const server = http.createServer((req, res) => {
     parseBody(req, (body) => {
       if (!body || typeof body.path !== 'string') return sendError(res, 400, 'path obrigatório');
       const result = validateSkillPath(body.path);
-      sendJSON(res, 200, result);
+      sendJSON(res, 200, { ok: result.valid, result });
     });
     return;
   }
@@ -964,13 +979,19 @@ const server = http.createServer((req, res) => {
       const session = getWebSession(sid);
       if (!session) return sendError(res, 404, 'Sessão não encontrada');
       const validatedPaths = [];
+      const invalid = [];
       for (const rawPath of body.activeSkills) {
         const result = validateSkillPath(rawPath);
         if (result.valid) validatedPaths.push(result.path);
+        else invalid.push({ path: rawPath, error: result.error });
       }
-      session.activeSkills = validatedPaths;
+      if (invalid.length > 0) {
+        return sendJSON(res, 400, { ok: false, error: 'Skills inválidos', invalid });
+      }
+      const deduped = [...new Set(validatedPaths)];
+      session.activeSkills = deduped;
       session.updatedAt = new Date().toISOString();
-      sendJSON(res, 200, { ok: true, activeSkills: validatedPaths });
+      sendJSON(res, 200, { ok: true, activeSkills: session.activeSkills });
     });
     return;
   }
