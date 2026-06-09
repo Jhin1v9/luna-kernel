@@ -19,7 +19,7 @@ if (fs.existsSync(envPath)) {
   });
 }
 
-const TelegramBot = require('node-telegram-bot-api');
+const getTelegramBot = require('../NEXO_DASHBOARD_PRO/backend/services/telegram-bot-client.cjs');
 const { LunaSoul } = require('./luna-soul.cjs');
 const { SessionManager } = require('./session-manager.cjs');
 
@@ -36,7 +36,7 @@ if (!TOKEN) {
 // ── ADAPTER ──
 class TelegramLunaAdapter {
   constructor() {
-    this.bot = new TelegramBot(TOKEN, { polling: true });
+    this.bot = getTelegramBot(TOKEN);
     this.luna = null;
     this.activeStreams = new Map(); // chatId → { messageId, lastEdit }
     this.activeUsers = new Set();   // evita overlapping requests
@@ -60,8 +60,8 @@ class TelegramLunaAdapter {
   }
 
   stop() {
-    if (this.bot) this.bot.stopPolling();
-    console.log('🛑 Telegram Adapter parado');
+    // v10.3-fix: Don't stopPolling on singleton — other services may be using it
+    console.log('🛑 Telegram Adapter parado (bot continua ativo)');
   }
 
   _setupHandlers() {
