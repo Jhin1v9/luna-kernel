@@ -249,7 +249,7 @@ function buildSystemPrompt(opts = {}) {
       agentsMd: agentsMd ? '\n[AGENTS.md]\n' + agentsMd.slice(0, 1500) + (agentsMd.length > 1500 ? '\n...[truncated]...' : '') : '',
       memoryContext: memoryContext ? '\n[MEMORIES]\n' + memoryContext.slice(0, 2000) + (memoryContext.length > 2000 ? '\n...[truncated]...' : '') : '',
       personaContent: personaContent ? '\n[PERSONA]\n' + personaContent.slice(0, 1000) + (personaContent.length > 1000 ? '\n...[truncated]...' : '') : '',
-      activeSkillsContent: activeSkillsContent ? '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n' + activeSkillsContent.slice(0, 8000) + (activeSkillsContent.length > 8000 ? '\n...[truncated]...' : '') : '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n(nenhuma skill ativa — use o conhecimento geral)',
+      activeSkillsContent: activeSkillsContent ? activeSkillsContent.slice(0, 8000) + (activeSkillsContent.length > 8000 ? '\n...[truncated]...' : '') : '(nenhuma skill ativa — use o conhecimento geral)',
       skillIndex: skillIndex || '',
       skillRegistry: skillRegistry || '',
       personaRegistry: personaRegistry || '',
@@ -291,7 +291,7 @@ ${agentsMd ? '\n[AGENTS.md]\n' + agentsMd.slice(0, 1500) + (agentsMd.length > 15
 ${memoryContext ? '\n[MEMORIES]\n' + memoryContext.slice(0, 2000) + (memoryContext.length > 2000 ? '\n...[truncated]...' : '') : ''}
 ${personaContent ? '\n[PERSONA]\n' + personaContent.slice(0, 1000) + (personaContent.length > 1000 ? '\n...[truncated]...' : '') : ''}
 ${activeSkillsContent ? '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n' + activeSkillsContent.slice(0, 8000) + (activeSkillsContent.length > 8000 ? '\n...[truncated]...' : '') : '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n(nenhuma skill ativa — use o conhecimento geral)'}
-${skillRegistry ? '\n[SKILL REGISTRY — REFERÊNCIA DE SKILLS DISPONÍVEIS]\n' + skillRegistry : ''}
+${'\n[SKILL REGISTRY — REFERÊNCIA DE SKILLS DISPONÍVEIS]\n' + (skillRegistry || '(nenhum skill disponível)')}
 
 Se nenhuma skill estiver ativa, use seu conhecimento geral sem inventar regras.
 
