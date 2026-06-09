@@ -21,7 +21,7 @@
 
   let listEl;
   let userScrolledUp = false;
-  let showNewMessagesBadge = false;
+  let hasNewMessagesPending = false;
   let lastMessageCount = 0;
   let lastMessageId = null;
 
@@ -37,7 +37,7 @@
         if (!userScrolledUp) {
           scrollToBottom('smooth');
         } else {
-          showNewMessagesBadge = true;
+          hasNewMessagesPending = true;
         }
       });
     }
@@ -49,14 +49,9 @@
   function handleScroll() {
     if (!listEl) return;
     const nearBottom = scrollManager.isNearBottom(listEl, 120);
-    const wasScrolledUp = userScrolledUp;
     userScrolledUp = !nearBottom;
     if (nearBottom) {
-      showNewMessagesBadge = false;
-    }
-    // Show badge if user scrolled up and there are new messages pending
-    if (!wasScrolledUp && userScrolledUp && lastMessageCount < messages.length) {
-      showNewMessagesBadge = true;
+      hasNewMessagesPending = false;
     }
   }
 
@@ -65,7 +60,7 @@
       listEl.scrollTo({ top: listEl.scrollHeight, behavior });
     }
     userScrolledUp = false;
-    showNewMessagesBadge = false;
+    hasNewMessagesPending = false;
   }
 
   onMount(() => {
@@ -168,12 +163,20 @@
   <div class="messages-bottom-spacer" aria-hidden="true"></div>
 </div>
 
-{#if showNewMessagesBadge}
-  <button class="new-messages-badge" on:click={() => scrollToBottom('smooth')}>
+{#if userScrolledUp}
+  <button
+    class="scroll-to-bottom-btn"
+    class:has-new={hasNewMessagesPending}
+    on:click={() => scrollToBottom('smooth')}
+  >
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
       <polyline points="6 9 12 15 18 9"/>
     </svg>
-    Novas mensagens
+    {#if hasNewMessagesPending}
+      Novas mensagens
+    {:else}
+      Ir para o final
+    {/if}
   </button>
 {/if}
 
@@ -323,15 +326,15 @@
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .new-messages-badge {
+  .scroll-to-bottom-btn {
     position: fixed;
     bottom: 100px;
     right: 24px;
     padding: 8px 16px;
-    background: rgba(233, 69, 96, 0.9);
+    background: rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    color: white;
+    color: var(--luna-text);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 20px;
     font-size: 13px;
@@ -340,13 +343,22 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    box-shadow: 0 4px 24px rgba(233, 69, 96, 0.3), 0 0 0 1px rgba(255,255,255,0.05);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255,255,255,0.05);
     animation: fadeIn 200ms ease;
     z-index: 100;
     transition: all 0.2s ease;
   }
-  .new-messages-badge:hover {
+  .scroll-to-bottom-btn:hover {
     transform: translateY(-2px);
+    background: rgba(255, 255, 255, 0.15);
+    box-shadow: 0 6px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255,255,255,0.08);
+  }
+  .scroll-to-bottom-btn.has-new {
+    background: rgba(233, 69, 96, 0.9);
+    color: white;
+    box-shadow: 0 4px 24px rgba(233, 69, 96, 0.3), 0 0 0 1px rgba(255,255,255,0.05);
+  }
+  .scroll-to-bottom-btn.has-new:hover {
     background: rgba(233, 69, 96, 1);
     box-shadow: 0 6px 28px rgba(233, 69, 96, 0.4), 0 0 0 1px rgba(255,255,255,0.08);
   }
