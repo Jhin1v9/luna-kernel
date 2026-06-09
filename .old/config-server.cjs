@@ -45,6 +45,7 @@ function validateSkillPath(rawPath) {
   }
 
   const home = os.homedir();
+  const JAIL = fs.realpathSync(home);
   if (rawPath === '~' || rawPath.startsWith('~/')) {
     rawPath = rawPath.replace(/^~/, home);
   } else if (rawPath.startsWith('~')) {
@@ -65,7 +66,7 @@ function validateSkillPath(rawPath) {
     return { valid: false, error: `Caminho inválido: ${e.message}` };
   }
 
-  if (!real.startsWith(home + path.sep)) {
+  if (!real.startsWith(JAIL + path.sep)) {
     return { valid: false, error: 'Caminho fora do diretório home do usuário' };
   }
 
