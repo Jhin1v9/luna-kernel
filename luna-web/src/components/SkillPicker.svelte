@@ -112,7 +112,7 @@
   </div>
 
   {#if showAdd}
-    <div class="skill-dropdown" on:click|stopPropagation>
+    <div class="skill-dropdown" role="dialog" aria-modal="true" on:click|stopPropagation on:keydown={() => {}}>
       {#if $availableSkills.length > 0}
         <div class="skill-list" role="listbox" aria-label="Skills disponíveis">
           {#each $availableSkills as skill (skill.path)}

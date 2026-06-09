@@ -35,6 +35,7 @@
   const progressBuffers = new Map(); // v9.5: tool -> { chunks[], raf } for rAF batching of action_progress
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
   let expectingResponse = false; // v10.2-fix: Only show "thinking" when user actually sent a message
+  let compactMessageId = null; // v10.4-fix: Track compact progress message for live updates
 
   const streamingParser = new StreamingParser();
 
@@ -165,6 +166,7 @@
     toolTimeoutTimers.clear();
     showTyping = false;
     expectingResponse = false;
+    compactMessageId = null;
     streamingParser.reset();
     messagePagination = { hasMore: false, total: 0, oldestTimestamp: null, loadingMore: false };
   }
@@ -822,8 +824,71 @@
         if (event.mode) currentMode.set(event.mode);
         break;
       }
-      case 'compact_start':
-      case 'compact_end':
+      case 'compact_start': {
+        compactMessageId = 'compact-' + Date.now();
+        messages.update(msgs => [...msgs, {
+          id: compactMessageId,
+          type: 'system',
+          content: event.message || '📦 Compactando contexto...',
+          timestamp: new Date().toISOString()
+        }]);
+        break;
+      }
+      case 'compact_progress': {
+        if (compactMessageId) {
+          messages.update(msgs => msgs.map(m =>
+            m.id === compactMessageId
+              ? { ...m, content: event.message || m.content }
+              : m
+          ));
+        } else {
+          // Fallback: create a new message if no compact_start was seen
+          compactMessageId = 'compact-' + Date.now();
+          messages.update(msgs => [...msgs, {
+            id: compactMessageId,
+            type: 'system',
+            content: event.message || '📦 Compactando...',
+            timestamp: new Date().toISOString()
+          }]);
+        }
+        break;
+      }
+      case 'compact_end': {
+        if (compactMessageId) {
+          messages.update(msgs => msgs.map(m =>
+            m.id === compactMessageId
+              ? { ...m, content: event.message || '✅ Contexto compactado.' }
+              : m
+          ));
+        } else {
+          messages.update(msgs => [...msgs, {
+            id: 'compact-' + Date.now(),
+            type: 'system',
+            content: event.message || '✅ Contexto compactado.',
+            timestamp: new Date().toISOString()
+          }]);
+        }
+        compactMessageId = null;
+        break;
+      }
+      case 'compact_error': {
+        if (compactMessageId) {
+          messages.update(msgs => msgs.map(m =>
+            m.id === compactMessageId
+              ? { ...m, content: event.message || '❌ Erro ao compactar contexto.' }
+              : m
+          ));
+        } else {
+          messages.update(msgs => [...msgs, {
+            id: 'compact-err-' + Date.now(),
+            type: 'system',
+            content: event.message || '❌ Erro ao compactar contexto.',
+            timestamp: new Date().toISOString()
+          }]);
+        }
+        compactMessageId = null;
+        break;
+      }
       case 'plan_error':
       case 'plan_complete': {
         messages.update(msgs => [...msgs, {

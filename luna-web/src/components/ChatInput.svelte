@@ -3,10 +3,12 @@
   import { planModeState, voiceState, voiceAudioData } from '../stores.js';
   import { Search, FileSearch, Shield, Eye, Mic, MicOff, RotateCcw, Power, PowerOff, Activity, HeartPulse, FileText } from 'lucide-svelte';
   import { voiceService } from '../lib/voiceService.js';
+  import SkillPicker from './SkillPicker.svelte';
 
   export let onSend = () => {};
   export let onCancel = () => {};
   export let disabled = false;
+  export let sessionId = null;
   export let placeholder = $planModeState.active ? 'Descreva o caso para investigação...' : 'Mensagem Luna...';
   $: placeholder = $planModeState.active ? 'Descreva o caso para investigação...' : 'Mensagem Luna...';
 
@@ -318,6 +320,8 @@
       {/each}
     </div>
   {/if}
+
+  <SkillPicker {sessionId} />
 
   <div class="input-row">
     <input
