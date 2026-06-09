@@ -423,6 +423,56 @@ window.fetch = async function(...args) {
 };
 
 // ============================================================
+// Skill System API
+// ============================================================
+
+export async function fetchSkills() {
+  try {
+    const res = await fetch('/api/skills', { headers: authHeaders(false) });
+    return res.json();
+  } catch {
+    return { ok: false, skills: [] };
+  }
+}
+
+export async function validateSkillPath(path) {
+  try {
+    const res = await fetch('/api/skills/validate', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ path }),
+    });
+    return res.json();
+  } catch {
+    return { ok: false, valid: false, error: 'Falha na validação' };
+  }
+}
+
+export async function fetchSessionActiveSkills(sessionId) {
+  try {
+    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/skills`, {
+      headers: authHeaders(false),
+    });
+    return res.json();
+  } catch {
+    return { ok: false, activeSkills: [] };
+  }
+}
+
+export async function setSessionActiveSkills(sessionId, activeSkills) {
+  try {
+    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/skills`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ activeSkills }),
+    });
+    return res.json();
+  } catch {
+    return { ok: false, activeSkills: [] };
+  }
+}
+
+// ============================================================
 // Plan Mode API
 // ============================================================
 
