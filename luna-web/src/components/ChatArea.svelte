@@ -24,7 +24,6 @@
   let toolTimeoutTimers = new Map(); // toolName -> timeout timer id
   const TOOL_TIMEOUT_MS = 60000; // 60s timeout for any tool
   let processedEventIds = new Set(); // v4.2: Track processed SSE event IDs to prevent duplicates
-  let userMessageAdded = false; // v5.6-fix: Ensure user message is in store before assistant responses
   let streamingSafetyTimer = null; // v5.7-fix: Detect SSE inactivity (NOT thinking time)
   let currentMessageId = null; // v6.1-fix: Track current message ID to ignore stale SSE events
   let responseBuffer = ''; // v8.3-fix: Buffer response_delta to avoid showing raw JSON/tool blocks during streaming
@@ -164,7 +163,6 @@
     toolStartTimes.clear();
     for (const t of toolTimeoutTimers.values()) clearTimeout(t);
     toolTimeoutTimers.clear();
-    userMessageAdded = false;
     showTyping = false;
     expectingResponse = false;
     streamingParser.reset();
@@ -189,7 +187,6 @@
     // (response_delta + response_detected + done can all carry the same text)
     const contentHash = hashContent(cleanText.trim());
     if (flushedContentHashes.has(contentHash)) {
-      console.log('[flushResponseBuffer] Duplicate content hash detected, skipping');
       if (forceText !== null) responseBuffer = '';
       return;
     }
@@ -201,7 +198,6 @@
       return existing === cleanText.trim() || existing.includes(cleanText.trim());
     });
     if (isDuplicate) {
-      console.log('[flushResponseBuffer] Content already exists in recent assistant message, skipping');
       if (forceText !== null) responseBuffer = '';
       return;
     }
@@ -423,25 +419,13 @@
       return;
     }
 
-    // v6.1-fix: If the event has a messageId that doesn't match the current message,
-    // it's a stale event from a previous message — ignore it.
-    if (event.messageId && currentMessageId && event.messageId !== currentMessageId) {
-      console.log('[SSE] Ignoring stale event from previous message:', event.type, event.messageId);
-      return;
-    }
-
-    // v5.6-fix: Ignore response events until user message is confirmed in store
-    const isResponseEvent = ['assistant', 'thinking', 'response_detected', 'partial', 'done', 'tool', 'action_start', 'action_end', 'action_progress'].includes(event.type);
-    if (isResponseEvent && !userMessageAdded) {
-      console.log('[SSE] Delaying response event until user message is added:', event.type);
-      // v9.0-fix: Retry with exponential backoff, max 10 attempts
-      event._retryCount = (event._retryCount || 0) + 1;
-      if (event._retryCount <= 10) {
-        setTimeout(() => handleEvent(event), 100 * event._retryCount);
-      } else {
-        console.warn('[SSE] Dropping event after 10 retries — user message never confirmed:', event.type);
-      }
-      return;
+    // v6.1-fix + v10.3-fix: Ignore stale events from previous messages.
+    // If event has a messageId and we have a currentMessageId, they must match.
+    // If event has a messageId but currentMessageId is null, we're not processing
+    // any message — ignore it (prevents delayed events from old messages).
+    if (event.messageId) {
+      if (currentMessageId && event.messageId !== currentMessageId) return;
+      if (!currentMessageId) return;
     }
 
     // v9.0-fix: Deduplicate by event hash — prevents duplicate rendering on reconnects
@@ -456,10 +440,7 @@
     } else {
       dedupKey = getEventHash(event);
     }
-    if (processedEventIds.has(dedupKey)) {
-      console.log('[SSE] Deduplicated:', event.type, event.tool || '', event.id || '');
-      return;
-    }
+    if (processedEventIds.has(dedupKey)) return;
     processedEventIds.add(dedupKey);
     // Limit set size to prevent memory leaks — increased to 5000 for long sessions
     if (processedEventIds.size > 5000) {
@@ -467,8 +448,7 @@
       processedEventIds.delete(iter.next().value);
     }
 
-    // v4.0-debug: Log every SSE event for debugging
-    console.log('[SSE]', event.type, event.text ? event.text.substring(0, 80) : '', event.tool || '');
+    // v4.0-debug: SSE event processing (logs removed in production)
 
     // v3.6-fix: Also deduplicate by backend event ID
     if (event.id) {
@@ -608,7 +588,6 @@
             const hasToolJson = /"tool"\s*:/.test(content) || /"params"\s*:\s*\{/.test(content) || /"command"\s*:/.test(content);
             // Remove if it's raw JSON, empty after stripping, or very short (likely just a tool call)
             if (hasToolJson || !content.trim() || !stripped.trim() || stripped.trim().length < 10) {
-              console.log('[action_start] Removing leaked/empty assistant message before tool card');
               return msgs.slice(0, -1);
             }
           }
@@ -747,15 +726,11 @@
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         const finalResponse = event.result?.response || event.response || event.text;
-        console.log('[done] finalResponse length:', finalResponse?.length, 'content:', finalResponse?.substring(0, 100));
 
         // v8.5-fix: prevent duplicate final message if response_done already handled it
         const msgs = get(messages);
         const alreadyHasDone = msgs.some(m => m.messageId === (event.messageId || currentMessageId) && m.type === 'done');
-        if (alreadyHasDone) {
-          console.log('[DEBUG-LUNA] Skipping duplicate done event');
-          break;
-        }
+        if (alreadyHasDone) break;
         
         // v9.3-fix: Only flush if we haven't already rendered this response.
         // response_done already flushes and resets currentAssistantId —
@@ -776,16 +751,13 @@
         if (pendingToolCount > 0) {
           const stuckTool = Array.from(toolStartTimes.values()).some(startTime => (Date.now() - startTime) > toolStuckTimeout);
           if (stuckTool) {
-            console.warn('[done] Tools stuck for >30s — forcing pendingToolCount = 0');
             pendingToolCount = 0;
           } else {
-            console.log('[done] Tools ainda em execução — mantendo isStreaming=true até action_end chegar (timeout: 30s)');
             mascotState.set('working');
             mascotMessage.set('Finalizando tools...');
             // v10.3-fix: Force reset after 30s even if action_end never arrives
             setTimeout(() => {
               if (pendingToolCount > 0) {
-                console.warn('[done] Auto-resetting pendingToolCount after 30s safety timeout');
                 pendingToolCount = 0;
                 isStreaming.set(false);
                 mascotState.set('idle');
@@ -946,10 +918,14 @@
 
   async function connectSSE() {
     if (!sessionId) return;
-    // v10.3-fix: reset all turn state before connecting to new session
-    resetSessionState();
     // NAO reconecta se ja esta conectado na mesma sessao
     if (lastConnectedSessionId === sessionId && sseManager.eventSource) return;
+    // v10.3-fix: reset all turn state ONLY when switching to a NEW session.
+    // Reconnecting in the same session must preserve turn state so that
+    // delayed SSE events are processed correctly.
+    if (lastConnectedSessionId !== sessionId) {
+      resetSessionState();
+    }
 
     // v4.0-fix: Do NOT reload history while streaming is active — prevents overwriting current state
     if ($isStreaming) {
@@ -1062,6 +1038,10 @@
     }
   });
 
+  onDestroy(() => {
+    sseManager.disconnect();
+  });
+
   async function handleSend(msg, files) {
     if (!msg.trim()) return;
 
@@ -1078,7 +1058,6 @@
     currentMessageId = 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 
     // v5.6-fix: Reset user message tracking for new message
-    userMessageAdded = false;
 
     // v6.0-fix: DO NOT clear processedEventIds — it breaks deduplication of
     // delayed SSE events from the previous message. When a 'done' or
@@ -1143,7 +1122,6 @@
       timestamp: new Date().toISOString()
     };
     messages.update(msgs => [...msgs, userMsg]);
-    userMessageAdded = true;
     await tick(); // Ensure user message is rendered before processing response events
     isStreaming.set(true);
     expectingResponse = true; // v10.2-fix: Mark that we are expecting a response
