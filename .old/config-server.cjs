@@ -9,6 +9,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const os = require('os');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
@@ -33,6 +34,79 @@ const RUNTIME_PATH = path.join(LUNA_DIR, '.luna-runtime.json');
 const USERS_FILE = path.join(__dirname, '..', 'NEXO_DASHBOARD_PRO', 'backend', 'data', 'users.json');
 const JWT_SECRET = process.env.JWT_SECRET || 'nexo-test-secret-2026';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
+
+// ============================================================
+// Skill validation
+// ============================================================
+function validateSkillPath(rawPath) {
+  if (!rawPath || typeof rawPath !== 'string') {
+    return { valid: false, error: 'Caminho do skill não fornecido' };
+  }
+
+  const home = os.homedir();
+  let resolved;
+  try {
+    resolved = path.resolve(rawPath.startsWith('~') ? rawPath.replace(/^~/, home) : rawPath);
+  } catch (e) {
+    return { valid: false, error: `Caminho inválido: ${e.message}` };
+  }
+
+  if (!resolved.startsWith(home)) {
+    return { valid: false, error: 'Caminho fora do diretório home do usuário' };
+  }
+
+  const skillFile = path.join(resolved, 'SKILL.md');
+  if (!fs.existsSync(skillFile)) {
+    return { valid: false, error: `SKILL.md não encontrado em ${resolved}` };
+  }
+
+  let content;
+  try {
+    content = fs.readFileSync(skillFile, 'utf8');
+  } catch (e) {
+    return { valid: false, error: `Erro ao ler SKILL.md: ${e.message}` };
+  }
+
+  const frontMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!frontMatch) {
+    return { valid: false, error: 'Frontmatter YAML não encontrado em SKILL.md' };
+  }
+
+  const yaml = frontMatch[1];
+  const meta = {};
+  for (const line of yaml.split('\n')) {
+    const [key, ...rest] = line.split(':');
+    if (key && rest.length) {
+      const val = rest.join(':').trim();
+      try { meta[key.trim()] = JSON.parse(val); } catch { meta[key.trim()] = val; }
+    }
+  }
+
+  if (!meta.name || typeof meta.name !== 'string') {
+    return { valid: false, error: 'Campo "name" é obrigatório no frontmatter' };
+  }
+  if (!meta.description || typeof meta.description !== 'string') {
+    return { valid: false, error: 'Campo "description" é obrigatório no frontmatter' };
+  }
+
+  const body = content.slice(frontMatch[0].length).trim();
+  if (!body) {
+    return { valid: false, error: 'Corpo Markdown do skill não pode estar vazio' };
+  }
+
+  return {
+    valid: true,
+    path: resolved,
+    skill: {
+      name: meta.name,
+      description: meta.description,
+      triggers: Array.isArray(meta.triggers) ? meta.triggers : (meta.triggers ? [meta.triggers] : []),
+      tier: meta.tier || 'user-global',
+      version: meta.version || '',
+      author: meta.author || '',
+    },
+  };
+}
 
 // Write runtime config so frontend dev server can discover our port
 fs.writeFileSync(RUNTIME_PATH, JSON.stringify({ apiPort: PORT, apiUrl: `http://localhost:${PORT}` }));
@@ -74,6 +148,7 @@ function createWebSession(title = 'Nova conversa', mode = 'thinking') {
     title,
     mode,
     messages: [],
+    activeSkills: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -428,6 +503,7 @@ const server = http.createServer((req, res) => {
           sessionId: session.id,
           userId: 'web-' + session.id,
           mode: ['instant', 'thinking', 'agent', 'swarm'].includes(mode) ? mode : 'thinking',
+          activeSkills: session.activeSkills || [],
         });
 
         for await (const ev of stream) {
@@ -832,6 +908,69 @@ const server = http.createServer((req, res) => {
       } else {
         sendJSON(res, 200, { ok: true, message: 'Nenhum stream ativo' });
       }
+    });
+    return;
+  }
+
+  // ============================================================
+  // SKILLS API
+  // ============================================================
+
+  // GET /api/skills — list all skills
+  if (pathname === '/api/skills' && req.method === 'GET') {
+    const skillsDir = path.join(os.homedir(), '.luna', 'skills');
+    const skills = [];
+    try {
+      const dirs = fs.readdirSync(skillsDir);
+      for (const dir of dirs) {
+        const dirPath = path.join(skillsDir, dir);
+        if (!fs.statSync(dirPath).isDirectory()) continue;
+        const result = validateSkillPath(dirPath);
+        if (result.valid) {
+          skills.push({ ...result.skill, path: result.path });
+        }
+      }
+    } catch (e) {
+      // ignore read errors, return empty list
+    }
+    sendJSON(res, 200, { ok: true, skills });
+    return;
+  }
+
+  // POST /api/skills/validate — validate a skill path
+  if (pathname === '/api/skills/validate' && req.method === 'POST') {
+    parseBody(req, (body) => {
+      if (!body || typeof body.path !== 'string') return sendError(res, 400, 'path obrigatório');
+      const result = validateSkillPath(body.path);
+      sendJSON(res, 200, result);
+    });
+    return;
+  }
+
+  // GET /api/chat/session/:id/skills — fetch session active skills
+  if (pathname.startsWith('/api/chat/session/') && pathname.endsWith('/skills') && req.method === 'GET') {
+    const sid = pathname.split('/')[4];
+    const session = getWebSession(sid);
+    if (!session) return sendError(res, 404, 'Sessão não encontrada');
+    sendJSON(res, 200, { ok: true, activeSkills: session.activeSkills || [] });
+    return;
+  }
+
+  // POST /api/chat/session/:id/skills — update session active skills
+  if (pathname.startsWith('/api/chat/session/') && pathname.endsWith('/skills') && req.method === 'POST') {
+    parseBody(req, (body) => {
+      if (!body || !Array.isArray(body.activeSkills)) return sendError(res, 400, 'activeSkills (array) obrigatório');
+      const sid = pathname.split('/')[4];
+      const session = getWebSession(sid);
+      if (!session) return sendError(res, 404, 'Sessão não encontrada');
+      const validatedPaths = [];
+      for (const rawPath of body.activeSkills) {
+        const result = validateSkillPath(rawPath);
+        if (result.valid) validatedPaths.push(result.path);
+      }
+      session.activeSkills = validatedPaths;
+      session.updatedAt = new Date().toISOString();
+      sendJSON(res, 200, { ok: true, activeSkills: validatedPaths });
     });
     return;
   }
