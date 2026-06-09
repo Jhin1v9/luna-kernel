@@ -263,6 +263,8 @@
 <div
   class="chat-input-container"
   class:dragging={isDragging}
+  role="region"
+  aria-label="Área de entrada do chat"
   on:drop={handleDrop}
   on:dragover={handleDragOver}
   on:dragleave={handleDragLeave}
