@@ -112,11 +112,11 @@
   </div>
 
   {#if showAdd}
-    <div class="skill-dropdown" role="dialog" aria-modal="true" on:click|stopPropagation on:keydown={() => {}}>
+    <div class="skill-dropdown">
       {#if $availableSkills.length > 0}
-        <div class="skill-list" role="listbox" aria-label="Skills disponíveis">
+        <div class="skill-list" aria-label="Skills disponíveis">
           {#each $availableSkills as skill (skill.path)}
-            <label class="skill-option" role="option" aria-selected={$activeSkills.includes(skill.path)}>
+            <label class="skill-option">
               <input
                 type="checkbox"
                 checked={$activeSkills.includes(skill.path)}
