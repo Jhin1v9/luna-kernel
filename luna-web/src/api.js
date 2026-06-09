@@ -184,7 +184,7 @@ export class SSEManager {
   }
 }
 
-export async function sendMessage(message, sessionId, mode = 'instant', files = [], messageId = null) {
+export async function sendMessage(message, sessionId, mode = 'instant', files = [], messageId = null, activeSkills = []) {
   let filePayload = [];
   if (files && files.length > 0) {
     filePayload = await Promise.all(
@@ -203,7 +203,7 @@ export async function sendMessage(message, sessionId, mode = 'instant', files = 
       })
     );
   }
-  const body = { message, sessionId, mode, files: filePayload };
+  const body = { message, sessionId, mode, files: filePayload, activeSkills };
   if (messageId) body.messageId = messageId;
 
   // v9.2-fix: Retry with exponential backoff — prevents "Unexpected end of JSON input"

@@ -1,8 +1,8 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
-  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, user } from '../stores.js';
-  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, bridgeStart } from '../api.js';
+  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, user, activeSkills } from '../stores.js';
+  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, bridgeStart, fetchSessionActiveSkills } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { StreamingParser } from '../lib/streamingParser.js';
   import { playSound } from '../sound.js';
@@ -38,6 +38,12 @@
   let compactMessageId = null; // v10.4-fix: Track compact progress message for live updates
 
   const streamingParser = new StreamingParser();
+
+  async function loadSessionSkills(id) {
+    if (!id) { activeSkills.set([]); return; }
+    const res = await fetchSessionActiveSkills(id);
+    if (res.ok) activeSkills.set(res.activeSkills || []);
+  }
 
   // v10.3: pagination state for session history — uses TIMESTAMP cursor (not index)
   let messagePagination = {
@@ -1097,6 +1103,8 @@
     connectSSE();
   }
 
+  $: if (sessionId) loadSessionSkills(sessionId);
+
   onMount(() => {
     if (sessionId && sessionId !== lastConnectedSessionId) {
       connectSSE();
@@ -1261,7 +1269,7 @@
               // Send a continuation message to the backend
               if (activeSessionId) {
                 try {
-                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode);
+                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode, undefined, null, $activeSkills);
                   await connectSSE();
                 } catch (e) {
                   console.error('[fullRefresh] Failed to send continuation:', e);
@@ -1394,7 +1402,7 @@
         planModeState.update(s => ({ ...s, status: 'processing' }));
         await startPlanMode(planMsg, activeSessionId);
       } else {
-        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId);
+        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId, $activeSkills);
         // v7.1-fix: Reconnect SSE after sending a new message in the same session.
         // The previous SSE connection was gracefully closed after 'done'. We need
         // a fresh connection for the new message's streaming response.

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState } from './stores.js';
+  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState, availableSkills } from './stores.js';
 
   // Update CSS theme variables when mode changes
   $: {
@@ -18,7 +18,7 @@
       document.body.classList.remove('plan-mode-active');
     }
   }
-  import { fetchSessions, fetchConfig, sessionAction, SSEManager, fetchMe } from './api.js';
+  import { fetchSessions, fetchConfig, sessionAction, SSEManager, fetchMe, fetchSkills } from './api.js';
   import Sidebar from './components/Sidebar.svelte';
   import ChatArea from './components/ChatArea.svelte';
   import LoginPage from './components/LoginPage.svelte';
@@ -140,6 +140,8 @@
           }
         }
       }
+      const skillsRes = await fetchSkills();
+      if (skillsRes.ok && skillsRes.skills) availableSkills.set(skillsRes.skills);
       const cfg = await fetchConfig();
       if (cfg) lunaConfig.set(cfg);
     } catch (e) {
