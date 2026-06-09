@@ -688,7 +688,7 @@ function extractAllJsonBlocks(text) {
   const blocks = [];
   if (!text) return blocks;
   
-  const codeBlockRegex = /```jsons*([sS]*?)```/g;
+  const codeBlockRegex = /```json\s*([\s\S]*?)```/g;
   let match;
   while ((match = codeBlockRegex.exec(text)) !== null) {
     try {
@@ -699,8 +699,8 @@ function extractAllJsonBlocks(text) {
       }
     } catch (e) {}
   }
-  
-  const rawJsonRegex = /{[sS]*?"tool"[sS]*?}/g;
+
+  const rawJsonRegex = /\{[\s\S]*?"tool"[\s\S]*?\}/g;
   while ((match = rawJsonRegex.exec(text)) !== null) {
     const alreadyCaptured = blocks.some(b => match.index >= b.index && match.index < b.index + b.raw.length);
     if (!alreadyCaptured) {
