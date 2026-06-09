@@ -239,7 +239,7 @@ function loadMasterPrompt() {
 }
 
 function buildSystemPrompt(opts = {}) {
-  const { skillIndex = '', personaContent = '', memoryContext = '', personaRegistry = '', skillRegistry = '', agentsMd = '', masterPrompt = '', userName = '' } = opts;
+  const { skillIndex = '', activeSkillsContent = '', personaContent = '', memoryContext = '', personaRegistry = '', skillRegistry = '', agentsMd = '', masterPrompt = '', userName = '' } = opts;
 
   const cfg = getPromptConfig();
   if (cfg && cfg.systemPrompt) {
@@ -249,6 +249,10 @@ function buildSystemPrompt(opts = {}) {
       agentsMd: agentsMd ? '\n[AGENTS.md]\n' + agentsMd.slice(0, 1500) + (agentsMd.length > 1500 ? '\n...[truncated]...' : '') : '',
       memoryContext: memoryContext ? '\n[MEMORIES]\n' + memoryContext.slice(0, 2000) + (memoryContext.length > 2000 ? '\n...[truncated]...' : '') : '',
       personaContent: personaContent ? '\n[PERSONA]\n' + personaContent.slice(0, 1000) + (personaContent.length > 1000 ? '\n...[truncated]...' : '') : '',
+      activeSkillsContent: activeSkillsContent ? '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n' + activeSkillsContent.slice(0, 8000) + (activeSkillsContent.length > 8000 ? '\n...[truncated]...' : '') : '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n(nenhuma skill ativa — use o conhecimento geral)',
+      skillIndex: skillIndex || '',
+      skillRegistry: skillRegistry || '',
+      personaRegistry: personaRegistry || '',
       masterPrompt: masterPrompt || '(master prompt not loaded)',
       userName: userName || 'Usuário',
     };
@@ -286,6 +290,7 @@ Home: /home/jhin/ | Skills: ${skillIndex ? skillIndex.split('\n').length : 0} | 
 ${agentsMd ? '\n[AGENTS.md]\n' + agentsMd.slice(0, 1500) + (agentsMd.length > 1500 ? '\n...[truncated]...' : '') : ''}
 ${memoryContext ? '\n[MEMORIES]\n' + memoryContext.slice(0, 2000) + (memoryContext.length > 2000 ? '\n...[truncated]...' : '') : ''}
 ${personaContent ? '\n[PERSONA]\n' + personaContent.slice(0, 1000) + (personaContent.length > 1000 ? '\n...[truncated]...' : '') : ''}
+${activeSkillsContent ? '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n' + activeSkillsContent.slice(0, 8000) + (activeSkillsContent.length > 8000 ? '\n...[truncado]...' : '') : '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n(nenhuma skill ativa — use o conhecimento geral)'}
 
 [MASTER PROMPT]
 ${masterPrompt || '(master prompt not loaded)'}`.slice(0, 20000);
@@ -860,6 +865,39 @@ function loadSkillIndex() {
     }
   } catch {}
   return skills;
+}
+
+function loadActiveSkills(activeSkills = []) {
+  if (!Array.isArray(activeSkills) || activeSkills.length === 0) return [];
+  const result = [];
+  for (const skillPath of activeSkills) {
+    const skillMd = path.join(skillPath, 'SKILL.md');
+    if (!fs.existsSync(skillMd)) continue;
+    try {
+      const content = fs.readFileSync(skillMd, 'utf8');
+      const frontMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!frontMatch) continue;
+      const meta = {};
+      for (const line of frontMatch[1].split('\n')) {
+        const [key, ...rest] = line.split(':');
+        if (key && rest.length) {
+          const val = rest.join(':').trim();
+          try { meta[key.trim()] = JSON.parse(val); } catch { meta[key.trim()] = val; }
+        }
+      }
+      const body = content.slice(frontMatch[0].length).trim();
+      result.push({
+        name: meta.name || path.basename(skillPath),
+        description: meta.description || '',
+        triggers: meta.triggers || [],
+        tier: meta.tier || 'user-global',
+        version: meta.version || '1.0.0',
+        author: meta.author || '',
+        body,
+      });
+    } catch {}
+  }
+  return result;
 }
 
 function loadPersona(personaName) {
@@ -1749,6 +1787,11 @@ class LunaSoul extends EventEmitter {
     }).id;
 
     const session = this.sessionManager.loadSession(sessionId);
+    if (session && options.activeSkills && Array.isArray(options.activeSkills)) {
+      if (JSON.stringify(session.activeSkills || []) !== JSON.stringify(options.activeSkills)) {
+        this.sessionManager.updateSessionState(sessionId, { activeSkills: options.activeSkills });
+      }
+    }
     const mode = options.mode || session?.mode || this.defaultMode;
 
     // Store user message
@@ -1832,6 +1875,11 @@ class LunaSoul extends EventEmitter {
     }).id;
 
     const session = this.sessionManager.loadSession(sessionId);
+    if (session && options.activeSkills && Array.isArray(options.activeSkills)) {
+      if (JSON.stringify(session.activeSkills || []) !== JSON.stringify(options.activeSkills)) {
+        this.sessionManager.updateSessionState(sessionId, { activeSkills: options.activeSkills });
+      }
+    }
     let mode = options.mode || session?.mode || this.defaultMode;
     // CHAT is a parsed response mode, not a Kimi Web mode — map to thinking
     if (mode === 'CHAT') mode = 'thinking';
@@ -2944,9 +2992,14 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
 
     if (isFirstMessage) {
       // ── FIRST MESSAGE: full system prompt + context ──
-      // Load skills index
+      // Load skills index (available reference) and active skills (behavior override)
       const skills = loadSkillIndex();
       const skillIndex = skills.map(s => `- ${s.name}: ${s.description} (triggers: ${s.triggers?.join(', ') || 'none'})`).join('\n');
+      const activeSkillPaths = options.activeSkills || session?.activeSkills || [];
+      const activeSkills = loadActiveSkills(activeSkillPaths);
+      const activeSkillsContent = activeSkills.length > 0
+        ? activeSkills.map(s => `### ${s.name}\n${s.body}`).join('\n\n')
+        : '(nenhuma skill ativa — use o conhecimento geral)';
 
       // Load persona
       const personaContent = loadPersona(session?.persona || 'default') || '';
@@ -2968,7 +3021,7 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
       const masterPrompt = loadMasterPrompt();
 
       // Build system prompt
-      const systemPrompt = buildSystemPrompt({ skillIndex, personaContent, memoryContext, personaRegistry, skillRegistry, agentsMd, masterPrompt, userName: options.userName });
+      const systemPrompt = buildSystemPrompt({ skillIndex, activeSkillsContent, personaContent, memoryContext, personaRegistry, skillRegistry, agentsMd, masterPrompt, userName: options.userName });
 
       // Workspace context (if set)
       const workspaceContext = workspaceManager.getFormattedManifest('luna-cli');
