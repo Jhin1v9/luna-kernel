@@ -467,7 +467,7 @@ const server = http.createServer((req, res) => {
   if (pathname === '/api/chat' && req.method === 'POST') {
     parseBody(req, async (body) => {
       if (!body) return sendError(res, 400, 'JSON inválido');
-      const { message, sessionId, mode = 'thinking', files } = body;
+      const { message, sessionId, mode = 'thinking', files, activeSkills } = body;
       if (!message) return sendError(res, 400, 'message obrigatório');
 
       let session = sessionId ? getWebSession(sessionId) : null;
@@ -495,6 +495,11 @@ const server = http.createServer((req, res) => {
 
       // Persist mode on session
       session.mode = mode;
+
+      // Persist active skills from request
+      if (activeSkills && Array.isArray(activeSkills)) {
+        session.activeSkills = activeSkills;
+      }
 
       // Add user message
       addMessageToSession(session.id, {
