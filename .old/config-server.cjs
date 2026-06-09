@@ -70,6 +70,10 @@ function validateSkillPath(rawPath) {
     return { valid: false, error: 'Caminho fora do diretório home do usuário' };
   }
 
+  if (!real.startsWith(SKILLS_DIR + path.sep)) {
+    return { valid: false, error: 'Skill deve estar em ~/.luna/skills/' };
+  }
+
   const skillFile = path.join(real, 'SKILL.md');
   if (!fs.existsSync(skillFile)) {
     return { valid: false, error: `SKILL.md não encontrado em ${real}` };
@@ -498,7 +502,12 @@ const server = http.createServer((req, res) => {
 
       // Persist active skills from request
       if (activeSkills && Array.isArray(activeSkills)) {
-        session.activeSkills = activeSkills;
+        const validatedPaths = [];
+        for (const rawPath of activeSkills) {
+          const result = validateSkillPath(rawPath);
+          if (result.valid) validatedPaths.push(result.path);
+        }
+        session.activeSkills = validatedPaths;
       }
 
       // Add user message

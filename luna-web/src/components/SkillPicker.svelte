@@ -20,23 +20,28 @@
     }
   }
 
-  function updateActive(next) {
+  async function updateActive(next) {
+    const previous = $activeSkills;
     activeSkills.set(next);
     if (sessionId) {
-      setSessionActiveSkills(sessionId, next);
+      const res = await setSessionActiveSkills(sessionId, next);
+      if (!res.ok) {
+        activeSkills.set(previous);
+        validationError = res.error || 'Falha ao atualizar skills';
+      }
     }
   }
 
-  function toggleSkill(path) {
+  async function toggleSkill(path) {
     const next = $activeSkills.includes(path)
       ? $activeSkills.filter((p) => p !== path)
       : [...$activeSkills, path];
-    updateActive(next);
+    await updateActive(next);
   }
 
-  function removeSkill(path) {
+  async function removeSkill(path) {
     const next = $activeSkills.filter((p) => p !== path);
-    updateActive(next);
+    await updateActive(next);
   }
 
   async function addByPath() {
@@ -57,7 +62,8 @@
     const canonicalPath = result.path || trimmed;
 
     const next = [...new Set([...$activeSkills, canonicalPath])];
-    updateActive(next);
+    await updateActive(next);
+    if (validationError) return;
 
     if (result.skill) {
       availableSkills.update((list) => {
