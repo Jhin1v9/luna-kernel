@@ -39,11 +39,11 @@
 
   const streamingParser = new StreamingParser();
 
-  // v10.3: pagination state for session history
+  // v10.3: pagination state for session history — uses TIMESTAMP cursor (not index)
   let messagePagination = {
     hasMore: false,
     total: 0,
-    oldestLoadedIndex: 0,
+    oldestTimestamp: null, // ISO timestamp of oldest loaded message
     loadingMore: false,
   };
 
@@ -71,7 +71,7 @@
     if (!sessionId || messagePagination.loadingMore || !messagePagination.hasMore) return;
     messagePagination.loadingMore = true;
     try {
-      const before = messagePagination.oldestLoadedIndex;
+      const before = messagePagination.oldestTimestamp;
       const history = await fetchSessionMessages(sessionId, { limit: 50, before });
       if (history.ok && history.messages) {
         const older = [];
@@ -130,10 +130,12 @@
             return true;
           });
         });
+        // v10.3-fix: Use timestamp cursor — find oldest timestamp from loaded messages
+        const oldestMsg = older.length > 0 ? older[0] : null;
         messagePagination = {
           hasMore: history.hasMore || false,
           total: history.total || messagePagination.total,
-          oldestLoadedIndex: Math.max(0, before - older.length),
+          oldestTimestamp: oldestMsg?.timestamp || messagePagination.oldestTimestamp,
           loadingMore: false,
         };
       }
@@ -166,6 +168,7 @@
     showTyping = false;
     expectingResponse = false;
     streamingParser.reset();
+    messagePagination = { hasMore: false, total: 0, oldestTimestamp: null, loadingMore: false };
   }
 
   // v8.3-fix: Flush accumulated response buffer, parsing out any complete JSON blocks.
@@ -768,17 +771,27 @@
         }
         
         // v9.3-fix: Use pendingToolCount (current turn only) instead of scanning full history
-        // v8.5-fix: safety timeout for stuck tools
-        const toolStuckTimeout = 300000; // 5 min
+        // v10.3-fix: Safety timeout reduced from 5min to 30s — UX critical
+        const toolStuckTimeout = 30000; // 30s
         if (pendingToolCount > 0) {
           const stuckTool = Array.from(toolStartTimes.values()).some(startTime => (Date.now() - startTime) > toolStuckTimeout);
           if (stuckTool) {
-            console.warn('[done] Tools stuck for >5min — forcing pendingToolCount = 0');
+            console.warn('[done] Tools stuck for >30s — forcing pendingToolCount = 0');
             pendingToolCount = 0;
           } else {
-            console.log('[done] Tools ainda em execução — mantendo isStreaming=true até action_end chegar');
+            console.log('[done] Tools ainda em execução — mantendo isStreaming=true até action_end chegar (timeout: 30s)');
             mascotState.set('working');
             mascotMessage.set('Finalizando tools...');
+            // v10.3-fix: Force reset after 30s even if action_end never arrives
+            setTimeout(() => {
+              if (pendingToolCount > 0) {
+                console.warn('[done] Auto-resetting pendingToolCount after 30s safety timeout');
+                pendingToolCount = 0;
+                isStreaming.set(false);
+                mascotState.set('idle');
+                mascotMessage.set('O que mais posso fazer?');
+              }
+            }, toolStuckTimeout);
           }
         }
         if (pendingToolCount <= 0) {
@@ -1015,10 +1028,11 @@
         loaded.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
         // v10.3-fix: don't render unlimited history — slice to last 100 until virtualization lands
         messages.set(loaded.slice(-100));
+        const oldestLoaded = loaded.length > 0 ? loaded[0] : null;
         messagePagination = {
           hasMore: history.hasMore || false,
           total: history.total || 0,
-          oldestLoadedIndex: Math.max(0, (history.total || 0) - loaded.length),
+          oldestTimestamp: oldestLoaded?.timestamp || null,
           loadingMore: false,
         };
       } else {

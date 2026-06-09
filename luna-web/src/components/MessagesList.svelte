@@ -22,40 +22,47 @@
   let listEl;
   let userScrolledUp = false;
   let showNewMessagesBadge = false;
+  let lastMessageCount = 0;
+  let lastMessageId = null;
 
-  // v10.3: lightweight virtualization
-  let viewportHeight = 0;
-  let scrollTop = 0;
-  const ESTIMATED_HEIGHT = 80;
-  const BUFFER = 5;
+  // Auto-scroll to bottom ONLY when a NEW message arrives (not on history load)
+  $: {
+    const currentCount = messages.length;
+    const lastMsg = messages[messages.length - 1];
+    const currentLastId = lastMsg?.id;
+    const isNewMessage = currentCount > lastMessageCount && currentLastId !== lastMessageId;
 
-  $: totalHeight = messages.length * ESTIMATED_HEIGHT;
-  $: startIdx = Math.max(0, Math.floor(scrollTop / ESTIMATED_HEIGHT) - BUFFER);
-  $: endIdx = Math.min(messages.length, Math.ceil((scrollTop + viewportHeight) / ESTIMATED_HEIGHT) + BUFFER);
-  $: visibleMessages = messages.slice(startIdx, endIdx);
+    if (isNewMessage && currentCount > 0) {
+      tick().then(() => {
+        if (!userScrolledUp) {
+          scrollToBottom('smooth');
+        } else {
+          showNewMessagesBadge = true;
+        }
+      });
+    }
 
-  // Auto-scroll to bottom on new messages unless user scrolled up
-  $: if (messages.length > 0) {
-    tick().then(() => {
-      if (!userScrolledUp) {
-        scrollToBottom('smooth');
-      } else {
-        showNewMessagesBadge = true;
-      }
-    });
+    lastMessageCount = currentCount;
+    lastMessageId = currentLastId;
   }
 
   function handleScroll() {
     if (!listEl) return;
-    scrollTop = listEl.scrollTop;
-    const nearBottom = scrollManager.isNearBottom(listEl, 100);
+    const nearBottom = scrollManager.isNearBottom(listEl, 120);
+    const wasScrolledUp = userScrolledUp;
     userScrolledUp = !nearBottom;
-    if (nearBottom) showNewMessagesBadge = false;
+    if (nearBottom) {
+      showNewMessagesBadge = false;
+    }
+    // Show badge if user scrolled up and there are new messages pending
+    if (!wasScrolledUp && userScrolledUp && lastMessageCount < messages.length) {
+      showNewMessagesBadge = true;
+    }
   }
 
   function scrollToBottom(behavior = 'smooth') {
     if (listEl) {
-      listEl.scrollTop = listEl.scrollHeight;
+      listEl.scrollTo({ top: listEl.scrollHeight, behavior });
     }
     userScrolledUp = false;
     showNewMessagesBadge = false;
@@ -69,7 +76,6 @@
 <div
   class="messages-list"
   bind:this={listEl}
-  bind:clientHeight={viewportHeight}
   on:scroll={handleScroll}
   aria-live="polite"
   aria-label="Mensagens do chat"
@@ -92,82 +98,84 @@
       </div>
     </div>
   {:else}
-    <div class="virtual-spacer" style="height: {totalHeight}px;">
-      <div class="virtual-content" style="transform: translateY({startIdx * ESTIMATED_HEIGHT}px);">
-        {#if hasMore && startIdx === 0}
-          <div class="load-more-row">
-            <button
-              class="load-more-btn"
-              on:click={onLoadMore}
-              disabled={loadingMore}
-            >
-              {#if loadingMore}
-                <span class="spinner" /> Carregando...
-              {:else}
-                ↑ Carregar mensagens anteriores
-              {/if}
-            </button>
-          </div>
-        {/if}
-        {#each visibleMessages as message (message.id)}
-          <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'} style="min-height: {ESTIMATED_HEIGHT}px;">
-            {#if message.type === 'user'}
-              <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
-            {:else if message.type === 'assistant'}
-              <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} />
-            {:else if message.type === 'thinking'}
-              <ThinkingBubble text={message.content} />
-            {:else if message.type === 'tool'}
-              <ToolCard
-                tool={message.tool}
-                params={message.params}
-                result={message.result}
-                duration={message.duration}
-                status={message.status || 'running'}
-                liveOutput={message.liveOutput || ''}
-              />
-            {:else if message.type === 'plan'}
-              <PlanCard
-                plan={message.content}
-                status={message.status || 'awaiting_approval'}
-                on:approve={onApprovePlan}
-                on:reject={onRejectPlan}
-                on:revise={(e) => onRevisePlan(e.detail)}
-              />
-            {:else if message.type === 'system' || message.type === 'error'}
-              <div class="system-banner" class:error={message.type === 'error'}>
-                {message.content}
-              </div>
-            {:else if message.type === 'login_required'}
-              <div class="system-banner login-required">
-                🔒 {message.content}
-                <button class="retry-btn" on:click={() => location.reload()}>Recarregar página</button>
-              </div>
+    <div class="messages-container">
+      {#if hasMore}
+        <div class="load-more-row">
+          <button
+            class="load-more-btn"
+            on:click={onLoadMore}
+            disabled={loadingMore}
+          >
+            {#if loadingMore}
+              <span class="spinner" /> Carregando...
+            {:else}
+              ↑ Carregar mensagens anteriores
             {/if}
-          </div>
-        {/each}
-        <!-- v10.1-fix: Typing indicator for ALL modes when Luna is processing -->
-        {#if showTyping && !messages.some(m => m.type === 'thinking')}
-          <div class="message-wrapper" style="min-height: {ESTIMATED_HEIGHT}px;">
-            <TypingIndicator text="Luna está respondendo" />
-          </div>
-        {/if}
-      </div>
+          </button>
+        </div>
+      {/if}
+      {#each messages as message, i (message.id)}
+        <div
+          class="message-wrapper"
+          class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}
+          style="content-visibility: auto; contain-intrinsic-size: auto 80px;"
+        >
+          {#if message.type === 'user'}
+            <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
+          {:else if message.type === 'assistant'}
+            <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} />
+          {:else if message.type === 'thinking'}
+            <ThinkingBubble text={message.content} />
+          {:else if message.type === 'tool'}
+            <ToolCard
+              tool={message.tool}
+              params={message.params}
+              result={message.result}
+              duration={message.duration}
+              status={message.status || 'running'}
+              liveOutput={message.liveOutput || ''}
+            />
+          {:else if message.type === 'plan'}
+            <PlanCard
+              plan={message.content}
+              status={message.status || 'awaiting_approval'}
+              on:approve={onApprovePlan}
+              on:reject={onRejectPlan}
+              on:revise={(e) => onRevisePlan(e.detail)}
+            />
+          {:else if message.type === 'system' || message.type === 'error'}
+            <div class="system-banner" class:error={message.type === 'error'}>
+              {message.content}
+            </div>
+          {:else if message.type === 'login_required'}
+            <div class="system-banner login-required">
+              🔒 {message.content}
+              <button class="retry-btn" on:click={() => location.reload()}>Recarregar página</button>
+            </div>
+          {/if}
+        </div>
+      {/each}
+      <!-- Typing indicator for ALL modes when Luna is processing -->
+      {#if showTyping && !messages.some(m => m.type === 'thinking')}
+        <div class="message-wrapper">
+          <TypingIndicator text="Luna está respondendo" />
+        </div>
+      {/if}
     </div>
-  {/if}
-
-  {#if showNewMessagesBadge}
-    <button class="new-messages-badge" on:click={() => scrollToBottom('smooth')}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <polyline points="6 9 12 15 18 9"/>
-      </svg>
-      Novas mensagens
-    </button>
   {/if}
 
   <!-- Bottom spacer to prevent last message being hidden behind input -->
   <div class="messages-bottom-spacer" aria-hidden="true"></div>
 </div>
+
+{#if showNewMessagesBadge}
+  <button class="new-messages-badge" on:click={() => scrollToBottom('smooth')}>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+    Novas mensagens
+  </button>
+{/if}
 
 <style>
   .messages-list {
@@ -178,21 +186,13 @@
     position: relative;
     scroll-behavior: smooth;
   }
-  .virtual-spacer {
-    position: relative;
-    width: 100%;
-    max-width: 900px;
-    margin: 0 auto;
-  }
-  .virtual-content {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
+  .messages-container {
     display: flex;
     flex-direction: column;
     gap: 16px;
     width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
   }
   .messages-bottom-spacer {
     height: 12px;
@@ -202,7 +202,7 @@
     .messages-list {
       padding: 10px;
     }
-    .virtual-content {
+    .messages-container {
       gap: 12px;
     }
   }
@@ -324,8 +324,8 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .new-messages-badge {
-    position: absolute;
-    bottom: 80px;
+    position: fixed;
+    bottom: 100px;
     right: 24px;
     padding: 8px 16px;
     background: rgba(233, 69, 96, 0.9);
@@ -342,7 +342,7 @@
     gap: 6px;
     box-shadow: 0 4px 24px rgba(233, 69, 96, 0.3), 0 0 0 1px rgba(255,255,255,0.05);
     animation: fadeIn 200ms ease;
-    z-index: 10;
+    z-index: 100;
     transition: all 0.2s ease;
   }
   .new-messages-badge:hover {
