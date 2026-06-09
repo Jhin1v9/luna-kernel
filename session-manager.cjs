@@ -87,6 +87,7 @@ class SessionManager {
       lastAccessedAt: new Date().toISOString(),
       messageCount: 0,
       yoloMode: options.yoloMode || false,
+      activeSkills: options.activeSkills || [],
       metadata: options.metadata || {},
     };
 
@@ -249,6 +250,23 @@ class SessionManager {
       this._writeIndex(index);
     }
     return true;
+  }
+
+  /** Update session state with a patch object */
+  updateSessionState(sessionId, patch) {
+    const state = this.loadSession(sessionId);
+    if (!state) return null;
+    const updated = { ...state, ...patch, lastAccessedAt: new Date().toISOString() };
+    fs.writeFileSync(this._stateFile(sessionId), JSON.stringify(updated, null, 2));
+    const index = this._readIndex();
+    if (index.sessions[sessionId]) {
+      index.sessions[sessionId] = {
+        ...index.sessions[sessionId],
+        lastAccessedAt: updated.lastAccessedAt,
+      };
+      this._writeIndex(index);
+    }
+    return updated;
   }
 
   /** Export session to markdown */
