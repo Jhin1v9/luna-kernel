@@ -87,7 +87,7 @@ class SessionManager {
       lastAccessedAt: new Date().toISOString(),
       messageCount: 0,
       yoloMode: options.yoloMode || false,
-      activeSkills: options.activeSkills || [],
+      activeSkills: Array.isArray(options.activeSkills) ? options.activeSkills : [],
       metadata: options.metadata || {},
     };
 
