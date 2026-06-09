@@ -283,19 +283,19 @@
     return String(hash);
   }
 
-  // v10.4-fix: Plain text responses — only strip tool JSON blocks.
+  // v9.0-fix: Reusable tool block stripper for buffer text
   function stripToolBlocksFromBuffer(text) {
     if (!text) return text;
     let cleaned = text;
 
-    // Pass 1: JSON label + Copy + JSON block with tool
+    // Pass 1: JSON label + Copy + JSON block
     cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*\n?/gi, '');
     cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n?\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*\n?/gi, '');
 
     // Pass 2: Code fences with tool JSON
     cleaned = cleaned.replace(/```(?:json|javascript|js|text)?\s*\n?[\s\S]*?"tool"[\s\S]*?\n?```/gi, '');
 
-    // Pass 3: Inline JSON via brace counting — skip tool blocks only
+    // Pass 3: Inline JSON via brace counting — extract response wrappers, skip tool blocks
     let result = '';
     let i = 0;
     while (i < cleaned.length) {
@@ -312,7 +312,24 @@
         }
         if (depth === 0) {
           const block = cleaned.slice(i, j);
-          // v10.4: Only skip tool call JSON blocks. Plain text / code / response wrappers pass through.
+          // Extract {"response": "..."} wrappers — keep the response text
+          try {
+            const parsed = JSON.parse(block);
+            if (parsed.response !== undefined && typeof parsed.response === 'string') {
+              result += parsed.response;
+              i = j;
+              continue;
+            }
+          } catch {
+            // v9.3-fix: JSON.parse failed — try regex extraction for malformed response wrappers
+            const respMatch = block.match(/"response"\s*:\s*"((?:\\.|[^"\\])*)"/);
+            if (respMatch) {
+              result += respMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+              i = j;
+              continue;
+            }
+          }
+          // Skip tool call JSON blocks
           if (/"tool"\s*:/.test(block)) { i = j; continue; }
         }
       }
@@ -324,15 +341,23 @@
     result = result.replace(/\bCopy\b\s*(?:复制|複製)?\s*\n?/gi, '');
     result = result.replace(/\bJSON\b\s*\n?/gi, '');
 
-    // Pass 5: Remove orphaned JSON punctuation (braces that leaked through)
+    // Pass 5: Remove orphaned JSON punctuation (braces, brackets that leaked through)
+    // Matches lines that are ONLY JSON punctuation characters
     result = result.replace(/^[\s]*[\}\]\)\,]+[\s]*$/gm, '');
+    // Remove stray "}" or "]" at start/end of lines
     result = result.replace(/^[\s]*[\}\]\)]+/gm, '');
     result = result.replace(/[\{\[\(]+[\s]*$/gm, '');
 
-    // v10.4: Remove orphaned tool fragments
+    // v9.3-fix: Remove orphaned key-value fragments like "response": "..."} or "tool": "..."
+    result = result.replace(/"response"\s*:\s*"[^"]*"\s*\}?/gi, '');
     result = result.replace(/"tool"\s*:\s*"[^"]*"\s*,?/gi, '');
+
+    // v9.5-fix: Remove inline JSON fragments that leaked through (e.g. tool params snippets)
+    // Matches things like: "params": {"command": "..."} or "params": {"path": "..."}
     result = result.replace(/"params"\s*:\s*\{[^{}]*"(?:command|path|script|code|query)"[^{}]*\}/gi, '');
+    // Matches trailing JSON fragments like: teShell", "params": {...}
     result = result.replace(/\w*"\s*,\s*"params"\s*:\s*\{[^{}]*\}/gi, '');
+    // Matches stray tool name fragments
     result = result.replace(/"tool"\s*:\s*"[^"]*"\s*,?\s*"?\w*"?\s*[:\{\}]?/gi, '');
 
     result = result.replace(/\n{3,}/g, '\n\n');

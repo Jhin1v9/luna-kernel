@@ -36,8 +36,7 @@ function hashUserId(userId) {
 function looksLikeJsonStart(text) {
   if (!text || typeof text !== 'string') return false;
   const t = text.trimStart();
-  // v10.4: Only detect tool/script JSON. Plain text responses are NOT JSON.
-  return t.startsWith('{') && (t.includes('"tool"') || t.includes('"script"'));
+  return t.startsWith('{') && (t.includes('"response"') || t.includes('"tool"') || t.includes('"script"'));
 }
 
 function isJsonComplete(text) {
