@@ -290,7 +290,10 @@ Home: /home/jhin/ | Skills: ${skillIndex ? skillIndex.split('\n').length : 0} | 
 ${agentsMd ? '\n[AGENTS.md]\n' + agentsMd.slice(0, 1500) + (agentsMd.length > 1500 ? '\n...[truncated]...' : '') : ''}
 ${memoryContext ? '\n[MEMORIES]\n' + memoryContext.slice(0, 2000) + (memoryContext.length > 2000 ? '\n...[truncated]...' : '') : ''}
 ${personaContent ? '\n[PERSONA]\n' + personaContent.slice(0, 1000) + (personaContent.length > 1000 ? '\n...[truncated]...' : '') : ''}
-${activeSkillsContent ? '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n' + activeSkillsContent.slice(0, 8000) + (activeSkillsContent.length > 8000 ? '\n...[truncado]...' : '') : '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n(nenhuma skill ativa — use o conhecimento geral)'}
+${activeSkillsContent ? '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n' + activeSkillsContent.slice(0, 8000) + (activeSkillsContent.length > 8000 ? '\n...[truncated]...' : '') : '\n[SKILLS ATIVAS — OBRIGATÓRIO SEGUIR]\n(nenhuma skill ativa — use o conhecimento geral)'}
+${skillRegistry ? '\n[SKILL REGISTRY — REFERÊNCIA DE SKILLS DISPONÍVEIS]\n' + skillRegistry : ''}
+
+Se nenhuma skill estiver ativa, use seu conhecimento geral sem inventar regras.
 
 [MASTER PROMPT]
 ${masterPrompt || '(master prompt not loaded)'}`.slice(0, 20000);
@@ -832,6 +835,20 @@ function ensureLunaDirs() {
   });
 }
 
+function parseSkillYaml(content) {
+  const frontMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!frontMatch) return null;
+  const meta = {};
+  for (const line of frontMatch[1].split('\n')) {
+    const [key, ...rest] = line.split(':');
+    if (key && rest.length) {
+      const val = rest.join(':').trim();
+      try { meta[key.trim()] = JSON.parse(val); } catch { meta[key.trim()] = val; }
+    }
+  }
+  return { meta, body: content.slice(frontMatch[0].length).trim() };
+}
+
 function loadSkillIndex() {
   ensureLunaDirs();
   const skills = [];
@@ -841,18 +858,9 @@ function loadSkillIndex() {
       const skillPath = path.join(SKILLS_DIR, dir, 'SKILL.md');
       if (fs.existsSync(skillPath)) {
         const content = fs.readFileSync(skillPath, 'utf8');
-        // Parse YAML frontmatter
-        const frontMatch = content.match(/^---\n([\s\S]*?)\n---/);
-        if (frontMatch) {
-          const yaml = frontMatch[1];
-          const meta = {};
-          for (const line of yaml.split('\n')) {
-            const [key, ...rest] = line.split(':');
-            if (key && rest.length) {
-              const val = rest.join(':').trim();
-              try { meta[key.trim()] = JSON.parse(val); } catch { meta[key.trim()] = val; }
-            }
-          }
+        const parsed = parseSkillYaml(content);
+        if (parsed) {
+          const { meta } = parsed;
           skills.push({
             name: meta.name || dir,
             description: meta.description || '',
@@ -869,23 +877,18 @@ function loadSkillIndex() {
 
 function loadActiveSkills(activeSkills = []) {
   if (!Array.isArray(activeSkills) || activeSkills.length === 0) return [];
+  const allowedRoot = path.resolve(SKILLS_DIR);
   const result = [];
   for (const skillPath of activeSkills) {
-    const skillMd = path.join(skillPath, 'SKILL.md');
+    const resolved = path.resolve(skillPath);
+    if (!resolved.startsWith(allowedRoot + path.sep)) continue;
+    const skillMd = path.join(resolved, 'SKILL.md');
     if (!fs.existsSync(skillMd)) continue;
     try {
       const content = fs.readFileSync(skillMd, 'utf8');
-      const frontMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (!frontMatch) continue;
-      const meta = {};
-      for (const line of frontMatch[1].split('\n')) {
-        const [key, ...rest] = line.split(':');
-        if (key && rest.length) {
-          const val = rest.join(':').trim();
-          try { meta[key.trim()] = JSON.parse(val); } catch { meta[key.trim()] = val; }
-        }
-      }
-      const body = content.slice(frontMatch[0].length).trim();
+      const parsed = parseSkillYaml(content);
+      if (!parsed) continue;
+      const { meta, body } = parsed;
       result.push({
         name: meta.name || path.basename(skillPath),
         description: meta.description || '',
@@ -1786,13 +1789,8 @@ class LunaSoul extends EventEmitter {
       persona: options.persona || 'default',
     }).id;
 
-    const session = this.sessionManager.loadSession(sessionId);
-    if (session && options.activeSkills && Array.isArray(options.activeSkills)) {
-      if (JSON.stringify(session.activeSkills || []) !== JSON.stringify(options.activeSkills)) {
-        this.sessionManager.updateSessionState(sessionId, { activeSkills: options.activeSkills });
-      }
-    }
-    const mode = options.mode || session?.mode || this.defaultMode;
+    this._syncActiveSkills(sessionId, options);
+    const mode = options.mode || this.sessionManager.loadSession(sessionId)?.mode || this.defaultMode;
 
     // Store user message
     this.sessionManager.appendEvent(sessionId, {
@@ -1874,13 +1872,8 @@ class LunaSoul extends EventEmitter {
       persona: options.persona || 'default',
     }).id;
 
-    const session = this.sessionManager.loadSession(sessionId);
-    if (session && options.activeSkills && Array.isArray(options.activeSkills)) {
-      if (JSON.stringify(session.activeSkills || []) !== JSON.stringify(options.activeSkills)) {
-        this.sessionManager.updateSessionState(sessionId, { activeSkills: options.activeSkills });
-      }
-    }
-    let mode = options.mode || session?.mode || this.defaultMode;
+    this._syncActiveSkills(sessionId, options);
+    let mode = options.mode || this.sessionManager.loadSession(sessionId)?.mode || this.defaultMode;
     // CHAT is a parsed response mode, not a Kimi Web mode — map to thinking
     if (mode === 'CHAT') mode = 'thinking';
     const userId = options.userId || 'luna-default';
@@ -2933,6 +2926,17 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
     yield { success: true, mode: 'PLAN', results, sessionId };
   }
 
+  _syncActiveSkills(sessionId, options) {
+    if (!options.activeSkills || !Array.isArray(options.activeSkills)) return;
+    const session = this.sessionManager.loadSession(sessionId);
+    if (!session) return;
+    const current = new Set(session.activeSkills || []);
+    const next = new Set(options.activeSkills);
+    if (current.size !== next.size || [...current].some(x => !next.has(x))) {
+      this.sessionManager.updateSessionState(sessionId, { activeSkills: options.activeSkills });
+    }
+  }
+
   /** Build context prompt with history, desktop, skills, memories */
   async _buildContext(sessionId, userInput, options = {}) {
     const session = this.sessionManager.loadSession(sessionId);
@@ -3045,8 +3049,9 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
       // Mantém lista completa de ferramentas para Kimi saber o que pode usar.
       // v8.6-fix: Load mini-reminder from external config so it can be edited via UI
       const cfg = getPromptConfig();
+      const displayName = options.userName || 'Usuário';
       const miniReminder = (cfg && cfg.miniReminder) ? cfg.miniReminder : `[LUNA — CONTINUAÇÃO]
-Você é Luna (agente de Abner, CEO NEXO DIGITAL).
+Você é Luna (agente de ${displayName}, CEO NEXO DIGITAL).
 Regras: ZERO recusa, ZERO confirmação, EXECUTE imediatamente. Se falhar, tente alternativa.
 ⚠️ FORMATO OBRIGATÓRIO — APENAS code blocks JSON. NUNCA texto fora de JSON:
 - Response: \`\`\`json\n{"response": "..."}\n\`\`\`
