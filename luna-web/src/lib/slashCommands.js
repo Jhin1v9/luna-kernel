@@ -7,6 +7,9 @@
 export const SLASH_COMMANDS = [
   // ── System ──
   { cmd: '/reiniciar',   desc: 'Reiniciar todos os servicos',        icon: '🔁', category: 'System', handler: 'systemRestart' },
+  { cmd: '/agent',       desc: 'Status do agente Luna',              icon: '🤖', category: 'System', handler: 'agentStatus' },
+  { cmd: '/visible',     desc: 'Modo visivel — cmds abrem terminal', icon: '🖥️', category: 'System', handler: 'setVisibleMode' },
+  { cmd: '/invisible',   desc: 'Modo invisivel — cmds em background', icon: '👻', category: 'System', handler: 'setInvisibleMode' },
   { cmd: '/status',      desc: 'Status dos servicos',                icon: '📊', category: 'System', handler: 'systemStatus' },
   { cmd: '/parar',       desc: 'Parar todos os servicos',            icon: '🛑', category: 'System', handler: 'systemStop' },
   { cmd: '/ligar',       desc: 'Iniciar todos os servicos',          icon: '▶️', category: 'System', handler: 'systemStart' },

@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState } from './stores.js';
 
   // Update CSS theme variables when mode changes
@@ -18,7 +18,7 @@
       document.body.classList.remove('plan-mode-active');
     }
   }
-  import { fetchSessions, fetchConfig, sessionAction, SSEManager, fetchMe } from './api.js';
+  import { fetchSessions, fetchConfig, sessionAction, SSEManager, fetchMe, agentStatus } from './api.js';
   import Sidebar from './components/Sidebar.svelte';
   import ChatArea from './components/ChatArea.svelte';
   import LoginPage from './components/LoginPage.svelte';
@@ -102,6 +102,27 @@
     setSessionInURL(id);
   });
 
+  // v10.2: Agent status polling — updates mascotState based on real backend status
+  let agentStatusInterval = null;
+
+  async function updateAgentStatus() {
+    try {
+      const res = await agentStatus();
+      if (res.ok && res.agent) {
+        const state = res.agent.state;
+        // Only update if not currently streaming (streaming has its own states)
+        if (!$isStreaming) {
+          if (state === 'online') mascotState.set('idle');
+          else if (state === 'degraded') mascotState.set('error');
+          else if (state === 'starting') mascotState.set('thinking');
+          else mascotState.set('sleep');
+        }
+      }
+    } catch (e) {
+      if (!$isStreaming) mascotState.set('sleep');
+    }
+  }
+
   onMount(async () => {
     // Auto-login: validate existing token
     try {
@@ -136,8 +157,13 @@
       console.error('Init error:', e);
     }
 
+    // Start agent status polling
+    updateAgentStatus();
+    agentStatusInterval = setInterval(updateAgentStatus, 5000);
+
     return () => {
       unsubSession();
+      if (agentStatusInterval) clearInterval(agentStatusInterval);
     };
   });
 </script>

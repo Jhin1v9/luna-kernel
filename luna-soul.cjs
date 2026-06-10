@@ -1387,6 +1387,91 @@ class ProjectHealthValidator {
 }
 
 // ============================================================
+// ============================================================
+// v10.3: EventBus — fila de eventos thread-safe para duplo-loop
+// ============================================================
+class EventBus {
+  constructor() {
+    this.queue = [];
+    this.waiters = [];
+    this.closed = false;
+  }
+
+  push(event) {
+    if (this.closed) return;
+    this.queue.push(event);
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(event);
+  }
+
+  async *consume() {
+    while (!this.closed) {
+      if (this.queue.length > 0) {
+        yield this.queue.shift();
+        continue;
+      }
+      const event = await new Promise(resolve => {
+        this.waiters.push(resolve);
+      });
+      if (event === null) break; // poison pill
+      yield event;
+    }
+    // Drain remaining events
+    while (this.queue.length > 0) {
+      yield this.queue.shift();
+    }
+  }
+
+  close() {
+    this.closed = true;
+    // Wake up all waiters with poison pill
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter(null);
+    }
+  }
+}
+
+// ============================================================
+// v10.3: TurnManager — gerencia ciclo de vida de um turno (msg + N tools)
+// ============================================================
+class TurnManager extends EventEmitter {
+  constructor() {
+    super();
+    this.turns = new Map(); // sessionId → { turnId, pendingTools: Set(), results: [], completed: boolean }
+  }
+
+  startTurn(sessionId, turnId) {
+    this.turns.set(sessionId, { turnId, pendingTools: new Set(), results: [], completed: false });
+  }
+
+  registerPendingTool(sessionId, toolId) {
+    const turn = this.turns.get(sessionId);
+    if (turn) turn.pendingTools.add(toolId);
+  }
+
+  markComplete(sessionId, toolId, result) {
+    const turn = this.turns.get(sessionId);
+    if (!turn) return false;
+    turn.pendingTools.delete(toolId);
+    turn.results.push({ toolId, result });
+    if (turn.pendingTools.size === 0 && !turn.completed) {
+      turn.completed = true;
+      this.emit('turn_complete', { sessionId, turnId: turn.turnId, results: turn.results });
+      return true;
+    }
+    return false;
+  }
+
+  getTurnResults(sessionId) {
+    return this.turns.get(sessionId)?.results || [];
+  }
+
+  clearTurn(sessionId) {
+    this.turns.delete(sessionId);
+  }
+}
+
 // LUNA SOUL — Engine Principal
 // ============================================================
 
@@ -1409,6 +1494,8 @@ class LunaSoul extends EventEmitter {
     // across retries, auto-continues, and bridge reconnects.
     // NOW stores {timestamp, result} so skipped actions can return the previous result.
     this._executedActionCache = new Map(); // sessionId -> Map<toolHash, {timestamp, result}>
+    // v10.3: TurnManager para arquitetura duplo-loop
+    this.turnManager = new TurnManager();
   }
 
   // v9.5-fix: Check if an action was already executed recently.
@@ -1552,23 +1639,26 @@ class LunaSoul extends EventEmitter {
   }
 
   /**
-   * Auto-compact: summarize context + new thread + keep continuity.
-   * Yields progress events for the TUI.
+   * Auto-compact: rich checkpoint + new thread + send checkpoint to Kimi + keep continuity.
+   *
+   * v10.12-fix: The summary is now sent as a REAL message to the new Kimi Web thread,
+   * so Kimi processes it before any user message. This prevents "starting from scratch"
+   * and eliminates the need for manual copy/paste.
    */
   async *_autoCompact(sessionId, userId = 'luna-default') {
     console.log(`[DEBUG-LUNA] _autoCompact started for session ${sessionId}`);
-    yield { type: 'compact_start', message: '📦 Contexto grande demais. Compactando...', sessionId };
+    yield { type: 'compact_start', message: '📦 Contexto grande demais. Criando checkpoint inteligente...', sessionId };
 
     try {
       // 1. Read all events
       const events = this.sessionManager.readRecentEvents(sessionId, 999);
 
-      // 2. Build a local summary (fast, no LLM call needed)
+      // 2. Build a rich checkpoint summary (brain transplant)
+      yield { type: 'compact_progress', message: '🧠 Analisando estado da sessão...', sessionId };
       const summary = this._buildCompactSummary(events);
+      console.log(`[LUNA] Compact summary built: ${summary.length} chars, ${events.length} events`);
 
       // 3. Create new thread in Kimi Web
-      // FIX: Only clear local context AFTER newChat succeeds. If newChat fails,
-      // we keep the local context so the user doesn't lose their conversation.
       if (this.kimiBridge) {
         yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
         try {
@@ -1579,20 +1669,44 @@ class LunaSoul extends EventEmitter {
           console.log(`[DEBUG-LUNA] _autoCompact finished (newChat failed)`);
           return { success: false, error: err.message };
         }
+
+        // 4. SEND CHECKPOINT TO KIMI WEB as first message
+        // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
+        // v10.12-fix-deadlock: The parent sendMessageStream still holds session.processing=true.
+        // We must release it before calling sendMessage, otherwise we deadlock.
+        yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
+        try {
+          const bridgeSession = this.kimiBridge.userSessions?.get(userId);
+          const wasProcessing = bridgeSession?.processing;
+          if (bridgeSession) bridgeSession.processing = false;
+
+          const sendResult = await this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' });
+
+          // Restore if needed (sendMessage normally sets false in its finally, but be safe)
+          if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
+
+          const respLen = sendResult?.response?.length || 0;
+          console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
+          yield { type: 'compact_progress', message: `✅ Kimi recebeu o checkpoint (${respLen} chars)`, sessionId };
+        } catch (sendErr) {
+          console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
+          yield { type: 'compact_progress', message: `⚠️ Checkpoint não enviado: ${sendErr.message}. Usando fallback local...`, sessionId };
+          // Non-fatal: the summary is still stored in local context below
+        }
       }
 
-      // 4. Clear local context (only after newChat succeeded)
+      // 5. Clear local context (only after newChat + send succeeded)
       this.sessionManager.clearContext(sessionId);
 
-      // 5. Store summary as first event (so next message knows it's not first)
+      // 6. Store summary as first local event (fallback + loop continuity)
       this.sessionManager.appendEvent(sessionId, {
         type: 'assistant',
         mode: 'CHAT',
-        response: `Resumo do contexto anterior:\n${summary}`,
+        response: `[CHECKPOINT] Contexto compactado. Checkpoint enviado para nova thread do Kimi.\n\n${summary.slice(0, 2000)}${summary.length > 2000 ? '\n\n[... resumo truncado no contexto local, completo enviado ao Kimi]' : ''}`,
         timestamp: new Date().toISOString(),
       });
 
-      yield { type: 'compact_end', message: '✅ Contexto compactado. Nova thread pronta.', summary, sessionId };
+      yield { type: 'compact_end', message: '✅ Contexto compactado. Nova thread pronta com checkpoint inteligente.', summary, sessionId };
       console.log(`[DEBUG-LUNA] _autoCompact finished (success)`);
       return { success: true, summary };
     } catch (err) {
@@ -1603,44 +1717,199 @@ class LunaSoul extends EventEmitter {
   }
 
   /**
-   * Build a compact summary from events.
-   * Preserves: user requests, assistant decisions, tool results, errors.
-   * Drops: intermediate thinking, duplicated content.
+   * Build a rich checkpoint summary from events.
+   * This is NOT a dry summary — it's a "brain transplant" that reconstructs
+   * the agent's mental state so Kimi continues EXACTLY where it left off.
+   *
+   * Includes: current task, project state, modified files, read files,
+   * successful actions, errors, and explicit continuation instructions.
    */
   _buildCompactSummary(events) {
-    const lines = [];
-    let toolCallCount = 0;
-    let fileOps = [];
-    let errors = [];
+    if (!events || events.length === 0) return '[Nenhum evento para resumir]';
 
-    for (const ev of events) {
-      if (ev.type === 'user') {
-        const text = (ev.content || '').slice(0, 200);
-        if (text) lines.push(`[User] ${text}`);
-      } else if (ev.type === 'assistant') {
-        const mode = ev.mode || 'CHAT';
-        const resp = (ev.response || '').slice(0, 200);
-        if (resp) lines.push(`[Assistant/${mode}] ${resp}`);
-      } else if (ev.type === 'tool_call') {
-        toolCallCount++;
-        const tool = ev.tool || '?';
+    // ── Structured extraction ──
+    const userMessages = events
+      .filter(e => e.type === 'user')
+      .map(e => (e.content || '').trim())
+      .filter(Boolean);
+    const toolCalls = events.filter(e => e.type === 'tool_call');
+    const toolResults = events.filter(e => e.type === 'tool_result');
+
+    // Current task = last user message
+    const currentTask = userMessages[userMessages.length - 1] || 'Tarefa não identificada';
+
+    // Categorize operations
+    const modifiedFiles = new Set();
+    const readFiles = new Set();
+    const executedCommands = [];
+    const searchOps = [];
+    let errorCount = 0;
+    const errorMessages = [];
+
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      if (ev.type === 'tool_call') {
+        const tool = ev.tool || ev.action?.tool || '?';
+        const params = ev.params || ev.action?.params || {};
+
         if (['writeFile', 'replaceInFile', 'moveFile', 'copyFile', 'deleteFile'].includes(tool)) {
-          const p = ev.params || {};
-          fileOps.push(`${tool}(${p.path || p.source || '?'})`);
+          const fp = params.path || params.source || params.destination || params.from || params.to;
+          if (fp) modifiedFiles.add(fp);
+        } else if (tool === 'readFile') {
+          const fp = params.path;
+          if (fp) readFiles.add(fp);
+        } else if (tool === 'executeShell') {
+          const cmd = (params.command || params.script || '').trim();
+          if (cmd && cmd.length < 300) executedCommands.push(cmd);
+        } else if (['searchFiles', 'grep'].includes(tool)) {
+          const q = params.query || params.pattern || '';
+          if (q) searchOps.push(`${tool}("${q.slice(0, 80)}")`);
         }
       } else if (ev.type === 'tool_result' && !ev.success) {
-        errors.push(`${ev.tool}: ${(ev.error || '').slice(0, 100)}`);
+        errorCount++;
+        const err = (ev.error || ev.result?.stderr || ev.result?.error || 'Erro desconhecido').trim();
+        const toolName = ev.tool || '?';
+        errorMessages.push(`${toolName}: ${err.slice(0, 200)}`);
       }
     }
 
-    const summaryParts = [
-      `== Resumo da sessão (${events.length} eventos, ${toolCallCount} tool calls) ==`,
-      ...lines.slice(-20), // keep last 20 significant events
-      fileOps.length > 0 ? `== Arquivos modificados ==\n${fileOps.join(', ')}` : '',
-      errors.length > 0 ? `== Erros ==\n${errors.join('\n')}` : '',
+    // Detect working directory from file paths
+    const allPaths = [...modifiedFiles, ...readFiles];
+    let workingDir = null;
+    if (allPaths.length > 0) {
+      const dirs = allPaths.map(p => path.dirname(p));
+      const prefix = this._commonPrefix(dirs);
+      if (prefix && prefix.length > 3) workingDir = prefix;
+    }
+
+    // Detect "where we stopped"
+    const lastEvent = events[events.length - 1];
+    const secondLast = events[events.length - 2];
+    let whereStopped = '';
+    if (lastEvent?.type === 'tool_result') {
+      if (lastEvent.success) {
+        whereStopped = `✅ Última ferramenta executada com sucesso. Você estava processando o resultado para dar a próxima resposta ou executar a próxima ação.`;
+      } else {
+        whereStopped = `❌ A ÚLTIMA FERRAMENTA FALHOU. Você precisa analisar o erro e tentar uma abordagem diferente.`;
+      }
+    } else if (lastEvent?.type === 'assistant') {
+      whereStopped = `Você acabou de responder. Aguarde a próxima interação do usuário.`;
+    } else if (lastEvent?.type === 'user') {
+      whereStopped = `O usuário enviou uma mensagem e você AINDA NÃO RESpondeU. Responda AGORA com a próxima ação.`;
+    } else if (lastEvent?.type === 'tool_call') {
+      whereStopped = `Você acabou de CHAMAR uma ferramenta. O resultado ainda não chegou — aguarde ou verifique se a execução está pendente.`;
+    } else {
+      whereStopped = `Continue de onde parou. Não reinicie.`;
+    }
+
+    // Build progress list (last successful actions, reversed)
+    const successfulActions = [];
+    const seenActions = new Set();
+    for (let i = toolResults.length - 1; i >= 0 && successfulActions.length < 12; i--) {
+      const tr = toolResults[i];
+      if (tr.success) {
+        // Find matching tool_call
+        let tc = null;
+        for (let j = events.length - 1; j >= 0; j--) {
+          if (events[j].type === 'tool_call' && !seenActions.has(j)) {
+            seenActions.add(j);
+            tc = events[j];
+            break;
+          }
+        }
+        const tool = tc?.tool || tr.tool || '?';
+        const fp = tc?.params?.path || tc?.params?.source || tc?.params?.command?.slice(0, 80) || '';
+        successfulActions.push(`${tool}${fp ? ` → ${fp}` : ''}`);
+      }
+    }
+
+    // Detect project type from files
+    let projectType = '';
+    const allFileNames = allPaths.map(p => path.basename(p));
+    if (allFileNames.some(f => f === 'package.json')) {
+      projectType = 'Node.js / JavaScript';
+    } else if (allFileNames.some(f => f.endsWith('.py'))) {
+      projectType = 'Python';
+    } else if (allFileNames.some(f => f.endsWith('.php'))) {
+      projectType = 'PHP';
+    } else if (allFileNames.some(f => f === 'composer.json')) {
+      projectType = 'PHP / Composer';
+    } else if (allFileNames.some(f => f === 'Cargo.toml')) {
+      projectType = 'Rust';
+    } else if (allFileNames.some(f => f === 'go.mod')) {
+      projectType = 'Go';
+    }
+
+    // Build checkpoint text
+    const parts = [
+      `🔄 CHECKPOINT — CONTINUAÇÃO AUTOMÁTICA`,
+      ``,
+      `⚠️  VOCÊ FOI INTERROMPIDO por limite de contexto. NÃO recomece do zero.`,
+      `   Continue EXATAMENTE de onde parou. NÃO refaça o que já foi feito.`,
+      ``,
+      `## 🎯 TAREFA ATUAL`,
+      currentTask.slice(0, 800),
+      ``,
+      `## 📁 ESTADO DO PROJETO`,
+      workingDir ? `Diretório de trabalho: ${workingDir}` : '',
+      projectType ? `Tipo de projeto: ${projectType}` : '',
+      ``,
+      modifiedFiles.size > 0
+        ? `Arquivos modificados (NÃO reescreva inteiros — use replaceInFile):\n${[...modifiedFiles].map(f => `• ${f}`).join('\n')}`
+        : '',
+      readFiles.size > 0
+        ? `Arquivos lidos (você já conhece o conteúdo):\n${[...readFiles].map(f => `• ${f}`).join('\n')}`
+        : '',
+      executedCommands.length > 0
+        ? `Comandos executados:\n${executedCommands.slice(-6).map(c => `• ${c}`).join('\n')}`
+        : '',
+      searchOps.length > 0
+        ? `Buscas realizadas:\n${searchOps.slice(-4).map(s => `• ${s}`).join('\n')}`
+        : '',
+      ``,
+      `## ✅ PROGRESSO (${successfulActions.length} ações bem-sucedidas)`,
+      ...successfulActions.reverse().map(a => `✓ ${a}`),
+      ``,
+      `## 🔄 ONDE PAREI`,
+      whereStopped,
+      ``,
     ];
 
-    return summaryParts.filter(Boolean).join('\n');
+    if (errorCount > 0) {
+      parts.push(
+        `## ⚠️ ERROS RECENTES (${errorCount})`,
+        ...errorMessages.slice(-5).map(e => `• ${e}`),
+        ``
+      );
+    }
+
+    parts.push(
+      `## 📋 REGRAS OBRIGATÓRIAS DE CONTINUAÇÃO`,
+      `1. NÃO execute 'ls', 'find', 'tree', 'cat package.json', ou qualquer comando de exploração — você JÁ CONHECE a estrutura`,
+      `2. NÃO reescreva arquivos inteiros se eles já existem — use replaceInFile para mudanças pequenas`,
+      `3. Se precisar verificar algo específico, use readFile com path exato`,
+      `4. Continue a tarefa EXATAMENTE de onde parou — o usuário NÃO pediu para reiniciar`,
+      `5. Se o último evento foi um erro, analise e tente uma abordagem diferente`,
+      `6. Se o último evento foi uma tool_call, aguarde o resultado ou verifique o estado`,
+      `7. NÃO peça confirmação — execute imediatamente (ZERO confirmações)`
+    );
+
+    return parts.filter(Boolean).join('\n');
+  }
+
+  /**
+   * Find common prefix among strings (used for working directory detection).
+   */
+  _commonPrefix(strings) {
+    if (!strings || strings.length === 0) return '';
+    let prefix = strings[0];
+    for (let i = 1; i < strings.length; i++) {
+      while (!strings[i].startsWith(prefix)) {
+        prefix = prefix.slice(0, -1);
+        if (!prefix) return '';
+      }
+    }
+    return prefix;
   }
 
   /**
@@ -2079,6 +2348,14 @@ class LunaSoul extends EventEmitter {
               yield { type: 'system', message: '📦 Limite de contexto atingido. Compactando e criando nova thread...', sessionId };
               const compactResult = yield* this._autoCompact(sessionId, userId);
               if (compactResult.success) {
+                // v10.12-fix-deadlock: The previous sendMessageStream still holds session.processing=true.
+                // If we continue the while-loop immediately, the new sendMessageStream will deadlock.
+                // We MUST release the lock before creating a new stream.
+                const bridgeSession = this.kimiBridge?.userSessions?.get(userId);
+                if (bridgeSession) {
+                  bridgeSession.processing = false;
+                  console.log(`[LUNA] Released session.processing for user ${userId} before continuing after compact`);
+                }
                 loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
                 continue;
               } else {
@@ -2195,6 +2472,12 @@ class LunaSoul extends EventEmitter {
         try {
           const compactResult = yield* this._autoCompact(sessionId, userId);
           if (compactResult.success) {
+            // v10.12-fix-deadlock: Release processing lock before continuing
+            const bridgeSession = this.kimiBridge?.userSessions?.get(userId);
+            if (bridgeSession) {
+              bridgeSession.processing = false;
+              console.log(`[LUNA] Released session.processing for user ${userId} before continuing after compact (regex fallback)`);
+            }
             loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
             continue;
           }
@@ -2752,6 +3035,10 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
           }
           // v10.0-fix: Stop plan if a step has validation errors (needsFix)
           // This prevents the plan from continuing with broken code.
+          // v10.1-fix: Accumulate step output so plan results are sent back to Kimi
+          const stepOutput = stepResult.result?.friendlyMessage || stepResult.result?.stdout || stepResult.result?.output || stepResult.result?.text || '[Resultado não possui saída legível]';
+          output = output ? `${output}\n\n[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}` : `[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}`;
+
           if (stepResult.result?.needsFix) {
             const fixMsg = stepResult.result?.message || `Erros de validação no passo ${i + 1}`;
             events.push({ type: 'plan_error', stepIndex: i, error: fixMsg, sessionId });
@@ -3161,7 +3448,7 @@ FERRAMENTAS: readFile, writeFile, replaceInFile, executeShell, searchFiles, grep
     });
 
     this.emit('response', { type: 'chat', content: response, sessionId });
-    return { success: true, mode: 'CHAT', response, sessionId };
+    return { type: 'assistant', success: true, mode: 'CHAT', response, sessionId };
   }
 
   /** ACTION mode — execute a tool */

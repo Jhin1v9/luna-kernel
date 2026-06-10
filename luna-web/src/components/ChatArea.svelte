@@ -1,8 +1,8 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
-  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal } from '../stores.js';
-  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent } from '../api.js';
+  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
+  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
@@ -12,6 +12,7 @@
   import LeadDashboardModal from './LeadDashboardModal.svelte';
   import FinanceDashboardModal from './FinanceDashboardModal.svelte';
   import VotingDashboardModal from './VotingDashboardModal.svelte';
+  import CompactingAnimation from './CompactingAnimation.svelte';
 
   export let sessionId = null;
 
@@ -138,7 +139,7 @@
   // v8.5-fix: Only block if it looks like a Luna tool wrapper
   function hasIncompleteJsonBlock(text) {
     if (!text) return false;
-    const hasToolMarker = text.includes('"tool"') || text.includes('"params"');
+    const hasToolMarker = text.includes('"tool"') || text.includes('"params"') || text.includes('"script"');
     if (!hasToolMarker) return false;
     let depth = 0;
     let inString = false;
@@ -173,11 +174,11 @@
     let cleaned = text;
 
     // Pass 1: JSON label + Copy + JSON block
-    cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*\n?/gi, '');
-    cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n?\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*\n?/gi, '');
+    cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n\s*(\{[\s\S]*?(?:"tool"|"script")[\s\S]*?\})\s*\n?/gi, '');
+    cleaned = cleaned.replace(/\bJSON\b\s*(?:Copy|复制|複製)?\s*\n?\s*(\{[\s\S]*?(?:"tool"|"script")[\s\S]*?\})\s*\n?/gi, '');
 
-    // Pass 2: Code fences with tool JSON
-    cleaned = cleaned.replace(/```(?:json|javascript|js|text)?\s*\n?[\s\S]*?"tool"[\s\S]*?\n?```/gi, '');
+    // Pass 2: Code fences with tool JSON or script JSON
+    cleaned = cleaned.replace(/```(?:json|javascript|js|text)?\s*\n?[\s\S]*?(?:"tool"|"script")[\s\S]*?\n?```/gi, '');
 
     // Pass 3: Inline JSON via brace counting — extract response wrappers, skip tool blocks
     let result = '';
@@ -213,8 +214,8 @@
               continue;
             }
           }
-          // Skip tool call JSON blocks
-          if (/"tool"\s*:/.test(block)) { i = j; continue; }
+          // Skip tool call JSON blocks and script JSON blocks
+          if (/"tool"\s*:/.test(block) || /"script"\s*:/.test(block)) { i = j; continue; }
         }
       }
       result += cleaned[i];
@@ -233,16 +234,18 @@
     result = result.replace(/[\{\[\(]+[\s]*$/gm, '');
 
     // v9.3-fix: Remove orphaned key-value fragments like "response": "..."} or "tool": "..."
-    result = result.replace(/"response"\s*:\s*"[^"]*"\s*\}?/gi, '');
-    result = result.replace(/"tool"\s*:\s*"[^"]*"\s*,?/gi, '');
+    // v10.1-fix: ONLY remove if they look like trailing JSON fragments (with braces), not mid-sentence text
+    result = result.replace(/"response"\s*:\s*"[^"]*"\s*\}[\s,]*$/gim, '');
+    result = result.replace(/"tool"\s*:\s*"[^"]*"\s*,?[\s]*\}?[\s,]*$/gim, '');
+    result = result.replace(/"script"\s*:\s*"[^"]*"\s*,?[\s]*\}?[\s,]*$/gim, '');
 
-    // v9.5-fix: Remove inline JSON fragments that leaked through (e.g. tool params snippets)
-    // Matches things like: "params": {"command": "..."} or "params": {"path": "..."}
-    result = result.replace(/"params"\s*:\s*\{[^{}]*"(?:command|path|script|code|query)"[^{}]*\}/gi, '');
+    // v9.5-fix: Remove inline JSON fragments that leaked through (e.g. tool params/snippets)
+    // v10.1-fix: Only remove complete inline JSON blocks, not partial text
+    result = result.replace(/"params"\s*:\s*\{[^{}]*"(?:command|path|script|code|query)"[^{}]*\}[\s,]*$/gim, '');
     // Matches trailing JSON fragments like: teShell", "params": {...}
-    result = result.replace(/\w*"\s*,\s*"params"\s*:\s*\{[^{}]*\}/gi, '');
-    // Matches stray tool name fragments
-    result = result.replace(/"tool"\s*:\s*"[^"]*"\s*,?\s*"?\w*"?\s*[:\{\}]?/gi, '');
+    result = result.replace(/\w*"\s*,\s*"params"\s*:\s*\{[^{}]*\}[\s,]*$/gim, '');
+    // Matches stray tool/script name fragments only at line end
+    result = result.replace(/"(?:tool|script)"\s*:\s*"[^"]*"\s*,?\s*"?\w*"?\s*[:\{\}]?[\s,]*$/gim, '');
 
     result = result.replace(/\n{3,}/g, '\n\n');
     return result.trim();
@@ -703,8 +706,52 @@
         if (event.mode) currentMode.set(event.mode);
         break;
       }
-      case 'compact_start':
-      case 'compact_end':
+      case 'compact_start': {
+        compactState.set({
+          active: true,
+          phase: 0,
+          message: event.message || '📦 Compactando contexto...',
+          steps: [event.message || '📦 Compactando contexto...']
+        });
+        // Also add a persistent system message
+        messages.update(msgs => [...msgs, {
+          id: 'compact-start-' + Date.now(),
+          type: 'system',
+          content: event.message || '📦 Compactando contexto...',
+          timestamp: new Date().toISOString()
+        }]);
+        break;
+      }
+      case 'compact_progress': {
+        compactState.update(s => ({
+          ...s,
+          active: true,
+          phase: (s.phase + 1) % 8,
+          message: event.message || s.message,
+          steps: [...s.steps, event.message || '...']
+        }));
+        break;
+      }
+      case 'compact_end': {
+        compactState.set({ active: false, phase: 0, message: '', steps: [] });
+        messages.update(msgs => [...msgs, {
+          id: 'compact-end-' + Date.now(),
+          type: 'system',
+          content: event.message || '✅ Contexto compactado',
+          timestamp: new Date().toISOString()
+        }]);
+        break;
+      }
+      case 'compact_error': {
+        compactState.set({ active: false, phase: 0, message: '', steps: [] });
+        messages.update(msgs => [...msgs, {
+          id: 'compact-err-' + Date.now(),
+          type: 'error',
+          content: event.message || '❌ Erro na compactação',
+          timestamp: new Date().toISOString()
+        }]);
+        break;
+      }
       case 'plan_error':
       case 'plan_complete': {
         messages.update(msgs => [...msgs, {
@@ -1005,7 +1052,7 @@
         let result = null;
 
         // System handlers (frontend APIs)
-        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent', 'refreshAgent', 'fullRefreshAgent'].includes(slashDef.handler)) {
+        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent', 'refreshAgent', 'fullRefreshAgent', 'agentStatus', 'setVisibleMode', 'setInvisibleMode'].includes(slashDef.handler)) {
           switch (slashDef.handler) {
             case 'systemRestart': result = await systemRestart(); break;
             case 'systemStatus': result = await systemStatus(); break;
@@ -1013,6 +1060,50 @@
             case 'systemStart': result = await systemStart(); break;
             case 'systemHealth': result = await systemHealth(); break;
             case 'systemLogs': result = await systemLogs(); break;
+            case 'agentStatus': {
+              result = await agentStatus();
+              if (result.ok && result.agent) {
+                const a = result.agent;
+                const statusEmoji = a.state === 'online' ? '🟢' : a.state === 'degraded' ? '🟡' : a.state === 'starting' ? '⏳' : '🔴';
+                messages.update(msgs => [...msgs, {
+                  id: 'sys-' + Date.now(),
+                  type: 'system',
+                  content: `${statusEmoji} Status do Agente\n\n• Estado: ${a.state}\n• Luna Soul: ${a.lunaSoul}\n• Kimi Bridge: ${a.bridge}\n• Servidor: ${a.server}\n• Paginas ativas: ${a.pages}`,
+                  timestamp: new Date().toISOString()
+                }]);
+              } else {
+                messages.update(msgs => [...msgs, {
+                  id: 'sys-' + Date.now(),
+                  type: 'system',
+                  content: '❌ Não foi possível obter o status do agente.',
+                  timestamp: new Date().toISOString()
+                }]);
+              }
+              isStreaming.set(false);
+              return;
+            }
+            case 'setVisibleMode': {
+              result = await setVisibleMode(true);
+              messages.update(msgs => [...msgs, {
+                id: 'sys-' + Date.now(),
+                type: 'system',
+                content: result.ok ? result.message : '❌ Erro: ' + result.error,
+                timestamp: new Date().toISOString()
+              }]);
+              isStreaming.set(false);
+              return;
+            }
+            case 'setInvisibleMode': {
+              result = await setVisibleMode(false);
+              messages.update(msgs => [...msgs, {
+                id: 'sys-' + Date.now(),
+                type: 'system',
+                content: result.ok ? result.message : '❌ Erro: ' + result.error,
+                timestamp: new Date().toISOString()
+              }]);
+              isStreaming.set(false);
+              return;
+            }
             case 'turnOffAgent':
               result = await turnOffAgent('web-' + sessionId);
               mascotState.set('sleep');
@@ -1278,6 +1369,9 @@
     on:editTitle
     on:goHome={() => currentSessionId.set(null)}
   />
+
+  <!-- v10.12: Moon-phase compacting animation overlay -->
+  <CompactingAnimation />
 
   <MessagesList
     messages={$messages}

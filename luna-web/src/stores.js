@@ -108,3 +108,11 @@ export const voiceAudioData = writable(new Uint8Array(64));
 
 // v9.3: Active modal for rich slash command responses
 export const activeModal = writable(null); // null | 'tasks' | 'leads' | 'finance' | 'voting' | 'ideas' | 'links' | 'emails' | 'whatsapp' | 'config'
+
+// v10.12: Compact animation state — moon phases while context is compacting
+export const compactState = writable({
+  active: false,
+  phase: 0, // 0-7 moon phase index
+  message: '',
+  steps: [],
+});

@@ -461,6 +461,18 @@ export async function systemStatus() {
   return res.json();
 }
 
+// v10.2: Agent status polling
+export async function agentStatus() {
+  const res = await fetch('/api/system/agent', { headers: authHeaders(false) });
+  return res.json();
+}
+
+export async function setVisibleMode(visible) {
+  const endpoint = visible ? '/api/system/visible' : '/api/system/invisible';
+  const res = await fetch(endpoint, { method: 'POST', headers: authHeaders(false) });
+  return res.json();
+}
+
 export async function fetchPersonas() {
   try {
     const res = await fetch('/api/personas', { headers: authHeaders(false) });

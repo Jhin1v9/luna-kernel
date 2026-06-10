@@ -18,6 +18,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
@@ -728,10 +729,104 @@ function fetchURL(url, opts = {}) {
 // 4. SHELL
 // ═══════════════════════════════════════════════════════════════════════════
 
+// v10.2-fix: Open a visible terminal for long-running commands so user can see progress
+function executeShellVisible(command, opts = {}, onProgress) {
+  return new Promise((resolve) => {
+    const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
+    const tmpFile = path.join(os.tmpdir(), `luna-shell-${Date.now()}.log`);
+    const scriptFile = path.join(os.tmpdir(), `luna-script-${Date.now()}.sh`);
+
+    // Script that runs the command, streams output to both terminal and tmpFile via tee
+    const scriptContent = `#!/bin/bash
+set -o pipefail
+cd "${cwd}"
+${command} 2>&1 | tee "${tmpFile}"
+EXIT_CODE=$?
+echo ""
+echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
+`;
+
+    fs.writeFileSync(scriptFile, scriptContent, 'utf8');
+    fs.chmodSync(scriptFile, 0o755);
+
+    const display = process.env.DISPLAY || ':0';
+    const child = spawn('gnome-terminal', ['--wait', '--', 'bash', scriptFile], {
+      env: { ...process.env, DISPLAY: display },
+      detached: true,
+    });
+
+    // Poll tmpFile for live progress
+    let lastSize = 0;
+    let output = '';
+    const pollInterval = setInterval(() => {
+      try {
+        const stats = fs.statSync(tmpFile);
+        if (stats.size > lastSize) {
+          const fd = fs.openSync(tmpFile, 'r');
+          const buffer = Buffer.alloc(stats.size - lastSize);
+          fs.readSync(fd, buffer, 0, buffer.length, lastSize);
+          fs.closeSync(fd);
+          const newContent = buffer.toString('utf8');
+          output += newContent;
+          lastSize = stats.size;
+          if (onProgress) onProgress(newContent, 'stdout');
+        }
+      } catch {}
+    }, 500);
+
+    child.on('error', (err) => {
+      clearInterval(pollInterval);
+      try { fs.unlinkSync(scriptFile); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch {}
+      resolve({ success: false, command, stdout: output, stderr: err.message, exitCode: 1, error: err.message });
+    });
+
+    child.on('close', () => {
+      clearInterval(pollInterval);
+      // Give tee a moment to flush
+      setTimeout(() => {
+        try {
+          const finalOutput = fs.readFileSync(tmpFile, 'utf8');
+          const exitMatch = finalOutput.match(/\[LUNA_EXIT_CODE=(\d+)\]/);
+          const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
+          const cleanOutput = finalOutput.replace(/\[LUNA_EXIT_CODE=\d+\]\s*$/, '').trim();
+          try { fs.unlinkSync(scriptFile); } catch {}
+          try { fs.unlinkSync(tmpFile); } catch {}
+          resolve({
+            success: exitCode === 0,
+            command,
+            stdout: cleanOutput,
+            stderr: '',
+            exitCode,
+          });
+        } catch (e) {
+          try { fs.unlinkSync(scriptFile); } catch {}
+          try { fs.unlinkSync(tmpFile); } catch {}
+          resolve({ success: false, command, stdout: output, stderr: e.message, exitCode: 1, error: e.message });
+        }
+      }, 500);
+    });
+  });
+}
+
+// v10.2-fix: Global visible mode — all commands open in terminal by default
+let visibleMode = true;
+
+function setVisibleMode(mode) { visibleMode = mode; }
+function getVisibleMode() { return visibleMode; }
+
 function executeShell(command, opts = {}, onProgress) {
   return new Promise((resolve) => {
     const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
-    const timeoutMs = (opts.timeout || 60) * 1000;
+    // v10.2-fix: Open visible terminal for ALL commands when visibleMode is on
+    const isVisibleCommand = opts.visible !== undefined ? opts.visible : visibleMode;
+    if (isVisibleCommand && process.env.DISPLAY) {
+      return executeShellVisible(command, opts, onProgress).then(resolve);
+    }
+    // v10.1-fix: Auto-detect build/install commands and use longer timeout
+    const isBuildCommand = isVisibleCommand;
+    const defaultTimeout = isBuildCommand ? 300 : (opts.timeout || 60);
+    const timeoutMs = defaultTimeout * 1000;
     let stdout = '';
     let stderr = '';
     let killed = false;
@@ -2348,6 +2443,9 @@ module.exports = {
   dashboardCreateReviewVote,
   // System
   getCurrentDirectory,
+  // v10.2: Visible mode control
+  setVisibleMode,
+  getVisibleMode,
   // Debug
   openDebugTerminal,
   // Project Validation
