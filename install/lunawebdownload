@@ -3,10 +3,11 @@
 # ║  Luna Web + Dashboard + Telegram — Unified Installer Wizard (v1.0)        ║
 # ║  One-command setup for Pai & Nonoke (and anyone else).                   ║
 # ║                                                                           ║
-# ║  Usage:                                                                   ║
-# ║    curl -fsSL https://raw.githubusercontent.com/Jhin1v9/luna-kernel/     ║
-# ║          main/install/lunawebdownload | bash                             ║
-# ║    OR save and run: ./lunawebdownload                                     ║
+# ║  IMPORTANTE: o repo luna-kernel é privado. Clone-o primeiro com           ║
+# ║  suas credenciais GitHub e execute este script localmente:                ║
+# ║                                                                           ║
+# ║    git clone https://github.com/Jhin1v9/luna-kernel.git ~/.luna-kernel    ║
+# ║    bash ~/.luna-kernel/install/lunawebdownload                             ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
 set -euo pipefail

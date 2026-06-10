@@ -26,10 +26,18 @@
 
 ## 🚀 Instalação em uma máquina nova (Pai / Nonoke / Jhin)
 
-**Recomendado:** use o instalador unificado:
+O repositório `luna-kernel` é **privado**. Por isso, o instalador precisa ser
+executado localmente após clonar com suas credenciais do GitHub (SSH ou token).
+
+**Recomendado:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/install/lunawebdownload | bash
+# 1. Clone o luna-kernel usando sua credencial GitHub
+git clone https://github.com/Jhin1v9/luna-kernel.git ~/.luna-kernel
+# ou, se usar SSH: git clone git@github.com:Jhin1v9/luna-kernel.git ~/.luna-kernel
+
+# 2. Execute o instalador unificado localmente
+bash ~/.luna-kernel/install/lunawebdownload
 ```
 
 O instalador faz tudo automaticamente:
