@@ -1187,6 +1187,213 @@ async function dashboardListTasks(params) {
   return ok({ stdout: `📋 ${tasks.length} tarefa(s):\n${lines || 'Nenhuma tarefa encontrada.'}` });
 }
 
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
+async function dashboardUpdateTask(params) {
+  // First find the task by title if taskId is not numeric
+  let taskId = params.taskId;
+  if (!taskId || isNaN(Number(taskId))) {
+    const searchTitle = params.taskId || params.title;
+    const all = await dashboardApi('/tasks?limit=100');
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) throw new Error('Task not found: ' + searchTitle);
+    taskId = match.id;
+  }
+  const body = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.status !== undefined) body.status = params.status;
+  if (params.priority !== undefined) body.priority = params.priority;
+  if (params.projectId !== undefined) body.projectId = params.projectId;
+  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
+  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
+  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
+}
+
 async function dashboardCreateLead(params) {
   // v8.4-fix: Idempotency — check if a lead with the same name/email was created in the last 2 minutes
   try {

@@ -1,10 +1,9 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
-  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, user, activeSkills } from '../stores.js';
-  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, bridgeStart, fetchSessionActiveSkills } from '../api.js';
+  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal } from '../stores.js';
+  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
-  import { StreamingParser } from '../lib/streamingParser.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
   import MessagesList from './MessagesList.svelte';
@@ -24,6 +23,7 @@
   let toolTimeoutTimers = new Map(); // toolName -> timeout timer id
   const TOOL_TIMEOUT_MS = 60000; // 60s timeout for any tool
   let processedEventIds = new Set(); // v4.2: Track processed SSE event IDs to prevent duplicates
+  let userMessageAdded = false; // v5.6-fix: Ensure user message is in store before assistant responses
   let streamingSafetyTimer = null; // v5.7-fix: Detect SSE inactivity (NOT thinking time)
   let currentMessageId = null; // v6.1-fix: Track current message ID to ignore stale SSE events
   let responseBuffer = ''; // v8.3-fix: Buffer response_delta to avoid showing raw JSON/tool blocks during streaming
@@ -34,24 +34,6 @@
   let runningToolTimers = new Map(); // v9.4-fix: toolId -> { intervalId, startTime } for real-time execution timer
   const progressBuffers = new Map(); // v9.5: tool -> { chunks[], raf } for rAF batching of action_progress
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
-  let expectingResponse = false; // v10.2-fix: Only show "thinking" when user actually sent a message
-  let compactMessageId = null; // v10.4-fix: Track compact progress message for live updates
-
-  const streamingParser = new StreamingParser();
-
-  async function loadSessionSkills(id) {
-    if (!id) { activeSkills.set([]); return; }
-    const res = await fetchSessionActiveSkills(id);
-    if (res.ok) activeSkills.set(res.activeSkills || []);
-  }
-
-  // v10.3: pagination state for session history — uses TIMESTAMP cursor (not index)
-  let messagePagination = {
-    hasMore: false,
-    total: 0,
-    oldestTimestamp: null, // ISO timestamp of oldest loaded message
-    loadingMore: false,
-  };
 
   // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
   // The timer is cleared but NEVER restarted, so SSE never aborts due to silence.
@@ -73,108 +55,8 @@
     }
   }
 
-  async function loadOlderMessages() {
-    if (!sessionId || messagePagination.loadingMore || !messagePagination.hasMore) return;
-    messagePagination.loadingMore = true;
-    try {
-      const before = messagePagination.oldestTimestamp;
-      const history = await fetchSessionMessages(sessionId, { limit: 50, before });
-      if (history.ok && history.messages) {
-        const older = [];
-        for (const msg of history.messages) {
-          if (msg.role === 'user') {
-            older.push({
-              id: msg.id || 'msg-' + Math.random().toString(36).slice(2),
-              type: 'user',
-              content: msg.content || '',
-              files: msg.files || [],
-              timestamp: msg.timestamp || new Date().toISOString(),
-            });
-          } else if (msg.type === 'thinking_start' || msg.type === 'thinking_delta') {
-            continue;
-          } else if (msg.type === 'done') {
-            const rawFinal = msg.result?.response || msg.content || '';
-            const finalText = stripToolBlocksFromBuffer(rawFinal);
-            if (finalText?.trim()) {
-              older.push({
-                id: msg.id || 'resp-' + Math.random().toString(36).slice(2),
-                type: 'assistant',
-                content: finalText,
-                timestamp: msg.timestamp || new Date().toISOString(),
-              });
-            }
-          } else if (msg.type === 'error') {
-            older.push({
-              id: msg.id || 'err-' + Math.random().toString(36).slice(2),
-              type: 'error',
-              content: msg.content || 'Erro desconhecido',
-              timestamp: msg.timestamp || new Date().toISOString(),
-            });
-          } else if (msg.type === 'action_start' && msg.tool) {
-            older.push({
-              id: msg.id || 'tool-' + Math.random().toString(36).slice(2),
-              type: 'tool',
-              tool: msg.tool,
-              params: msg.params || {},
-              result: null,
-              timestamp: msg.timestamp || new Date().toISOString(),
-            });
-          } else if (msg.type === 'action_end' && msg.result) {
-            const lastTool = older.slice().reverse().find(m => m.type === 'tool' && !m.result);
-            if (lastTool) {
-              lastTool.result = msg.result;
-            }
-          }
-        }
-        older.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-        messages.update(current => {
-          const merged = [...older, ...current];
-          const seen = new Set();
-          return merged.filter(m => {
-            if (seen.has(m.id)) return false;
-            seen.add(m.id);
-            return true;
-          });
-        });
-        // v10.3-fix: Use timestamp cursor — find oldest timestamp from loaded messages
-        const oldestMsg = older.length > 0 ? older[0] : null;
-        messagePagination = {
-          hasMore: history.hasMore || false,
-          total: history.total || messagePagination.total,
-          oldestTimestamp: oldestMsg?.timestamp || messagePagination.oldestTimestamp,
-          loadingMore: false,
-        };
-      }
-    } catch (e) {
-      console.error('[loadOlderMessages] Failed:', e);
-      messagePagination.loadingMore = false;
-    }
-  }
-
   function removeAllThinking(msgs) {
     return msgs.filter(m => m.type !== 'thinking');
-  }
-
-  function resetSessionState() {
-    currentAssistantId = null;
-    thinkingId = null;
-    currentMessageId = null;
-    responseBuffer = '';
-    processedEventIds.clear();
-    flushedContentHashes.clear();
-    pendingToolCount = 0;
-    for (const { intervalId } of runningToolTimers.values()) clearInterval(intervalId);
-    runningToolTimers.clear();
-    progressBuffers.clear();
-    toolInstanceMap.clear();
-    toolStartTimes.clear();
-    for (const t of toolTimeoutTimers.values()) clearTimeout(t);
-    toolTimeoutTimers.clear();
-    showTyping = false;
-    expectingResponse = false;
-    compactMessageId = null;
-    streamingParser.reset();
-    messagePagination = { hasMore: false, total: 0, oldestTimestamp: null, loadingMore: false };
   }
 
   // v8.3-fix: Flush accumulated response buffer, parsing out any complete JSON blocks.
@@ -195,6 +77,7 @@
     // (response_delta + response_detected + done can all carry the same text)
     const contentHash = hashContent(cleanText.trim());
     if (flushedContentHashes.has(contentHash)) {
+      console.log('[flushResponseBuffer] Duplicate content hash detected, skipping');
       if (forceText !== null) responseBuffer = '';
       return;
     }
@@ -206,6 +89,7 @@
       return existing === cleanText.trim() || existing.includes(cleanText.trim());
     });
     if (isDuplicate) {
+      console.log('[flushResponseBuffer] Content already exists in recent assistant message, skipping');
       if (forceText !== null) responseBuffer = '';
       return;
     }
@@ -418,22 +302,32 @@
 
   function handleEvent(event) {
     if (!event) return;
-    // v10.3-fix: strict session isolation — ignore events from other sessions
     if (event.sessionId && event.sessionId !== sessionId) return;
-    if (sseManager.currentSessionId && event.sessionId && event.sessionId !== sseManager.currentSessionId) return;
 
     // v8.5-fix: Ignore fallback polling events while actively streaming
     if (event.source === 'fallback' && $isStreaming) {
       return;
     }
 
-    // v6.1-fix + v10.3-fix: Ignore stale events from previous messages.
-    // If event has a messageId and we have a currentMessageId, they must match.
-    // If event has a messageId but currentMessageId is null, we're not processing
-    // any message — ignore it (prevents delayed events from old messages).
-    if (event.messageId) {
-      if (currentMessageId && event.messageId !== currentMessageId) return;
-      if (!currentMessageId) return;
+    // v6.1-fix: If the event has a messageId that doesn't match the current message,
+    // it's a stale event from a previous message — ignore it.
+    if (event.messageId && currentMessageId && event.messageId !== currentMessageId) {
+      console.log('[SSE] Ignoring stale event from previous message:', event.type, event.messageId);
+      return;
+    }
+
+    // v5.6-fix: Ignore response events until user message is confirmed in store
+    const isResponseEvent = ['assistant', 'thinking', 'response_detected', 'partial', 'done', 'tool', 'action_start', 'action_end', 'action_progress'].includes(event.type);
+    if (isResponseEvent && !userMessageAdded) {
+      console.log('[SSE] Delaying response event until user message is added:', event.type);
+      // v9.0-fix: Retry with exponential backoff, max 10 attempts
+      event._retryCount = (event._retryCount || 0) + 1;
+      if (event._retryCount <= 10) {
+        setTimeout(() => handleEvent(event), 100 * event._retryCount);
+      } else {
+        console.warn('[SSE] Dropping event after 10 retries — user message never confirmed:', event.type);
+      }
+      return;
     }
 
     // v9.0-fix: Deduplicate by event hash — prevents duplicate rendering on reconnects
@@ -448,7 +342,10 @@
     } else {
       dedupKey = getEventHash(event);
     }
-    if (processedEventIds.has(dedupKey)) return;
+    if (processedEventIds.has(dedupKey)) {
+      console.log('[SSE] Deduplicated:', event.type, event.tool || '', event.id || '');
+      return;
+    }
     processedEventIds.add(dedupKey);
     // Limit set size to prevent memory leaks — increased to 5000 for long sessions
     if (processedEventIds.size > 5000) {
@@ -456,7 +353,8 @@
       processedEventIds.delete(iter.next().value);
     }
 
-    // v4.0-debug: SSE event processing (logs removed in production)
+    // v4.0-debug: Log every SSE event for debugging
+    console.log('[SSE]', event.type, event.text ? event.text.substring(0, 80) : '', event.tool || '');
 
     // v3.6-fix: Also deduplicate by backend event ID
     if (event.id) {
@@ -492,11 +390,8 @@
       }
       case 'thinking_start': {
         playSound('thinkingStart');
-        // v10.2-fix: Only show thinking state if user actually sent a message this turn
-        if (expectingResponse) {
-          mascotState.set('thinking');
-          mascotMessage.set('Hmm... deixa eu pensar...');
-        }
+        mascotState.set('thinking');
+        mascotMessage.set('Hmm... deixa eu pensar...');
         // v8.5-fix: Unify INSTANT and THINKING modes — always use typing indicator, never thinking bubble
         showTyping = true;
         // Clean up any old thinking bubbles from previous messages
@@ -505,22 +400,7 @@
         break;
       }
       case 'thinking_delta': {
-        // v10.1-fix: Show thinking process in real-time
-        const thinkDelta = event.text || '';
-        if (!thinkDelta) break;
-        if (!thinkingId) {
-          thinkingId = 'think-' + Date.now();
-          messages.update(msgs => [...msgs, {
-            id: thinkingId,
-            type: 'thinking',
-            content: thinkDelta,
-            timestamp: event.timestamp || new Date().toISOString(),
-          }]);
-        } else {
-          messages.update(msgs => msgs.map(m =>
-            m.id === thinkingId ? { ...m, content: m.content + thinkDelta } : m
-          ));
-        }
+        // v8.5-fix: Ignore thinking deltas in both instant and thinking modes
         break;
       }
       case 'response_delta': {
@@ -531,11 +411,9 @@
           break;
         }
 
-        // v10.3-fix: StreamingParser strips tool JSON in real-time via state-machine
-        const parsedChunk = streamingParser.feed(deltaText);
-        if (parsedChunk) {
-          responseBuffer += parsedChunk;
-        }
+        // v8.3-fix: Buffer response_delta instead of immediately rendering.
+        // This prevents raw JSON/tool blocks from appearing during streaming.
+        responseBuffer += deltaText;
 
         // Hide thinking/typing when response starts arriving
         showTyping = false;
@@ -550,7 +428,8 @@
         });
         if (thinkRemoved) thinkingId = null;
 
-        // v9.2-fix: Keep defensive check against incomplete JSON as extra barrier
+        // v9.2-fix: Only flush if there's no incomplete JSON block in the buffer.
+        // Flushing incomplete JSON causes raw tool JSON to leak into the chat.
         if (!hasIncompleteJsonBlock(responseBuffer)) {
           flushResponseBuffer();
         }
@@ -596,6 +475,7 @@
             const hasToolJson = /"tool"\s*:/.test(content) || /"params"\s*:\s*\{/.test(content) || /"command"\s*:/.test(content);
             // Remove if it's raw JSON, empty after stripping, or very short (likely just a tool call)
             if (hasToolJson || !content.trim() || !stripped.trim() || stripped.trim().length < 10) {
+              console.log('[action_start] Removing leaked/empty assistant message before tool card');
               return msgs.slice(0, -1);
             }
           }
@@ -716,7 +596,6 @@
         playSound('error');
         mascotState.set('idle');
         mascotMessage.set('Limite de contexto atingido');
-        expectingResponse = false; // v10.2-fix: Turn aborted
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         messages.update(msgs => [...msgs, {
@@ -734,11 +613,15 @@
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         const finalResponse = event.result?.response || event.response || event.text;
+        console.log('[done] finalResponse length:', finalResponse?.length, 'content:', finalResponse?.substring(0, 100));
 
         // v8.5-fix: prevent duplicate final message if response_done already handled it
         const msgs = get(messages);
         const alreadyHasDone = msgs.some(m => m.messageId === (event.messageId || currentMessageId) && m.type === 'done');
-        if (alreadyHasDone) break;
+        if (alreadyHasDone) {
+          console.log('[DEBUG-LUNA] Skipping duplicate done event');
+          break;
+        }
         
         // v9.3-fix: Only flush if we haven't already rendered this response.
         // response_done already flushes and resets currentAssistantId —
@@ -754,31 +637,23 @@
         }
         
         // v9.3-fix: Use pendingToolCount (current turn only) instead of scanning full history
-        // v10.3-fix: Safety timeout reduced from 5min to 30s — UX critical
-        const toolStuckTimeout = 30000; // 30s
+        // v8.5-fix: safety timeout for stuck tools
+        const toolStuckTimeout = 300000; // 5 min
         if (pendingToolCount > 0) {
           const stuckTool = Array.from(toolStartTimes.values()).some(startTime => (Date.now() - startTime) > toolStuckTimeout);
           if (stuckTool) {
+            console.warn('[done] Tools stuck for >5min — forcing pendingToolCount = 0');
             pendingToolCount = 0;
           } else {
+            console.log('[done] Tools ainda em execução — mantendo isStreaming=true até action_end chegar');
             mascotState.set('working');
             mascotMessage.set('Finalizando tools...');
-            // v10.3-fix: Force reset after 30s even if action_end never arrives
-            setTimeout(() => {
-              if (pendingToolCount > 0) {
-                pendingToolCount = 0;
-                isStreaming.set(false);
-                mascotState.set('idle');
-                mascotMessage.set('O que mais posso fazer?');
-              }
-            }, toolStuckTimeout);
           }
         }
         if (pendingToolCount <= 0) {
           isStreaming.set(false);
           mascotState.set('idle');
           mascotMessage.set('O que mais posso fazer?');
-          expectingResponse = false; // v10.2-fix: Turn complete
         }
         currentAssistantId = null;
         responseBuffer = '';
@@ -788,7 +663,6 @@
         playSound('error');
         mascotState.set('idle');
         mascotMessage.set('Precisa fazer login primeiro!');
-        expectingResponse = false; // v10.2-fix: Turn aborted
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         messages.update(msgs => [...msgs, {
@@ -804,7 +678,6 @@
         playSound('error');
         mascotState.set('idle');
         mascotMessage.set('Ops, algo deu errado...');
-        expectingResponse = false; // v10.2-fix: Turn aborted
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
         messages.update(msgs => [...msgs, {
@@ -830,71 +703,8 @@
         if (event.mode) currentMode.set(event.mode);
         break;
       }
-      case 'compact_start': {
-        compactMessageId = 'compact-' + Date.now();
-        messages.update(msgs => [...msgs, {
-          id: compactMessageId,
-          type: 'system',
-          content: event.message || '📦 Compactando contexto...',
-          timestamp: new Date().toISOString()
-        }]);
-        break;
-      }
-      case 'compact_progress': {
-        if (compactMessageId) {
-          messages.update(msgs => msgs.map(m =>
-            m.id === compactMessageId
-              ? { ...m, content: event.message || m.content }
-              : m
-          ));
-        } else {
-          // Fallback: create a new message if no compact_start was seen
-          compactMessageId = 'compact-' + Date.now();
-          messages.update(msgs => [...msgs, {
-            id: compactMessageId,
-            type: 'system',
-            content: event.message || '📦 Compactando...',
-            timestamp: new Date().toISOString()
-          }]);
-        }
-        break;
-      }
-      case 'compact_end': {
-        if (compactMessageId) {
-          messages.update(msgs => msgs.map(m =>
-            m.id === compactMessageId
-              ? { ...m, content: event.message || '✅ Contexto compactado.' }
-              : m
-          ));
-        } else {
-          messages.update(msgs => [...msgs, {
-            id: 'compact-' + Date.now(),
-            type: 'system',
-            content: event.message || '✅ Contexto compactado.',
-            timestamp: new Date().toISOString()
-          }]);
-        }
-        compactMessageId = null;
-        break;
-      }
-      case 'compact_error': {
-        if (compactMessageId) {
-          messages.update(msgs => msgs.map(m =>
-            m.id === compactMessageId
-              ? { ...m, content: event.message || '❌ Erro ao compactar contexto.' }
-              : m
-          ));
-        } else {
-          messages.update(msgs => [...msgs, {
-            id: 'compact-err-' + Date.now(),
-            type: 'system',
-            content: event.message || '❌ Erro ao compactar contexto.',
-            timestamp: new Date().toISOString()
-          }]);
-        }
-        compactMessageId = null;
-        break;
-      }
+      case 'compact_start':
+      case 'compact_end':
       case 'plan_error':
       case 'plan_complete': {
         messages.update(msgs => [...msgs, {
@@ -991,12 +801,6 @@
     if (!sessionId) return;
     // NAO reconecta se ja esta conectado na mesma sessao
     if (lastConnectedSessionId === sessionId && sseManager.eventSource) return;
-    // v10.3-fix: reset all turn state ONLY when switching to a NEW session.
-    // Reconnecting in the same session must preserve turn state so that
-    // delayed SSE events are processed correctly.
-    if (lastConnectedSessionId !== sessionId) {
-      resetSessionState();
-    }
 
     // v4.0-fix: Do NOT reload history while streaming is active — prevents overwriting current state
     if ($isStreaming) {
@@ -1006,19 +810,14 @@
 
     currentAssistantId = null;
     thinkingId = null;
-    currentMessageId = null; // v10.1-fix: Reset to prevent stale filtering on session switch
     responseBuffer = ''; // v9.5-fix: Clear buffer on session switch/reconnect
     processedEventIds.clear(); // v4.2: Clear dedup set on reconnect
-    flushedContentHashes.clear(); // v10.1-fix: Clear content hashes on reconnect to allow valid replays
-    mascotState.set('idle'); // v10.2-fix: Reset mascot state on session switch/reconnect
-    mascotMessage.set(null);
-    expectingResponse = false; // v10.2-fix: Not expecting a response until user sends a message
     sseManager.disconnect();
     sseManager = new SSEManager();
 
     // v3.6-fix: Load full message history from backend instead of clearing
     try {
-      const history = await fetchSessionMessages(sessionId, { limit: 50 });
+      const history = await fetchSessionMessages(sessionId);
       if (history.ok && history.messages) {
         const loaded = [];
         let currentAssistantContent = '';
@@ -1035,11 +834,10 @@
             // v8.5-fix: Ignore thinking events in history load
             continue;
           } else if (msg.type === 'response_delta' && msg.content) {
-            currentAssistantContent += msg.content; // v10.1-fix: concatenate deltas instead of overwriting
+            currentAssistantContent = msg.content;
           } else if (msg.type === 'done') {
-            const rawFinal = msg.result?.response || msg.content || currentAssistantContent || '';
-            const finalText = stripToolBlocksFromBuffer(rawFinal);
-            if (finalText?.trim()) {
+            const finalText = msg.result?.response || msg.content || currentAssistantContent || '';
+            if (finalText) {
               loaded.push({
                 id: msg.id || 'resp-' + Math.random().toString(36).slice(2),
                 type: 'assistant',
@@ -1073,46 +871,29 @@
         }
         // v4.0-fix: Sort by timestamp to ensure chronological order
         loaded.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-        // v10.3-fix: don't render unlimited history — slice to last 100 until virtualization lands
-        messages.set(loaded.slice(-100));
-        const oldestLoaded = loaded.length > 0 ? loaded[0] : null;
-        messagePagination = {
-          hasMore: history.hasMore || false,
-          total: history.total || 0,
-          oldestTimestamp: oldestLoaded?.timestamp || null,
-          loadingMore: false,
-        };
+        messages.set(loaded);
       } else {
         messages.set([]);
-        messagePagination = { hasMore: false, total: 0, oldestLoadedIndex: 0, loadingMore: false };
       }
     } catch (e) {
       console.error('Failed to load session history:', e);
       messages.set([]);
-      messagePagination = { hasMore: false, total: 0, oldestLoadedIndex: 0, loadingMore: false };
     }
 
     sseManager.connect(sessionId, handleEvent);
     lastConnectedSessionId = sessionId;
     // v5.2: Start heartbeat to keep agent page alive
-    const heartbeatUserId = $user?.id || ('web-' + sessionId);
-    startHeartbeat(heartbeatUserId, 30000);
+    startHeartbeat('web-' + sessionId, 30000);
   }
 
   $: if (sessionId && sessionId !== lastConnectedSessionId) {
     connectSSE();
   }
 
-  $: if (sessionId) loadSessionSkills(sessionId);
-
   onMount(() => {
     if (sessionId && sessionId !== lastConnectedSessionId) {
       connectSSE();
     }
-  });
-
-  onDestroy(() => {
-    sseManager.disconnect();
   });
 
   async function handleSend(msg, files) {
@@ -1131,6 +912,7 @@
     currentMessageId = 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 
     // v5.6-fix: Reset user message tracking for new message
+    userMessageAdded = false;
 
     // v6.0-fix: DO NOT clear processedEventIds — it breaks deduplication of
     // delayed SSE events from the previous message. When a 'done' or
@@ -1179,7 +961,6 @@
     currentAssistantId = null;
     thinkingId = null;
     responseBuffer = '';
-    streamingParser.reset();
 
     // v4.0-fix: Remove all previous thinking bubbles when sending a new message
     messages.update(msgs => removeAllThinking(msgs));
@@ -1195,9 +976,9 @@
       timestamp: new Date().toISOString()
     };
     messages.update(msgs => [...msgs, userMsg]);
+    userMessageAdded = true;
     await tick(); // Ensure user message is rendered before processing response events
     isStreaming.set(true);
-    expectingResponse = true; // v10.2-fix: Mark that we are expecting a response
     mascotState.set('thinking');
     mascotMessage.set('Hmm... deixa eu pensar...');
 
@@ -1224,7 +1005,7 @@
         let result = null;
 
         // System handlers (frontend APIs)
-        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent', 'refreshAgent', 'fullRefreshAgent', 'bridgeStart'].includes(slashDef.handler)) {
+        if (['systemRestart', 'systemStatus', 'systemStop', 'systemStart', 'systemHealth', 'systemLogs', 'turnOffAgent', 'refreshAgent', 'fullRefreshAgent'].includes(slashDef.handler)) {
           switch (slashDef.handler) {
             case 'systemRestart': result = await systemRestart(); break;
             case 'systemStatus': result = await systemStatus(); break;
@@ -1236,9 +1017,6 @@
               result = await turnOffAgent('web-' + sessionId);
               mascotState.set('sleep');
               mascotMessage.set('🌙 Luna dormindo. Envie uma mensagem para acordar.');
-              break;
-            case 'bridgeStart':
-              result = await bridgeStart();
               break;
             case 'refreshAgent': {
               isStreaming.set(false);
@@ -1269,7 +1047,7 @@
               // Send a continuation message to the backend
               if (activeSessionId) {
                 try {
-                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode, undefined, null, $activeSkills);
+                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode);
                   await connectSSE();
                 } catch (e) {
                   console.error('[fullRefresh] Failed to send continuation:', e);
@@ -1402,7 +1180,7 @@
         planModeState.update(s => ({ ...s, status: 'processing' }));
         await startPlanMode(planMsg, activeSessionId);
       } else {
-        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId, $activeSkills);
+        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId);
         // v7.1-fix: Reconnect SSE after sending a new message in the same session.
         // The previous SSE connection was gracefully closed after 'done'. We need
         // a fresh connection for the new message's streaming response.
@@ -1411,9 +1189,6 @@
     } catch (e) {
       console.error('Send error:', e);
       isStreaming.set(false);
-      mascotState.set('idle'); // v10.2-fix: Reset mascot on send error
-      mascotMessage.set('Ops, algo deu errado...');
-      expectingResponse = false; // v10.2-fix: Turn aborted
       messages.update(msgs => [...msgs, {
         id: 'err-' + Date.now(),
         type: 'error',
@@ -1508,9 +1283,6 @@
     messages={$messages}
     showTyping={showTyping}
     currentMode={$currentMode}
-    hasMore={messagePagination.hasMore}
-    loadingMore={messagePagination.loadingMore}
-    onLoadMore={loadOlderMessages}
     onApprovePlan={handleApprovePlan}
     onRejectPlan={handleRejectPlan}
     onRevisePlan={handleRevisePlan}

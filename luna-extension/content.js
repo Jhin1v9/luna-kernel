@@ -68,12 +68,9 @@
     setTimeout(() => { teardownMainWorldObserver(); injectObserver(); }, 100);
   });
 
-  // Safety net re-injection — much less frequent (30s instead of 5s)
-  setInterval(() => {
-    if (!window.__lunaDomObserver && document.readyState === 'complete') {
-      injectObserver();
-    }
-  }, 30000);
+  // v10.7-fix: Removed setInterval(30s) that caused memory pressure.
+  // Observer re-injection is handled by SPA navigation hooks (pushState/replaceState/popstate)
+  // and by the content script's own load. If the script is removed, page refresh restores it.
 
   // ── Kimi Input Injection ──
   function findKimiInput() {

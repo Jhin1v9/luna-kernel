@@ -12,8 +12,8 @@ const KIMI_URL_PATTERNS = [
 
 // ── State ──
 let sessionId = null;
-let pollInterval = null;
 let isForwarding = true;
+let isRegistering = false; // v10.7-fix: Prevent concurrent registration
 
 // ── Keep SW alive ──
 chrome.alarms.create('luna-keepalive', { periodInMinutes: 0.17 }); // every ~10s
@@ -55,6 +55,21 @@ async function reinjectAllKimiTabs() {
 
 // ── Server Communication ──
 async function registerSession() {
+  // v10.7-fix: Prevent concurrent registration and reuse existing session
+  if (isRegistering) return false;
+  if (sessionId) return true; // Already registered
+
+  // Try to restore session from storage
+  try {
+    const stored = await chrome.storage.session.get('lunaSessionId');
+    if (stored.lunaSessionId) {
+      sessionId = stored.lunaSessionId;
+      console.log('[Luna BG] Restored session:', sessionId);
+      return true;
+    }
+  } catch (e) {}
+
+  isRegistering = true;
   try {
     sessionId = 'ext-' + Date.now();
     const res = await fetch(`${LUNA_SERVER_URL}/ext/register`, {
@@ -64,12 +79,22 @@ async function registerSession() {
     });
     if (res.ok) {
       console.log('[Luna BG] Session registered:', sessionId);
-      // Start polling
-      chrome.alarms.create('luna-poll', { periodInMinutes: 0.1 }); // every 6s
+      // Persist sessionId to storage
+      try {
+        await chrome.storage.session.set({ lunaSessionId: sessionId });
+      } catch (e) {}
+      // Start polling (only if not already created)
+      chrome.alarms.get('luna-poll').then((a) => {
+        if (!a) {
+          chrome.alarms.create('luna-poll', { periodInMinutes: 0.1 }); // every 6s
+        }
+      });
       return true;
     }
   } catch (e) {
     console.warn('[Luna BG] Failed to register session:', e.message);
+  } finally {
+    isRegistering = false;
   }
   return false;
 }
@@ -188,5 +213,8 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Register on load
 registerSession();
+// v10.7-fix: Also reinject into all existing Kimi tabs on SW load.
+// This handles the case where the extension was loaded after the tab was already open.
+reinjectAllKimiTabs();
 
 console.log('[Luna BG] Service Worker loaded v8.1');

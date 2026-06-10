@@ -5,8 +5,8 @@
 (function setupLunaDomObserver() {
   if (window.__lunaDomObserver) return;
 
-  const VERSION = '2.0.0-v8.6';
-  const DEBOUNCE_MS = 50;
+  const VERSION = '2.0.0-v10.7';
+  const DEBOUNCE_MS = 250; // v10.7-fix: Increased from 50ms to reduce CPU load during streaming
   const TOOL_DEDUP_TTL_MS = 60000; // 60s TTL for deduplicating tool calls
   const SELECTORS = {
     assistantSegment: '.segment-assistant, [data-testid="segment-assistant"], .assistant-segment, .segment-content',
@@ -134,27 +134,35 @@
   // ── Streaming Detection ──
   let _lastStreamText = '';
   let _lastStreamTs = 0;
+  let _lastSentResponse = ''; // v10.7-fix: cache to avoid duplicate stream_state events
 
   function detectStreaming() {
     const info = { isStreaming: false, textDelta: '', thinking: '', response: '' };
     try {
-      for (const node of safeQuery(SELECTORS.thinking)) {
-        info.thinking += safeText(node) + ' ';
+      // v10.7-fix: Only process the LAST assistant, not all historical ones
+      const assistants = safeQuery(SELECTORS.assistantSegment);
+      const lastAssistant = assistants[assistants.length - 1];
+      if (lastAssistant) {
+        // Only get thinking from the last assistant
+        const thinkNode = lastAssistant.querySelector(SELECTORS.thinking);
+        if (thinkNode) info.thinking = safeText(thinkNode);
+        // Only get text from the last assistant
+        const textNodes = lastAssistant.querySelectorAll(SELECTORS.textContent);
+        let currentText = '';
+        for (const node of textNodes) {
+          currentText += safeText(node) + ' ';
+        }
+        const now = Date.now();
+        if (currentText !== _lastStreamText) {
+          info.textDelta = currentText.slice(_lastStreamText.length);
+          info.isStreaming = true;
+          _lastStreamText = currentText;
+          _lastStreamTs = now;
+        } else {
+          info.isStreaming = (now - _lastStreamTs) < 3000;
+        }
+        info.response = currentText;
       }
-      let currentText = '';
-      for (const node of safeQuery(SELECTORS.textContent)) {
-        currentText += safeText(node) + ' ';
-      }
-      const now = Date.now();
-      if (currentText !== _lastStreamText) {
-        info.textDelta = currentText.slice(_lastStreamText.length);
-        info.isStreaming = true;
-        _lastStreamText = currentText;
-        _lastStreamTs = now;
-      } else {
-        info.isStreaming = (now - _lastStreamTs) < 3000;
-      }
-      info.response = currentText;
     } catch (e) {}
     return info;
   }
@@ -164,6 +172,7 @@
   let _lastStreamState = {};
   const _detectedTools = new Set();   // Deduplication: tool+params keys already emitted
   let _lastDedupCleanup = Date.now();
+  let _isProcessing = false; // v10.7-fix: Prevent concurrent processing
 
   function getToolKey(tool, params) {
     try {
@@ -188,33 +197,43 @@
   }
 
   function processMutations(mutations) {
+    // v10.7-fix: Skip if already processing to prevent stacking
+    if (_isProcessing) return;
+    _isProcessing = true;
+
     try {
-      // Detect new/changed assistant segments
-      const segments = detectAssistantSegments(document.documentElement);
-      for (const seg of segments) {
-        if (seg.isNew) {
+      // v10.7-fix: Only process the LAST assistant segment, not all historical ones
+      const assistants = safeQuery(SELECTORS.assistantSegment);
+      const lastAssistant = assistants[assistants.length - 1];
+      if (lastAssistant) {
+        const segId = lastAssistant.getAttribute('data-segment-id') || lastAssistant.getAttribute('id') || ('seg_' + Math.random().toString(36).slice(2, 8));
+        const isNew = !lastAssistant.__lunaObserved;
+        if (isNew) { lastAssistant.__lunaObserved = true; lastAssistant.__lunaSegmentId = segId; }
+
+        const jsonBlocks = detectJsonBlocks(lastAssistant);
+        if (isNew) {
           sendEvent('segment_complete', {
-            segmentId: seg.id,
-            textLength: seg.textLength,
-            hasCodeBlocks: seg.hasCodeBlocks,
-            toolCallsCount: seg.toolCalls.length,
-            isComplete: seg.isComplete
+            segmentId: segId,
+            textLength: safeText(lastAssistant).length,
+            hasCodeBlocks: jsonBlocks.actions.length > 0 || jsonBlocks.responses.length > 0,
+            toolCallsCount: jsonBlocks.actions.length,
+            isComplete: !lastAssistant.classList.contains('streaming') && !lastAssistant.querySelector('[class*="streaming"], [class*="loading"]')
           });
         }
-        for (const tc of seg.toolCalls) {
+        for (const tc of jsonBlocks.actions) {
           const toolKey = getToolKey(tc.tool, tc.params);
           if (!_detectedTools.has(toolKey)) {
             _detectedTools.add(toolKey);
             sendEvent('tool_call_detected', {
-              segmentId: seg.id,
+              segmentId: segId,
               tool: tc.tool,
               params: tc.params
             });
           }
         }
-        for (const tr of seg.toolResponses) {
+        for (const tr of jsonBlocks.responses) {
           sendEvent('tool_response_detected', {
-            segmentId: seg.id,
+            segmentId: segId,
             response: tr.response
           });
         }
@@ -238,13 +257,16 @@
           deltaLength: streamInfo.textDelta.length,
           thinking: streamInfo.thinking.slice(0, 200)
         });
-        // v8.6: Send full state for real-time consumption by bridge
-        sendEvent('stream_state', {
-          thinking: streamInfo.thinking,
-          response: streamInfo.response,
-          isStreaming: true,
-          textDelta: streamInfo.textDelta
-        });
+        // v10.7-fix: Only send stream_state if response actually changed
+        if (streamInfo.response !== _lastSentResponse) {
+          _lastSentResponse = streamInfo.response;
+          sendEvent('stream_state', {
+            thinking: streamInfo.thinking,
+            response: streamInfo.response,
+            isStreaming: true,
+            textDelta: streamInfo.textDelta
+          });
+        }
       }
 
       // Periodic dedup cleanup
@@ -273,39 +295,35 @@
         }
       }
     } catch (e) {}
+
+    _isProcessing = false;
   }
 
   const debouncedProcess = debounce(processMutations, DEBOUNCE_MS);
 
   const observer = new MutationObserver((mutations) => {
-    if (typeof requestIdleCallback === 'function') {
-      requestIdleCallback(() => debouncedProcess(mutations), { timeout: 100 });
-    } else {
-      setTimeout(() => debouncedProcess(mutations), 0);
-    }
+    // v10.7-fix: Direct call instead of requestIdleCallback to avoid timeout pressure
+    debouncedProcess(mutations);
   });
 
-  // v8.2-fix: Observe without attributeOldValue to reduce memory pressure.
-  // attributeOldValue=true causes the browser to clone the old attribute value
-  // on every mutation, generating massive record objects during Kimi streaming.
+  // v10.7-fix: Observe ONLY childList + subtree. Attributes cause massive mutation records
+  // during Kimi streaming (text insertion, class changes). childList is sufficient to detect
+  // new assistant segments, code blocks, and buttons.
   try {
     observer.observe(document.documentElement, {
       childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class', 'data-status', 'data-segment-id', 'style']
+      subtree: true
     });
   } catch (e) {
     try {
       observer.observe(document.body, {
         childList: true,
-        subtree: true,
-        attributes: true
+        subtree: true
       });
     } catch (e2) {}
   }
 
-  // v8.2-fix: Heartbeat detects stream end — guard against duplicate emissions
+  // v10.7-fix: Heartbeat reduced from 2s to 10s — stream end detection doesn't need to be frequent
   let _streamEndEmitted = false;
   const heartbeatInterval = setInterval(() => {
     try {
@@ -313,8 +331,9 @@
       const btnState = detectButtonState();
       const wasStreaming = _lastStreamState.isStreaming;
       const nowStreaming = streamInfo.isStreaming;
-      // v8.6: Send periodic stream_state for bridge real-time sync
-      if (nowStreaming) {
+      // v10.7-fix: Only send stream_state if response changed or state transitioned
+      if (nowStreaming && streamInfo.response !== _lastSentResponse) {
+        _lastSentResponse = streamInfo.response;
         sendEvent('stream_state', {
           thinking: streamInfo.thinking,
           response: streamInfo.response,
@@ -324,7 +343,6 @@
       if (wasStreaming && !nowStreaming && !btnState.stopVisible && !_streamEndEmitted) {
         _streamEndEmitted = true;
         sendEvent('stream_end', { finalTextLength: _lastStreamText.length });
-        // v8.6: Also send final state
         sendEvent('stream_state', {
           thinking: streamInfo.thinking,
           response: streamInfo.response,
@@ -337,7 +355,7 @@
       }
       _lastStreamState = { isStreaming: nowStreaming };
     } catch (e) {}
-  }, 2000);
+  }, 10000); // v10.7-fix: 10s instead of 2s
 
   // Teardown on page unload
   function teardown() {

@@ -75,21 +75,12 @@
     }
   };
 
-  function sanitizeAssistantContent(text) {
-    if (!text) return '';
-    // v10.3-fix: última barreira — remove blocos JSON de tool que tenham vazado
-    return text
-      .replace(/\{[\s\S]*?"tool"[\s\S]*?\}/g, '')
-      .replace(/\{[\s\S]*?"params"[\s\S]*?\}/g, '')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-  }
-
   function renderMarkdown(text) {
     if (!text) return '';
 
-    // v10.3-fix: final sanitize pass before rendering
-    let working = sanitizeAssistantContent(text);
+    // v8.5-fix: ChatArea.svelte already strips tool blocks via stripToolBlocksFromBuffer.
+    // AssistantMessage should just render what it receives.
+    let working = text.trim();
 
     // Unescape literal \n sequences
     let html = working.replace(/\\n/g, '\n');
@@ -218,9 +209,7 @@
     flex-direction: column;
     align-items: flex-start;
     margin-right: auto;
-    max-width: min(75%, 800px);
-    word-break: break-word;
-    overflow-wrap: break-word;
+    max-width: 90%;
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
   .assistant-message {

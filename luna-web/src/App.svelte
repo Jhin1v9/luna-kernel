@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState, availableSkills } from './stores.js';
+  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState } from './stores.js';
 
   // Update CSS theme variables when mode changes
   $: {
@@ -18,7 +18,7 @@
       document.body.classList.remove('plan-mode-active');
     }
   }
-  import { fetchSessions, fetchConfig, sessionAction, SSEManager, fetchMe, fetchSkills } from './api.js';
+  import { fetchSessions, fetchConfig, sessionAction, SSEManager, fetchMe } from './api.js';
   import Sidebar from './components/Sidebar.svelte';
   import ChatArea from './components/ChatArea.svelte';
   import LoginPage from './components/LoginPage.svelte';
@@ -35,16 +35,6 @@
 
   // Quando não há sessão ativa, Luna vai dormir 💤
   $: if (!$currentSessionId) mascotState.set('sleep');
-
-  // v10.3-fix: quando usuário faz login explicitamente, força HOME (ignora localStorage)
-  let lastUser = null;
-  $: {
-    if ($user && !lastUser) {
-      const urlSessionId = getSessionFromURL();
-      if (!urlSessionId) currentSessionId.set(null);
-    }
-    lastUser = $user;
-  }
 
   async function handleNewSession() {
     const res = await sessionAction('create', null, 'Nova Sessão');
@@ -140,8 +130,6 @@
           }
         }
       }
-      const skillsRes = await fetchSkills();
-      if (skillsRes.ok && skillsRes.skills) availableSkills.set(skillsRes.skills);
       const cfg = await fetchConfig();
       if (cfg) lunaConfig.set(cfg);
     } catch (e) {

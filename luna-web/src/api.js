@@ -30,9 +30,7 @@ export class SSEManager {
     this.currentSessionId = null;
     this.onEventCallback = null;
     this.fallbackTimer = null;
-    this.reconnectTimer = null;
     this.lastMessageCount = 0;
-    this.destroyed = false;
   }
 
   _setStatus(status) {
@@ -55,7 +53,7 @@ export class SSEManager {
     // replay the ENTIRE history. lastMessageCount starts at 0, so slice(0) emits all.
     const initialCount = this.lastMessageCount;
     this.fallbackTimer = setInterval(async () => {
-      if (this.destroyed || this.isIntentionallyClosed || this.gracefulClose || this.eventSource) return;
+      if (this.isIntentionallyClosed || this.gracefulClose || this.eventSource) return;
       try {
         const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages`, {
           headers: authHeaders(false)
@@ -76,7 +74,6 @@ export class SSEManager {
                 text: msg.content,
                 fullResponse: msg.content,
                 source: 'fallback',
-                sessionId,
                 timestamp: msg.timestamp,
               });
             }
@@ -97,7 +94,6 @@ export class SSEManager {
   }
 
   connect(sessionId, onEvent) {
-    if (this.destroyed) return;
     this.onEventCallback = onEvent;
     // v4.1-fix: Prevent duplicate connections for same session
     if (this.eventSource && this.currentSessionId === sessionId) {
@@ -109,7 +105,6 @@ export class SSEManager {
       console.log('[SSE] Disconnecting existing connection before reconnect');
       this.disconnect();
     }
-    if (this.destroyed) return;
     this.currentSessionId = sessionId;
     this.isIntentionallyClosed = false;
     this.gracefulClose = false;
@@ -123,7 +118,6 @@ export class SSEManager {
     this.eventSource.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
-        event.sessionId = event.sessionId || sessionId;
         onEvent(event);
         this.reconnectAttempts = 0;
         this._setStatus('connected');
@@ -152,10 +146,7 @@ export class SSEManager {
         const delay = Math.min(this.baseDelay * Math.pow(2, this.reconnectAttempts) + Math.random() * 1000, this.maxDelay);
         this.reconnectAttempts++;
         console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = null;
-          if (!this.destroyed) this.connect(sessionId, onEvent);
-        }, delay);
+        setTimeout(() => this.connect(sessionId, onEvent), delay);
       } else if (this.gracefulClose) {
         this._setStatus('disconnected');
         console.log('[SSE] Graceful close — no reconnect needed.');
@@ -165,26 +156,21 @@ export class SSEManager {
   }
 
   disconnect() {
-    this.destroyed = true;
     this.isIntentionallyClosed = true;
     this.gracefulClose = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.currentSessionId = null;
+    this.onEventCallback = null;
     this._stopFallbackPolling();
     if (this.statusDebounceTimer) clearTimeout(this.statusDebounceTimer);
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
     }
-    this.currentSessionId = null;
-    this.onEventCallback = null;
     this._setStatus('disconnected');
   }
 }
 
-export async function sendMessage(message, sessionId, mode = 'instant', files = [], messageId = null, activeSkills = []) {
+export async function sendMessage(message, sessionId, mode = 'instant', files = [], messageId = null) {
   let filePayload = [];
   if (files && files.length > 0) {
     filePayload = await Promise.all(
@@ -203,7 +189,7 @@ export async function sendMessage(message, sessionId, mode = 'instant', files = 
       })
     );
   }
-  const body = { message, sessionId, mode, files: filePayload, activeSkills };
+  const body = { message, sessionId, mode, files: filePayload };
   if (messageId) body.messageId = messageId;
 
   // v9.2-fix: Retry with exponential backoff — prevents "Unexpected end of JSON input"
@@ -325,25 +311,14 @@ export async function turnOffAgent(userId = 'web-default') {
   return res.json();
 }
 
-export async function fetchSessionMessages(sessionId, { limit = 50, before } = {}) {
+export async function fetchSessionMessages(sessionId) {
   try {
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (before !== undefined) params.set('before', String(before));
-    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages?${params}`, {
+    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/messages`, {
       headers: authHeaders(false)
     });
     return res.json();
   } catch {
-    return { ok: false, messages: [], total: 0, hasMore: false };
-  }
-}
-
-export async function fetchActiveUsers() {
-  try {
-    const res = await fetch('/api/users/active', { headers: authHeaders(false) });
-    return res.json();
-  } catch {
-    return { ok: false, users: [] };
+    return { ok: false, messages: [] };
   }
 }
 
@@ -421,56 +396,6 @@ window.fetch = async function(...args) {
   }
   return res;
 };
-
-// ============================================================
-// Skill System API
-// ============================================================
-
-export async function fetchSkills() {
-  try {
-    const res = await fetch('/api/skills', { headers: authHeaders(false) });
-    return res.json();
-  } catch {
-    return { ok: false, skills: [] };
-  }
-}
-
-export async function validateSkillPath(path) {
-  try {
-    const res = await fetch('/api/skills/validate', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ path }),
-    });
-    return res.json();
-  } catch {
-    return { ok: false, valid: false, error: 'Falha na validação' };
-  }
-}
-
-export async function fetchSessionActiveSkills(sessionId) {
-  try {
-    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/skills`, {
-      headers: authHeaders(false),
-    });
-    return res.json();
-  } catch {
-    return { ok: false, activeSkills: [] };
-  }
-}
-
-export async function setSessionActiveSkills(sessionId, activeSkills) {
-  try {
-    const res = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/skills`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ activeSkills }),
-    });
-    return res.json();
-  } catch {
-    return { ok: false, activeSkills: [] };
-  }
-}
 
 // ============================================================
 // Plan Mode API
@@ -561,11 +486,6 @@ export async function systemHealth() {
 
 export async function systemLogs(lines = 50) {
   const res = await fetch(`/api/system/logs?lines=${lines}`, { headers: authHeaders(false) });
-  return res.json();
-}
-
-export async function bridgeStart() {
-  const res = await fetch('/api/system/bridge-start', { method: 'POST', headers: authHeaders(false) });
   return res.json();
 }
 

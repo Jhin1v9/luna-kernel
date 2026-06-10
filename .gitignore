@@ -27,3 +27,6 @@ Thumbs.db
 
 # Build artifacts (keep dist for deployment)
 # dist/ is INCLUDED for web deployment
+backup-merge-inteligente-*/
+backup-src-*/
+kimi-cookies.json

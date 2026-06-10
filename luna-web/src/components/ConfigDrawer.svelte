@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { downloadFile, parseEnvFile, generateEnvFile } from '../utils.js';
-  import { testConnection, downloadSelfHost, systemStatus, fetchActiveUsers } from '../api.js';
+  import { testConnection, downloadSelfHost, systemStatus } from '../api.js';
 
   export let open = false;
   export let config = {};
@@ -29,47 +29,6 @@
   let testLoading = {};
   let downloadLoading = false;
 
-  // Active users panel
-  let activeUsersList = [];
-  let usersLoading = false;
-  let usersRefreshInterval = null;
-
-  function timeAgo(isoDate) {
-    if (!isoDate) return 'nunca';
-    const ms = Date.now() - new Date(isoDate).getTime();
-    const sec = Math.floor(ms / 1000);
-    if (sec < 60) return 'agora';
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `há ${min} min`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `há ${hr}h`;
-    const day = Math.floor(hr / 24);
-    if (day < 7) return `há ${day}d`;
-    const week = Math.floor(day / 24);
-    return `há ${week} sem`;
-  }
-
-  function statusLabel(status) {
-    if (status === 'online') return 'Online';
-    if (status === 'away') return 'Ausente';
-    return 'Offline';
-  }
-
-  function statusClass(status) {
-    if (status === 'online') return 'online';
-    if (status === 'away') return 'away';
-    return 'offline';
-  }
-
-  async function loadActiveUsers() {
-    usersLoading = true;
-    const res = await fetchActiveUsers();
-    if (res.ok && res.users) {
-      activeUsersList = res.users;
-    }
-    usersLoading = false;
-  }
-
   $: if (open) {
     localConfig = { ...config };
     updateCounts();
@@ -77,18 +36,6 @@
     fetchServiceStatus();
   } else {
     if (typeof document !== 'undefined') document.body.style.overflow = '';
-  }
-
-  $: if (open && activeSection === 'users') {
-    loadActiveUsers();
-    if (!usersRefreshInterval) {
-      usersRefreshInterval = setInterval(() => loadActiveUsers(), 30000);
-    }
-  } else if (!open || activeSection !== 'users') {
-    if (usersRefreshInterval) {
-      clearInterval(usersRefreshInterval);
-      usersRefreshInterval = null;
-    }
   }
 
   $: systemPromptValue = localConfig.SYSTEM_PROMPT || '';
@@ -213,14 +160,9 @@
 
   onDestroy(() => {
     if (typeof document !== 'undefined') document.body.style.overflow = '';
-    if (usersRefreshInterval) {
-      clearInterval(usersRefreshInterval);
-      usersRefreshInterval = null;
-    }
   });
 
   const sections = [
-    { key: 'users', icon: '👥', title: 'Usuarios Ativos' },
     { key: 'telegram', icon: '🤖', title: 'Bot do Telegram' },
     { key: 'dashboard', icon: '📊', title: 'Dashboard NEXO PRO' },
     { key: 'kimi', icon: '🧠', title: 'Kimi Bridge' },
@@ -247,10 +189,10 @@
     transition:fade={{ duration: 200 }}
   />
 
-  <!-- Modal -->
-  <div
-    class="config-modal"
-    transition:fly={{ y: 30, duration: 300, opacity: 1 }}
+  <!-- Drawer -->
+  <aside
+    class="config-drawer"
+    transition:fly={{ x: 400, duration: 300, opacity: 1 }}
     role="dialog"
     aria-modal="true"
     aria-label="Configuracoes"
@@ -268,46 +210,6 @@
 
     <!-- Content -->
     <div class="drawer-content">
-      <!-- 👥 Usuarios Ativos -->
-      <div class="section">
-        <button class="section-header" on:click={() => setSection('users')}>
-          <span>👥 Usuarios Ativos</span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'users'}>
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </button>
-        {#if activeSection === 'users'}
-          <div class="section-body" transition:slideExpand>
-            <div class="users-panel">
-              <h3 class="users-panel-title">Usuários</h3>
-              <p class="users-panel-subtitle">Status de presença na Luna</p>
-
-              {#if usersLoading && activeUsersList.length === 0}
-                <div class="loading-state">Carregando usuários...</div>
-              {:else}
-                <div class="users-grid">
-                  {#each activeUsersList as u (u.userId)}
-                    <div class="user-card">
-                      <div class="user-avatar" style="background: {u.color || 'var(--luna-primary)'};">
-                        {(u.name || u.userId).charAt(0).toUpperCase()}
-                      </div>
-                      <div class="user-meta">
-                        <div class="user-name">{u.name || u.userId}</div>
-                        <div class="user-role">{u.role || 'usuário'}</div>
-                        <div class="user-last-seen">
-                          {u.status === 'online' ? 'visto agora' : `visto ${timeAgo(u.lastSeen)}`}
-                        </div>
-                      </div>
-                      <span class="user-status {statusClass(u.status)}">{statusLabel(u.status)}</span>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          </div>
-        {/if}
-      </div>
-
       <!-- 🤖 Telegram -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('telegram')}>
@@ -607,7 +509,7 @@
       </div>
       <button class="btn-danger" on:click={handleRestart}>🔄 Reiniciar Luna</button>
     </div>
-  </div>
+  </aside>
 {/if}
 
 <!-- Confirmation Dialog -->
@@ -640,22 +542,19 @@
     background: rgba(0, 0, 0, 0.5);
     z-index: 40;
   }
-  .config-modal {
+  .config-drawer {
     position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 520px;
-    max-width: 92vw;
-    max-height: 85vh;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 460px;
+    max-width: 100vw;
     background: var(--luna-elevated);
-    border: 1px solid var(--luna-border);
-    border-radius: 16px;
+    border-left: 1px solid var(--luna-border);
     z-index: 50;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);
   }
   .drawer-header {
     display: flex;
@@ -1097,71 +996,10 @@
     0%, 100% { box-shadow: 0 0 6px rgba(16,185,129,0.3); }
     50% { box-shadow: 0 0 12px rgba(16,185,129,0.6); }
   }
-  /* 👥 Users list */
-  .users-panel { padding: 4px 2px; }
-  .users-panel-title { margin: 0 0 4px; font-size: 18px; color: var(--luna-text); }
-  .users-panel-subtitle { margin: 0 0 16px; color: var(--luna-text-secondary); font-size: 13px; }
-  .users-grid { display: flex; flex-direction: column; gap: 10px; }
-  .user-card {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px; border-radius: 12px;
-    background: var(--luna-surface); border: 1px solid var(--luna-border);
-  }
-  .user-avatar {
-    width: 40px; height: 40px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    color: #fff; font-weight: 700; font-size: 16px; flex-shrink: 0;
-  }
-  .user-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-  .user-name {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--luna-text);
-  }
-  .user-role {
-    font-size: 11px;
-    color: var(--luna-text-secondary);
-    text-transform: capitalize;
-  }
-  .user-last-seen {
-    font-size: 11px;
-    color: var(--luna-text-secondary);
-    opacity: 0.8;
-    margin-top: 2px;
-  }
-  .user-status {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 3px 8px;
-    border-radius: 999px;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    flex-shrink: 0;
-  }
-  .user-status.online {
-    background: rgba(16,185,129,0.15);
-    color: #34d399;
-  }
-  .user-status.away {
-    background: rgba(245,158,11,0.15);
-    color: #fbbf24;
-  }
-  .user-status.offline {
-    background: rgba(148,163,184,0.12);
-    color: #94a3b8;
-  }
-  .loading-state, .empty-state {
-    text-align: center;
-    padding: 20px;
-    font-size: 13px;
-    color: var(--luna-text-secondary);
-    opacity: 0.7;
-  }
   @media (max-width: 768px) {
-    .config-modal {
-      width: 96vw;
-      max-height: 92vh;
-      border-radius: 12px;
+    .config-drawer {
+      width: 100vw;
+      left: 0;
     }
   }
 </style>

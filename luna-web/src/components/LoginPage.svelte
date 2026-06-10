@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { login } from '../api.js';
-  import { user, currentSessionId } from '../stores.js';
+  import { user } from '../stores.js';
   import OrbBackground from './OrbBackground.svelte';
 
   let username = '';
@@ -95,9 +95,7 @@
       const res = await login(username, password);
       if (res.ok && res.token) {
         localStorage.setItem('luna_token', res.token);
-        localStorage.removeItem('luna_current_session');
         user.set(res.user);
-        currentSessionId.set(null);
       } else {
         error = res.error || 'Credenciais inválidas';
         mascotState = 'thinking';

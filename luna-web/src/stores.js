@@ -108,7 +108,3 @@ export const voiceAudioData = writable(new Uint8Array(64));
 
 // v9.3: Active modal for rich slash command responses
 export const activeModal = writable(null); // null | 'tasks' | 'leads' | 'finance' | 'voting' | 'ideas' | 'links' | 'emails' | 'whatsapp' | 'config'
-
-// Skill system: available skills and active skill paths for the current session
-export const availableSkills = writable([]);   // { name, description, path }[]
-export const activeSkills = writable([]);      // path[] for current session

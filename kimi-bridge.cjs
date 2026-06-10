@@ -25,18 +25,6 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebBridgeClient } = require('./webbridge-client.cjs');
 
-// v10.0-refactor: Extracted bridge libraries
-const { AsyncMutex } = require('./bridge-libs/async-mutex.cjs');
-const { CircuitBreaker } = require('./bridge-libs/circuit-breaker.cjs');
-const { ProcessRegistry } = require('./bridge-libs/process-registry.cjs');
-const { BridgeConfig } = require('./bridge-libs/config.cjs');
-const { InputValidator } = require('./bridge-libs/input-validator.cjs');
-const { ChromeLauncher } = require('./bridge-libs/chrome-launcher.cjs');
-const { LoginManager } = require('./bridge-libs/login-manager.cjs');
-const { DomExtractor } = require('./bridge-libs/dom-extractor.cjs');
-const { BridgeSessionManager } = require('./bridge-libs/bridge-session-manager.cjs');
-const { MessageSender } = require('./bridge-libs/message-sender.cjs');
-
 // Lazy-load turndown — fail gracefully if not installed
 let TurndownService = null;
 try {
@@ -632,38 +620,22 @@ class KimiNetworkInterceptor {
 class KimiBridge {
   constructor(options = {}) {
     this.cdpUrl = options.cdpUrl || null; // discovered dynamically
-    this.timeout = options.timeout ?? BridgeConfig.DEFAULT_TIMEOUT;
-    this.maxPages = options.maxPages ?? BridgeConfig.MAX_CONCURRENT_PAGES;
-    this.idleTimeout = options.idleTimeout ?? BridgeConfig.IDLE_TIMEOUT_MS;
+    this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
+    this.maxPages = options.maxPages ?? 999;
+    this.idleTimeout = options.idleTimeout ?? IDLE_TIMEOUT_MS;
     this.debug = options.debug || false;
 
     this.browser = null;
     this.defaultContext = null; // Original Chrome context with login cookies
     this.userContexts = new Map(); // userId -> BrowserContext
     this.userSessions = new Map(); // userId -> { page, chatUrl, lastActivity, processing, mode, context }
+    this.semaphore = new Semaphore(999); // Effectively unlimited
     this.store = new KimiSessionStore(SESSION_STORE_PATH);
     this.lastRequestTime = new Map(); // userId -> timestamp (rate limiting)
     this.idleTimer = null;
     this.cookieBackupTimer = null;
-    this.healthCheckTimer = null;
     this.persistentUserIds = new Set(); // userIds that should NEVER be cleaned up
     this.cancelledStreams = new Map(); // userId -> true (cancelled mid-stream)
-    this.semaphore = new Semaphore(this.maxPages); // v10.0-fix: Semaphore was missing from constructor
-
-    // v10.0-refactor: Extracted libraries
-    this.config = BridgeConfig;
-    this.mutex = new AsyncMutex();
-    this.processRegistry = new ProcessRegistry();
-    this.circuitBreaker = new CircuitBreaker({
-      ...BridgeConfig.CIRCUIT_BREAKER,
-      name: 'kimi-bridge',
-    });
-    this.chromeLauncher = new ChromeLauncher(BridgeConfig, log);
-    this.loginManager = new LoginManager(log, BridgeConfig);
-    this.inputValidator = InputValidator;
-    this.domExtractor = new DomExtractor(log);
-    this.sessionManager = null; // initialized in connect()
-    this.messageSender = new MessageSender(this, log);
 
     // v7.5: Network Interceptors — one per page, native Playwright response interception
     this.networkInterceptors = new Map(); // userId -> KimiNetworkInterceptor
@@ -784,29 +756,22 @@ class KimiBridge {
     let cdpUrl = await this._getCdpUrl();
     log.info(`Connecting to Chrome at ${cdpUrl}`);
     try {
-      this.browser = await this.circuitBreaker.execute(() => chromium.connectOverCDP(cdpUrl));
+      this.browser = await chromium.connectOverCDP(cdpUrl);
     } catch (e) {
-      // v10.0-fix: Use ChromeLauncher for automatic Chrome startup
+      // v3.7-fix: If connection fails, try to start Chrome automatically
       log.warn(`Failed to connect to Chrome at ${cdpUrl}: ${e.message}`);
       log.info('Attempting to start Chrome automatically...');
-
-      const existing = await this.chromeLauncher.findExistingPort();
-      if (existing) {
-        this.cdpUrl = existing.cdpUrl;
-        cdpUrl = existing.cdpUrl;
+      const chromeStatus = await this.checkChrome();
+      if (chromeStatus.running || chromeStatus.started) {
+        // Re-discover CDP URL after starting Chrome
+        this._resetCdpUrl();
+        cdpUrl = await this._getCdpUrl();
+        log.info(`Retrying connection to Chrome at ${cdpUrl}`);
+        this.browser = await chromium.connectOverCDP(cdpUrl);
       } else {
-        const started = await this.chromeLauncher.startChrome();
-        if (started.error) {
-          this._resetCdpUrl();
-          throw new Error(`Cannot connect to Chrome: ${started.error}`);
-        }
-        this.cdpUrl = started.cdpUrl;
-        this.processRegistry.registerPid(started.pid);
-        cdpUrl = started.cdpUrl;
+        this._resetCdpUrl();
+        throw new Error(`Cannot connect to Chrome: ${chromeStatus.error || e.message}`);
       }
-
-      log.info(`Retrying connection to Chrome at ${cdpUrl}`);
-      this.browser = await chromium.connectOverCDP(cdpUrl);
     }
     const contexts = this.browser.contexts();
 
@@ -816,21 +781,6 @@ class KimiBridge {
 
     this.defaultContext = contexts[0];
     log.success(`Connected! Using default context with ${this.defaultContext.pages().length} existing page(s)`);
-
-    // v10.0-refactor: Initialize BridgeSessionManager with live browser/context
-    this.sessionManager = new BridgeSessionManager(
-      this.browser,
-      this.defaultContext,
-      this.store,
-      log,
-      {
-        idleTimeout: this.idleTimeout,
-        maxPages: this.maxPages,
-        ttl: BridgeConfig.SESSION_TTL,
-        ttlEnabled: true,
-        persistentMode: BridgeConfig.PERSISTENT_MODE,
-      }
-    );
 
     // v3.9-fix: Inject MASTER cookies into defaultContext so all new user contexts
     // inherit login state, even when Chrome was just started with an empty profile.
@@ -900,9 +850,6 @@ class KimiBridge {
     // Start cookie backup timer (save every 5 minutes)
     this._startCookieBackup();
 
-    // v10.0: Start health check to auto-recover from browser crashes
-    this._startHealthCheck();
-
     // v5.6-fix: Start background polling to keep pages alive (prevents mobile Chrome suspension)
     this._startBackgroundPolling();
 
@@ -923,10 +870,6 @@ class KimiBridge {
     if (this.bgPollTimer) {
       clearInterval(this.bgPollTimer);
       this.bgPollTimer = null;
-    }
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
     }
 
     // Close all user contexts (which also closes their pages)
@@ -1048,7 +991,7 @@ class KimiBridge {
       if (!currentUrl.includes(chatUrl.split('?')[0].split('/').pop())) {
         log.info(`[CRASH-RECOVERY] Navigating to saved chat URL: ${chatUrl}`);
         log.info('[DEBUG-LUNA] Crash-recovery goto with no timeout');
-        await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
         await page.waitForTimeout(2000);
       }
 
@@ -1141,7 +1084,7 @@ class KimiBridge {
       // server-side via Playwright's native page.on('response'). DOM polling uses
       // page.evaluate() on demand. This is immune to page anti-tampering.
 
-      await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2000);
 
       // v3.3-fix: Re-inject via evaluate after navigation to ensure observer is active
@@ -1956,7 +1899,7 @@ class KimiBridge {
           return markdown ? (markdown.innerText || '').trim() : '';
         }, targetAssistantIndex).catch(() => '');
       }
-      return await page.locator('.markdown-container .markdown').last().innerText({ timeout: 30000 }).catch(() => '');
+      return await page.locator('.markdown-container .markdown').last().innerText({ timeout: 0 }).catch(() => '');
     };
 
     // Phase 0: Wait for text to CHANGE from initialText — this ensures we don't
@@ -1987,7 +1930,7 @@ class KimiBridge {
     try {
       await page.waitForSelector('.segment-assistant-actions .icon-button', {
         state: 'visible',
-        timeout: 30000, // NO TIMEOUT — wait forever for buttons
+        timeout: 0, // NO TIMEOUT — wait forever for buttons
       });
       buttonsVisible = true;
       log.success('Action buttons detected — response likely complete');
@@ -2176,7 +2119,7 @@ class KimiBridge {
     // v5.3-fix: Usar goto na MESMA aba em vez de clicar no botão "new chat".
     // O botão "new chat" abre uma NOVA ABA no navegador, causando acúmulo de abas
     // e problemas de memória. goto na mesma aba é limpo, rápido e previsível.
-    await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded', timeout: 0 });
     await page.waitForTimeout(2500);
     let newUrl = page.url();
 
@@ -2961,7 +2904,7 @@ class KimiBridge {
       const currentUrl = page.url();
       if (!isAgentOrSwarm && session.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
         log.info(`URL mismatch: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
-        await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
         await page.waitForTimeout(1500);
       }
 
@@ -2987,7 +2930,7 @@ class KimiBridge {
 
       // Capture current text BEFORE sending — critical to detect new response.
       // If captured after Enter, fast responses will be mistaken for old text.
-      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 30000 }).catch(() => '');
+      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 0 }).catch(() => '');
 
       // Clear any existing text first
       await inputLocator.fill('');
@@ -3316,44 +3259,22 @@ class KimiBridge {
       }
     }
 
-    // Start visible Chrome — v10.0-fix: Prioritize .deb over snap for full control
+    // Start visible Chrome
     const chromeCmds = [
-      '/opt/google/chrome/chrome',        // .deb binary (highest priority)
-      '/usr/bin/google-chrome-stable',    // .deb symlink
-      '/usr/bin/google-chrome',           // .deb symlink
-      'google-chrome-stable',
       'google-chrome',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/chromium',
-      'chromium-browser',
+      'google-chrome-stable',
       'chromium',
+      'chromium-browser',
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium',
     ];
     let chromePath = null;
     for (const cmd of chromeCmds) {
-      try {
-        let resolved = null;
-        if (cmd.startsWith('/')) {
-          // Absolute path — check existence directly (which only searches PATH)
-          if (fs.existsSync(cmd) && !fs.statSync(cmd).isDirectory()) {
-            try { fs.accessSync(cmd, fs.constants.X_OK); resolved = cmd; } catch {}
-          }
-        } else {
-          resolved = execSync(`which ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim();
-        }
-        if (!resolved) continue;
-        // Reject snap installations — they have restrictive sandboxing
-        if (resolved.includes('/snap/')) {
-          log.warn(`Ignorando Chrome snap: ${resolved}`);
-          continue;
-        }
-        chromePath = resolved;
-        break;
-      } catch {}
+      try { execSync(`which ${cmd}`, { stdio: 'ignore' }); chromePath = cmd; break; } catch {}
     }
     if (!chromePath) {
-      return { running: false, started: false, error: 'Chrome .deb não encontrado. Instale: wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add - && sudo sh -c \'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list\' && sudo apt update && sudo apt install -y google-chrome-stable' };
+      return { running: false, started: false, error: 'Chrome não encontrado. Instale google-chrome-stable ou chromium.' };
     }
-    log.info(`Chrome .deb selecionado: ${chromePath}`);
 
     try {
       // Always use the persistent profile, never a temporary one
@@ -3383,21 +3304,10 @@ class KimiBridge {
         '--disable-renderer-backgrounding',
         ...extensionArgs,
         'https://www.kimi.com/',
-      ], { detached: false, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0', XAUTHORITY: process.env.XAUTHORITY || '' } });
+      ], { detached: true, stdio: 'ignore', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
+      proc.unref();
 
-      // v10.0-fix: Keep process alive by holding pipes — detached+unref caused Chrome
-      // to be reaped before child processes (zygote, GPU, renderer) stabilised.
-      let chromeStderr = '';
-      proc.stdout.on('data', () => {});
-      proc.stderr.on('data', (d) => { chromeStderr += d; });
-      proc.on('error', (e) => log.warn(`Chrome spawn error: ${e.message}`));
-      proc.on('exit', (code) => {
-        if (code !== 0 && code !== null) {
-          log.warn(`Chrome exited with code ${code}. stderr: ${chromeStderr.slice(0, 800)}`);
-        }
-      });
-
-      await new Promise(r => setTimeout(r, 7000));
+      await new Promise(r => setTimeout(r, 5000));
 
       // Verify it started
       const ok = await probePort(startPort);
@@ -3460,7 +3370,7 @@ class KimiBridge {
     // Not logged in — navigate to kimi.com and bring to front
     log.info(`User not logged in, navigating to Kimi login page`);
     try {
-      await page.goto('https://www.kimi.com/?lang=en', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto('https://www.kimi.com/?lang=en', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(1500);
       await page.bringToFront().catch(() => {});
     } catch (e) {
@@ -3656,42 +3566,6 @@ class KimiBridge {
     }, 5 * 60 * 1000); // every 5 minutes
     // Also save immediately on start
     this._saveCookiesToFile().catch(() => {});
-  }
-
-  /**
-   * v10.0: Health check — verify browser and pages are alive every 30s.
-   * Auto-reconnects if browser died, recovers closed pages.
-   */
-  _startHealthCheck() {
-    if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
-    this.healthCheckTimer = setInterval(async () => {
-      try {
-        // 1. Check browser connection
-        if (!this.browser || !this.browser.isConnected()) {
-          log.warn('[HEALTH-CHECK] Browser disconnected, attempting auto-reconnect...');
-          await this.connect().catch(e => {
-            log.error('[HEALTH-CHECK] Auto-reconnect failed:', e.message);
-          });
-          return;
-        }
-
-        // 2. Check for dead pages and recover
-        for (const [userId, session] of this.userSessions) {
-          if (!session.page || session.page.isClosed()) {
-            log.warn(`[HEALTH-CHECK] Page closed for user ${hashUserId(userId)}, recovering...`);
-            try {
-              await this.recoverSession(userId);
-              log.info(`[HEALTH-CHECK] Recovered session for user ${hashUserId(userId)}`);
-            } catch (e) {
-              log.error(`[HEALTH-CHECK] Failed to recover session for ${hashUserId(userId)}:`, e.message);
-            }
-          }
-        }
-      } catch (e) {
-        log.error('[HEALTH-CHECK] Error:', e.message);
-      }
-    }, 30000); // 30 seconds
-    log.info('Health check started (30s interval)');
   }
 
   /**
@@ -4439,8 +4313,8 @@ class KimiBridge {
         }
 
         // Poll interval: relaxed when processing to avoid freezing Kimi page
-        // v10.1-fix: 1500ms → 800ms during processing — better real-time without overloading
-        const interval = session.processing ? 800 : 3000;
+        // v8.5-fix: 400ms → 1500ms during processing — DOM evaluate was competing with React main thread
+        const interval = session.processing ? 1500 : 3000;
         await new Promise(r => setTimeout(r, interval));
       }
 
@@ -4675,25 +4549,7 @@ class KimiBridge {
       // v10.0-fix: Filter out tool JSON code blocks from response text to prevent
       // tool JSON from leaking into the chat. Detected tools are returned separately
       // and enqueued as action_detected events by the caller.
-      // v10.1-fix: Also detect context limit messages anywhere on the page (toasts, modals).
       const structureBased = await page.evaluate(() => {
-        // ── Detect context limit messages anywhere on the page ──
-        const contextLimitRegex = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|发起一个新会话|会话太长/i;
-        // Check all text elements that might contain the warning
-        const allTextElements = document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5, h6, li');
-        for (const el of allTextElements) {
-          const text = (el.innerText || el.textContent || '').trim();
-          if (text.length > 20 && text.length < 300 && contextLimitRegex.test(text)) {
-            return {
-              thinking: '',
-              response: text,
-              detectedTools: [],
-              isContextLimit: true,
-              source: 'dom-context-limit'
-            };
-          }
-        }
-
         const assistants = document.querySelectorAll('.segment-assistant');
         const lastAssistant = assistants[assistants.length - 1];
         if (!lastAssistant) return null;
@@ -4867,19 +4723,6 @@ class KimiBridge {
             }
           }
         }
-        // v10.1-fix: If context limit was detected anywhere on the page, enqueue it
-        // immediately so the stream consumer can handle it.
-        if (structureBased.isContextLimit && userId) {
-          const queue = this.domEventQueues.get(userId);
-          if (queue) {
-            queue.events.push({
-              type: 'context_limit',
-              response: structureBased.response,
-              source: 'dom_context_limit',
-            });
-            log.warn(`[_poll] CONTEXT LIMIT detected on page: ${structureBased.response.substring(0, 100)}`);
-          }
-        }
         log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}, tools=${(structureBased.detectedTools || []).length}`);
         return { ...structureBased, canSteer, isGenerating };
       }
@@ -4910,14 +4753,40 @@ class KimiBridge {
 
   /**
    * Detect UI state: canSteer and isGenerating from DOM buttons.
-   * v10.0-refactor: Delegates to DomExtractor.
    */
   async _detectUiState(page) {
-    if (this.domExtractor) {
-      return this.domExtractor.detectUiState(page);
+    try {
+      return await page.evaluate(() => {
+        // Can we steer? (send button is active, not disabled)
+        const sendBtnSelectors = ['.send-button-container', '[class*="send"]', 'button[type="submit"]', '[aria-label*="send" i]'];
+        let canSteer = false;
+        for (const sel of sendBtnSelectors) {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            canSteer = !btn.disabled && !btn.className.includes('disabled') && btn.offsetParent !== null;
+            if (canSteer) break;
+          }
+        }
+
+        // Is still generating? (stop button visible OR no send button = generating)
+        const stopBtnSelectors = ['.stop-button-container', '[class*="stop"]', '[class*="cancel"]', '[aria-label*="stop" i]'];
+        let isGenerating = false;
+        for (const sel of stopBtnSelectors) {
+          const btn = document.querySelector(sel);
+          if (btn && btn.offsetParent !== null) {
+            isGenerating = true;
+            break;
+          }
+        }
+        if (!isGenerating && !canSteer) {
+          const anySend = document.querySelector('.send-button-container, [class*="send"]');
+          if (!anySend || anySend.offsetParent === null) isGenerating = true;
+        }
+        return { canSteer, isGenerating };
+      });
+    } catch (e) {
+      return { canSteer: false, isGenerating: false };
     }
-    // Fallback if domExtractor not initialized
-    return { canSteer: false, isGenerating: false };
   }
 
   /**
@@ -6272,14 +6141,6 @@ class KimiBridge {
               break;
             }
 
-            // v10.1-fix: Context limit detected from DOM polling
-            case 'context_limit': {
-              log.warn(`[STREAM] Context limit event from queue: ${(ev.response || '').substring(0, 100)}`);
-              yield { type: 'context_limit', response: ev.response || '', source: ev.source };
-              isComplete = true;
-              break;
-            }
-
             // v8.5-fix: Direct thinking/response deltas from ultra-light observer
             case 'thinking_delta': {
               const t = ev.fullThinking || ev.text || '';
@@ -6319,7 +6180,7 @@ class KimiBridge {
           yield { type: 'waiting', message: 'Processando...' };
         }
 
-        await new Promise(r => setTimeout(r, 50)); // v10.1-fix: 100ms → 50ms for lower latency
+        await new Promise(r => setTimeout(r, 100));
       }
 
       // v7.7-INFALÍVEL: Final extraction using snapshot diff (PRIMARY strategy)
@@ -6635,7 +6496,7 @@ class KimiBridge {
 
       // Navigate to Kimi
       log.info('[anonymousConsult] Navigating to www.kimi.com...');
-      await page.goto('https://www.kimi.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto('https://www.kimi.com', { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(2000);
 
       // Dismiss cookie/terms modals if present
@@ -6649,7 +6510,7 @@ class KimiBridge {
 
       // Find input and send message
       const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await inputLocator.waitFor({ state: 'visible', timeout: 30000 });
+      await inputLocator.waitFor({ state: 'visible', timeout: 0 });
       await inputLocator.fill('');
       await page.waitForTimeout(300);
       // Use fill + event dispatch for large texts (contenteditable can be tricky with type())
@@ -6663,7 +6524,7 @@ class KimiBridge {
         }
       });
       // Capture initial text BEFORE sending — critical for fast responses
-      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 30000 }).catch(() => '');
+      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 0 }).catch(() => '');
 
       await page.waitForTimeout(500);
       await inputLocator.press('Enter');
@@ -6787,53 +6648,24 @@ class KimiBridge {
 }
 
 // ============================================================
-// SINGLETON HELPERS — v10.0: Thread-safe with Promise-based lock
+// SINGLETON HELPERS
 // ============================================================
 let bridgeInstance = null;
-let bridgeInitPromise = null;
 
 async function getKimiBridge(options = {}) {
-  if (bridgeInstance) return bridgeInstance;
-  if (bridgeInitPromise) return bridgeInitPromise;
-
-  bridgeInitPromise = (async () => {
-    const instance = new KimiBridge(options);
-    await instance.connect();
-    bridgeInstance = instance;
-    return instance;
-  })();
-
-  try {
-    return await bridgeInitPromise;
-  } catch (err) {
-    bridgeInitPromise = null;
-    throw err;
+  if (!bridgeInstance) {
+    bridgeInstance = new KimiBridge(options);
+    await bridgeInstance.connect();
   }
+  return bridgeInstance;
 }
 
 async function closeKimiBridge() {
   if (bridgeInstance) {
     await bridgeInstance.disconnect();
     bridgeInstance = null;
-    bridgeInitPromise = null;
   }
 }
-
-// v10.0: Graceful shutdown — signal handlers
-async function _gracefulShutdown(signal) {
-  console.log(`[KimiBridge] Received ${signal}, starting graceful shutdown...`);
-  try {
-    if (bridgeInstance) {
-      await bridgeInstance.processRegistry.shutdown(log);
-    }
-  } catch (e) {
-    console.error('[KimiBridge] Graceful shutdown error:', e.message);
-  }
-  process.exit(0);
-}
-
-process.on('SIGTERM', () => _gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => _gracefulShutdown('SIGINT'));
 
 module.exports = {
   KimiBridge,

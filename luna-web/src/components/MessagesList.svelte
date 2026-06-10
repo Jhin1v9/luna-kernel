@@ -12,59 +12,39 @@
   export let messages = [];
   export let showTyping = false;
   export let currentMode = 'instant';
-  export let hasMore = false;
-  export let loadingMore = false;
-  export let onLoadMore = () => {};
   export let onApprovePlan = () => {};
   export let onRejectPlan = () => {};
   export let onRevisePlan = () => {};
 
   let listEl;
   let userScrolledUp = false;
-  let hasNewMessagesPending = false;
-  let lastMessageCount = 0;
-  let lastMessageId = null;
+  let showNewMessagesBadge = false;
 
-  // Auto-scroll to bottom ONLY when a NEW message arrives (not on history load)
-  $: {
-    const currentCount = messages.length;
-    const lastMsg = messages[messages.length - 1];
-    const currentLastId = lastMsg?.id;
-    const isNewMessage = currentCount > lastMessageCount && currentLastId !== lastMessageId;
-
-    if (isNewMessage && currentCount > 0) {
-      tick().then(() => {
-        if (!userScrolledUp) {
-          scrollToBottom('smooth');
-        } else {
-          hasNewMessagesPending = true;
-        }
-      });
-    }
-
-    lastMessageCount = currentCount;
-    lastMessageId = currentLastId;
+  $: if (messages.length > 0) {
+    tick().then(() => {
+      if (!userScrolledUp) {
+        scrollManager.scrollToBottom(listEl, 'smooth');
+      } else {
+        showNewMessagesBadge = true;
+      }
+    });
   }
 
   function handleScroll() {
     if (!listEl) return;
-    const nearBottom = scrollManager.isNearBottom(listEl, 120);
+    const nearBottom = scrollManager.isNearBottom(listEl, 100);
     userScrolledUp = !nearBottom;
-    if (nearBottom) {
-      hasNewMessagesPending = false;
-    }
+    if (nearBottom) showNewMessagesBadge = false;
   }
 
-  function scrollToBottom(behavior = 'smooth') {
-    if (listEl) {
-      listEl.scrollTo({ top: listEl.scrollHeight, behavior });
-    }
+  function scrollToBottom() {
+    scrollManager.scrollToBottom(listEl, 'smooth');
     userScrolledUp = false;
-    hasNewMessagesPending = false;
+    showNewMessagesBadge = false;
   }
 
   onMount(() => {
-    scrollToBottom('auto');
+    scrollManager.scrollToBottom(listEl, 'auto');
   });
 </script>
 
@@ -94,27 +74,8 @@
     </div>
   {:else}
     <div class="messages-container">
-      {#if hasMore}
-        <div class="load-more-row">
-          <button
-            class="load-more-btn"
-            on:click={onLoadMore}
-            disabled={loadingMore}
-          >
-            {#if loadingMore}
-              <span class="spinner" /> Carregando...
-            {:else}
-              ↑ Carregar mensagens anteriores
-            {/if}
-          </button>
-        </div>
-      {/if}
-      {#each messages as message, i (message.id)}
-        <div
-          class="message-wrapper"
-          class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}
-          style="content-visibility: auto; contain-intrinsic-size: auto 80px;"
-        >
+      {#each messages as message (message.id)}
+        <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}>
           {#if message.type === 'user'}
             <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
           {:else if message.type === 'assistant'}
@@ -150,8 +111,8 @@
           {/if}
         </div>
       {/each}
-      <!-- Typing indicator for ALL modes when Luna is processing -->
-      {#if showTyping && !messages.some(m => m.type === 'thinking')}
+      <!-- v8.3-fix: Typing indicator for INSTANT mode when no thinking bubble is present -->
+      {#if showTyping && currentMode === 'instant' && !messages.some(m => m.type === 'thinking')}
         <div class="message-wrapper">
           <TypingIndicator text="Luna está respondendo" />
         </div>
@@ -159,26 +120,18 @@
     </div>
   {/if}
 
+  {#if showNewMessagesBadge}
+    <button class="new-messages-badge" on:click={scrollToBottom}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <polyline points="6 9 12 15 18 9"/>
+      </svg>
+      Novas mensagens
+    </button>
+  {/if}
+
   <!-- Bottom spacer to prevent last message being hidden behind input -->
   <div class="messages-bottom-spacer" aria-hidden="true"></div>
 </div>
-
-{#if userScrolledUp}
-  <button
-    class="scroll-to-bottom-btn"
-    class:has-new={hasNewMessagesPending}
-    on:click={() => scrollToBottom('smooth')}
-  >
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-      <polyline points="6 9 12 15 18 9"/>
-    </svg>
-    {#if hasNewMessagesPending}
-      Novas mensagens
-    {:else}
-      Ir para o final
-    {/if}
-  </button>
-{/if}
 
 <style>
   .messages-list {
@@ -193,9 +146,10 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    width: 100%;
     max-width: 900px;
     margin: 0 auto;
+    width: 100%;
+    padding-bottom: 8px;
   }
   .messages-bottom-spacer {
     height: 12px;
@@ -211,7 +165,6 @@
   }
   .message-wrapper {
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
-    box-sizing: border-box;
   }
   .message-wrapper.system-msg {
     animation: fadeIn 200ms ease;
@@ -310,31 +263,15 @@
   .retry-btn:hover {
     background: rgba(245, 158, 11, 0.3);
   }
-  .load-more-row { display: flex; justify-content: center; padding: 12px 0; }
-  .load-more-btn {
-    background: var(--luna-surface); color: var(--luna-text);
-    border: 1px solid var(--luna-border); border-radius: 999px;
-    padding: 8px 16px; font-size: 13px; cursor: pointer;
-    display: inline-flex; align-items: center; gap: 8px;
-    transition: all 0.15s;
-  }
-  .load-more-btn:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
-  .load-more-btn:disabled { opacity: 0.7; cursor: not-allowed; }
-  .spinner {
-    width: 14px; height: 14px; border: 2px solid var(--luna-border);
-    border-top-color: var(--luna-text); border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .scroll-to-bottom-btn {
-    position: fixed;
-    bottom: 100px;
+  .new-messages-badge {
+    position: absolute;
+    bottom: 80px;
     right: 24px;
     padding: 8px 16px;
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(233, 69, 96, 0.9);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    color: var(--luna-text);
+    color: white;
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 20px;
     font-size: 13px;
@@ -343,22 +280,13 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255,255,255,0.05);
+    box-shadow: 0 4px 24px rgba(233, 69, 96, 0.3), 0 0 0 1px rgba(255,255,255,0.05);
     animation: fadeIn 200ms ease;
-    z-index: 100;
+    z-index: 10;
     transition: all 0.2s ease;
   }
-  .scroll-to-bottom-btn:hover {
+  .new-messages-badge:hover {
     transform: translateY(-2px);
-    background: rgba(255, 255, 255, 0.15);
-    box-shadow: 0 6px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255,255,255,0.08);
-  }
-  .scroll-to-bottom-btn.has-new {
-    background: rgba(233, 69, 96, 0.9);
-    color: white;
-    box-shadow: 0 4px 24px rgba(233, 69, 96, 0.3), 0 0 0 1px rgba(255,255,255,0.05);
-  }
-  .scroll-to-bottom-btn.has-new:hover {
     background: rgba(233, 69, 96, 1);
     box-shadow: 0 6px 28px rgba(233, 69, 96, 0.4), 0 0 0 1px rgba(255,255,255,0.08);
   }
