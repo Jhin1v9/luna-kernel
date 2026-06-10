@@ -20,89 +20,136 @@
 1. **Jhin (você)** faz commit + push normalmente para GitHub
 2. **Pai e Nonoke** rodam um script (`luna-sync.sh`) a cada 5 minutos via cron
 3. O script detecta se há nova versão no GitHub, faz `git pull`, rebuilda o frontend e reinicia o serviço
-4. Opcional: Jhin recebe notificação no Telegram quando o push é feito
+4. Logs rotacionados automaticamente para evitar falsos positivos de erros antigos
 
 ---
 
-## ✅ Passo a passo
+## 🚀 Instalação em uma máquina nova (Pai / Nonoke / Jhin)
 
-### 1. No PC do Jhin (você) — já configurado ✅
+**Recomendado:** use o instalador unificado:
 
-Commits e pushes já funcionam. Os hooks `post-push` foram criados nos dois repos.
-
-**Para ativar notificação no Telegram (opcional):**
 ```bash
-export TELEGRAM_BOT_TOKEN="SEU_BOT_TOKEN"
-export TELEGRAM_CHAT_ID="SEU_CHAT_ID"
+curl -fsSL https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/install/lunawebdownload | bash
 ```
 
-Adicione no `~/.bashrc` ou `~/.zshrc` para persistir.
+O instalador faz tudo automaticamente:
+
+1. ✅ Verifica pré-requisitos (`git`, `node >= 18`, `npm`, `pm2`)
+2. ✅ Clona (ou atualiza) os dois repositórios:
+   - `~/.luna-kernel` (Luna Kernel + frontend)
+   - `~/NEXO_DASHBOARD_PRO` (Dashboard + backend + Telegram adapter)
+3. ✅ Roda wizard interativo para configurar:
+   - `TELEGRAM_BOT_TOKEN`
+   - `LUNA_CHROME_PATH`
+   - `LUNA_DEBUG`
+   - `KIMI_TIMEOUT`, `KIMI_MAX_PAGES`
+   - `INTERNAL_API_TOKEN` (gerado automaticamente)
+4. ✅ Instala todas as dependências Node
+5. ✅ Builda o `luna-web`
+6. ✅ Cria/links `.env` nos locais corretos
+7. ✅ Configura PM2 com `pm2-ecosystem.config.js`
+8. ✅ Instala cron de auto-sync a cada 5 minutos
+9. ✅ Rotaciona logs antigos do PM2
+
+Depois da instalação, o bot já está pronto para uso. Envie `/kimi on` no Telegram e converse.
 
 ---
 
-### 2. No PC do Pai e do Nonoke
+## ✅ Passo a passo manual (se preferir não usar o instalador)
 
-#### 2.1 Clone os repos (se ainda não tiver)
+### 1. Clone os repos
 
 ```bash
-# Luna Kernel
 git clone https://github.com/Jhin1v9/luna-kernel.git ~/.luna-kernel
-
-# NexoDashboard (se usar o dashboard)
 git clone https://github.com/Jhin1v9/NexoDashboard.git ~/NEXO_DASHBOARD_PRO
 ```
 
-> Se os repos forem privados, configure SSH keys ou use token de acesso pessoal.
+### 2. Configure o `.env`
 
-#### 2.2 Instale o script de auto-sync
+O arquivo fonte da verdade é:
 
-O arquivo `luna-sync.sh` já está versionado no `luna-kernel`. Basta criar o link ou copiar:
+```
+~/.luna-kernel/.env
+```
+
+Exemplo mínimo:
+
+```bash
+TELEGRAM_BOT_TOKEN=seu_token_aqui
+LUNA_CHROME_PATH=/usr/bin/google-chrome
+LUNA_DEBUG=false
+KIMI_TIMEOUT=99999
+KIMI_MAX_PAGES=7
+KIMI_PERSISTENT_MODE=true
+INTERNAL_API_TOKEN=<jwt_gerado>
+```
+
+Crie links simbólicos para o dashboard também enxergar:
+
+```bash
+ln -sf ~/.luna-kernel/.env ~/NEXO_DASHBOARD_PRO/.env
+ln -sf ~/.luna-kernel/.env ~/NEXO_DASHBOARD_PRO/backend/.env
+```
+
+### 3. Instale dependências e build
+
+```bash
+cd ~/.luna-kernel && npm install
+cd luna-web && npm install && npm run build
+
+cd ~/NEXO_DASHBOARD_PRO && npm install
+cd backend && npm install
+cd ../frontend && npm install --legacy-peer-deps && npm run build
+rm -rf ../backend/public && cp -r dist ../backend/public
+```
+
+### 4. Inicie com PM2
+
+```bash
+pm2 start ~/.luna-kernel/pm2-ecosystem.config.js
+pm2 save
+```
+
+### 5. Configure o cron
 
 ```bash
 cp ~/.luna-kernel/luna-sync.sh ~/luna-sync.sh
 chmod +x ~/luna-sync.sh
-```
-
-**Edite o script se os diretórios forem diferentes no PC do pai/nonoke:**
-```bash
-LUNA_KERNEL_DIR="${HOME}/.luna-kernel"
-NEXO_DASHBOARD_DIR="${HOME}/NEXO_DASHBOARD_PRO"
-```
-
-#### 2.3 Configure o cron (auto-pull a cada 5 minutos)
-
-```bash
 crontab -e
 ```
 
-Adicione esta linha:
+Adicione:
+
 ```cron
 */5 * * * * /home/<usuario>/luna-sync.sh >> /tmp/luna-sync.log 2>&1
 ```
 
-> Troque `<usuario>` pelo nome de usuário real (ex: `pai`, `nonoke`).
-
-#### 2.4 Teste manualmente
-
-```bash
-~/luna-sync.sh
-```
-
-Verifique o log:
-```bash
-tail -20 /tmp/luna-sync.log
-```
-
 ---
 
-### 3. Primeira sincronização
+## 🧰 Comandos úteis
 
-Quando o Jhin fizer o próximo push:
+```bash
+# Logs
+pm2 logs telegram-bot --lines 50
+pm2 logs luna-server --lines 50
+pm2 logs nexo-dashboard --lines 50
+tail -f /tmp/luna-sync.log
 
-1. Em até 5 minutos, o PC do pai e do nonoke detectarão a mudança
-2. Farão `git pull` automaticamente
-3. Rebuildarão o frontend (`npm run build` no `luna-web`)
-4. Reiniciarão o `luna-server` via PM2
+# Status
+pm2 list
+pm2 monit
+
+# Sync manual
+~/luna-sync.sh
+
+# Commit e push (Jhin)
+cd ~/.luna-kernel && git add -A && git commit -m "feat: ..." && git push origin main
+cd ~/NEXO_DASHBOARD_PRO && git add -A && git commit -m "feat: ..." && git push origin main
+
+# Verificar último commit no GitHub
+curl -s https://api.github.com/repos/Jhin1v9/luna-kernel/commits/main | jq -r '.sha'
+curl -s https://api.github.com/repos/Jhin1v9/NexoDashboard/commits/main | jq -r '.sha'
+```
 
 ---
 
@@ -110,48 +157,38 @@ Quando o Jhin fizer o próximo push:
 
 ### "git pull falhou — merge conflicts"
 
-Se alguém editar localmente e der push, pode haver conflito. O script NÃO resolve conflitos automaticamente (para segurança). Nesse caso:
-
 ```bash
 cd ~/.luna-kernel
-git stash        # guarda mudanças locais
+git stash
 git pull origin main
-git stash pop    # recupera mudanças locais (se necessário)
+git stash pop
 ```
 
-**Regra de ouro:** Só o Jhin (você) deve fazer push. Pai e Nonoke devem ser apenas consumidores (pull only).
+**Regra de ouro:** Só o Jhin deve fazer push. Pai e Nonoke são pull-only.
 
-### "PM2 não encontrado"
+### "409 Conflict" no Telegram
 
-Instale PM2 globalmente:
+Isso significa que mais de uma instância do bot está fazendo polling. O instalador garante que só o PM2 `telegram-bot` tenha polling ativo. Se acontecer:
+
 ```bash
-npm install -g pm2
+pm2 delete telegram-bot
+pm2 start ~/.luna-kernel/pm2-ecosystem.config.js
 ```
 
-### "Build do frontend falhou"
+E remova processos orfaos:
 
-Verifique se as dependências estão instaladas:
 ```bash
-cd ~/.luna-kernel/luna-web
-npm install
-npm run build
+ps aux | grep telegram-luna-adapter
+kill <pid>
 ```
 
----
+### "Luna offline" no Telegram
 
-## 📋 Resumo dos comandos para Jhin (você)
+Verifique se o `luna-server` está rodando:
 
 ```bash
-# Commit e push (faça isso normalmente)
-cd ~/.luna-kernel
-git add -A && git commit -m "feat: ..." && git push origin main
-
-cd ~/NEXO_DASHBOARD_PRO
-git add -A && git commit -m "feat: ..." && git push origin main
-
-# Verificar se os outros PCs estão atualizados
-curl -s https://api.github.com/repos/Jhin1v9/luna-kernel/commits/main | jq -r '.sha'
-curl -s https://api.github.com/repos/Jhin1v9/NexoDashboard/commits/main | jq -r '.sha'
+pm2 logs luna-server --lines 30
+curl http://localhost:3458/api/health
 ```
 
 ---
@@ -159,13 +196,9 @@ curl -s https://api.github.com/repos/Jhin1v9/NexoDashboard/commits/main | jq -r 
 ## 🎯 Opções avançadas
 
 ### Webhook em vez de cron
-Se os PCs tiverem IP público, é possível configurar um webhook no GitHub que dispara o pull instantaneamente. Mas para redes caseiras, o cron a cada 5 minutos é mais simples e seguro.
-
-### Notificação por Discord
-No lugar do Telegram, edite o `post-push` hook para usar Discord webhooks.
+Para redes com IP público, configure um webhook no GitHub.
 
 ### Atualização instantânea via SSH
-Se todos os PCs estiverem na mesma rede (ou com VPN), o Jhin pode fazer `ssh` para os outros PCs e rodar o sync manualmente:
 ```bash
 ssh pai@ip "~/luna-sync.sh"
 ssh nonoke@ip "~/luna-sync.sh"
