@@ -30,3 +30,9 @@ Thumbs.db
 backup-merge-inteligente-*/
 backup-src-*/
 kimi-cookies.json
+
+# Installer-generated files
+pm2-ecosystem.config.js
+
+# Local audit/docs
+AUDITORIA_*.md
