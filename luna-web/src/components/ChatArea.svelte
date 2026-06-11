@@ -757,13 +757,14 @@
         messages.update(msgs => [...msgs, {
           id: 'plan-' + Date.now(),
           type: 'system',
-          content: event.message || `${type}`,
+          content: event.error || event.message || `${type}`,
           timestamp: new Date().toISOString()
         }]);
         break;
       }
       case 'plan_start': {
-        planModeState.update(s => ({ ...s, active: true, status: 'investigating', sessionId }));
+        // v10.13-fix: Don't activate planModeState from SSE events — only user can toggle plan mode.
+        // This prevents the agent's auto-detected PLAN mode from locking the chat input.
         messages.update(msgs => [...msgs, {
           id: 'plan-start-' + Date.now(),
           type: 'system',
@@ -774,7 +775,6 @@
       }
       case 'plan_delta': {
         // Plan text streaming — update or create plan message
-        planModeState.update(s => ({ ...s, active: true, status: 'investigating' }));
         messages.update(msgs => {
           const lastPlan = msgs.findLast(m => m.type === 'plan');
           if (lastPlan && !lastPlan.isComplete) {
@@ -792,7 +792,6 @@
       }
       case 'plan_display':
       case 'plan_awaiting_approval': {
-        planModeState.update(s => ({ ...s, active: true, status: 'awaiting_approval', plan: event.plan, planPath: event.planPath, sessionId }));
         messages.update(msgs => {
           // Remove incomplete plan deltas
           const cleaned = msgs.filter(m => !(m.type === 'plan' && !m.isComplete));
@@ -809,7 +808,10 @@
         break;
       }
       case 'plan_approved': {
-        planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+        // Only deactivate if user had manually activated plan mode
+        if ($planModeState.active) {
+          planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+        }
         messages.update(msgs => [...msgs, {
           id: 'plan-approved-' + Date.now(),
           type: 'system',
@@ -819,7 +821,10 @@
         break;
       }
       case 'plan_rejected': {
-        planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+        // Only deactivate if user had manually activated plan mode
+        if ($planModeState.active) {
+          planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+        }
         messages.update(msgs => [...msgs, {
           id: 'plan-rejected-' + Date.now(),
           type: 'system',
@@ -829,7 +834,6 @@
         break;
       }
       case 'plan_revised': {
-        planModeState.update(s => ({ ...s, active: true, status: 'awaiting_approval', plan: event.plan, planPath: event.planPath }));
         messages.update(msgs => [...msgs, {
           id: 'plan-revised-' + Date.now(),
           type: 'plan',

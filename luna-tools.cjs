@@ -1101,7 +1101,7 @@ function clipboardRead() {
     });
     return ok({ text: text.trim() });
   } catch (e) {
-    return err('Clipboard vazio ou ferramenta não disponível (instale xclip/xsel/wl-clipboard)');
+    return err(`Clipboard error: ${e.message} — Verifique se xclip/xsel/wl-clipboard está instalado e DISPLAY está configurado`);
   }
 }
 
@@ -1232,19 +1232,30 @@ function getInternalApiToken() {
 }
 
 async function dashboardApi(path, method = 'GET', body = null) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
-  const token = getInternalApiToken();
-  if (token) opts.headers['Authorization'] = `Bearer ${token}`;
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(`${DASHBOARD_BASE}${path}`, opts);
-  if (!res.ok) throw new Error(`Dashboard API ${path}: ${res.status} ${res.statusText}`);
-  return res.json();
+  try {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    const token = getInternalApiToken();
+    if (token) opts.headers['Authorization'] = `Bearer ${token}`;
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(`${DASHBOARD_BASE}${path}`, opts);
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '');
+      return err(`Dashboard API ${path}: ${res.status} ${res.statusText}${bodyText ? ' — ' + bodyText.slice(0, 200) : ''}`);
+    }
+    const data = await res.json();
+    return ok({ data });
+  } catch (e) {
+    return err(`Dashboard API ${path}: ${e.message}`);
+  }
 }
 
 async function dashboardCreateTask(params) {
   // v8.4-fix: Idempotency — check if a task with the same title was created in the last 2 minutes
   try {
-    const recent = await dashboardApi('/tasks?limit=20&sort=createdAt:desc');
+    const result_result_recent = await dashboardApi('/tasks?limit=20&sort=createdAt:desc');
+    if (!result_result_recent.success) return result_result_recent;
+    const result_recent = result_result_recent.data;
+    const recent = result_recent;
     const tasks = Array.isArray(recent) ? recent : (recent.tasks || []);
     const now = Date.now();
     const dup = tasks.find(t =>
@@ -1258,7 +1269,7 @@ async function dashboardCreateTask(params) {
   } catch (e) {
     // Ignore pre-check errors and proceed with creation
   }
-  const task = await dashboardApi('/tasks', 'POST', {
+  const result_result_task = await dashboardApi('/tasks', 'POST', {
     title: params.title || 'Sem título',
     description: params.description || '',
     status: params.status || 'pending',
@@ -1267,6 +1278,9 @@ async function dashboardCreateTask(params) {
     dueDate: params.dueDate || null,
     source: 'luna-agent'
   });
+  if (!result_result_task.success) return result_result_task;
+  const result_task = result_result_task.data;
+  const task = result_task;
   notifyChange('task', { title: task.title, description: task.description, priority: task.priority, status: task.status, deadline: task.dueDate });
   return ok({ stdout: `✅ Tarefa criada: ${task.title} (ID: ${task.id})` });
 }
@@ -1276,7 +1290,9 @@ async function dashboardListTasks(params) {
   if (params.status) query.set('status', params.status);
   if (params.assignee) query.set('assignedTo', params.assignee);
   if (params.priority) query.set('priority', params.priority);
-  const data = await dashboardApi(`/tasks?${query.toString()}`);
+  const result_data = await dashboardApi(`/tasks?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const tasks = Array.isArray(data) ? data : (data.tasks || []);
   const lines = tasks.map(t => `- [${t.status}] ${t.title} (P: ${t.priority})`).join('\n');
   return ok({ stdout: `📋 ${tasks.length} tarefa(s):\n${lines || 'Nenhuma tarefa encontrada.'}` });
@@ -1287,10 +1303,13 @@ async function dashboardUpdateTask(params) {
   let taskId = params.taskId;
   if (!taskId || isNaN(Number(taskId))) {
     const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
+    const result_result_all = await dashboardApi('/tasks?limit=100');
+    if (!result_result_all.success) return result_result_all;
+    const result_all = result_result_all.data;
+    const all = result_all;
     const tasks = Array.isArray(all) ? all : (all.tasks || []);
     const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
+    if (!match) return err('Task not found: ' + searchTitle);
     taskId = match.id;
   }
   const body = {};
@@ -1301,198 +1320,28 @@ async function dashboardUpdateTask(params) {
   if (params.projectId !== undefined) body.projectId = params.projectId;
   if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
   if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  const result_result_task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  if (!result_result_task.success) return result_result_task;
+  const result_task = result_result_task.data;
+  const task = result_task;
   return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
 }
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
-async function dashboardUpdateTask(params) {
-  // First find the task by title if taskId is not numeric
-  let taskId = params.taskId;
-  if (!taskId || isNaN(Number(taskId))) {
-    const searchTitle = params.taskId || params.title;
-    const all = await dashboardApi('/tasks?limit=100');
-    const tasks = Array.isArray(all) ? all : (all.tasks || []);
-    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
-    if (!match) throw new Error('Task not found: ' + searchTitle);
-    taskId = match.id;
-  }
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.projectId !== undefined) body.projectId = params.projectId;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
-  return ok({ stdout: '✅ Tarefa atualizada: ' + task.title + ' (ID: ' + task.id + ')' });
-}
 
 async function dashboardCreateLead(params) {
   // v8.4-fix: Idempotency — check if a lead with the same name/email was created in the last 2 minutes
   try {
-    const recent = await dashboardApi('/internal/leads?limit=20&sort=createdAt:desc');
+    const result_result_recent = await dashboardApi('/internal/leads?limit=20&sort=createdAt:desc');
+    if (!result_result_recent.success) return result_result_recent;
+    const result_recent = result_result_recent.data;
+    const recent = result_recent;
     const leads = recent.leads || [];
     const now = Date.now();
     const dup = leads.find(l =>
@@ -1506,7 +1355,7 @@ async function dashboardCreateLead(params) {
   } catch (e) {
     // Ignore pre-check errors and proceed with creation
   }
-  const data = await dashboardApi('/internal/leads', 'POST', {
+  const result_data = await dashboardApi('/internal/leads', 'POST', {
     displayName: params.name || params.displayName || 'Sem nome',
     email: params.email || '',
     phone: params.phone || '',
@@ -1516,6 +1365,8 @@ async function dashboardCreateLead(params) {
     assignedTo: params.assignedTo || null,
     tags: params.tags || []
   });
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const lead = data.lead || data;
   notifyChange('lead', { name: lead.displayName || lead.name, email: lead.email, phone: lead.phone, value: lead.estimatedValue, status: lead.pipelineStatus || 'new' });
   return ok({ stdout: `✅ Lead criado: ${lead.displayName || lead.name} (ID: ${lead.id})` });
@@ -1526,14 +1377,19 @@ async function dashboardListLeads(params) {
   if (params.status) query.set('status', params.status);
   if (params.assignedTo) query.set('assignedTo', params.assignedTo);
   if (params.search) query.set('search', params.search);
-  const data = await dashboardApi(`/leads?${query.toString()}`);
+  const result_data = await dashboardApi(`/leads?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const leads = data.leads || [];
   const lines = leads.map(l => `- [${l.pipelineStatus || 'new'}] ${l.displayName || l.name} (${l.email || 'sem email'})`).join('\n');
   return ok({ stdout: `📋 ${leads.length} lead(s):\n${lines || 'Nenhum lead encontrado.'}` });
 }
 
 async function dashboardGetFinanceSummary(params) {
-  const data = await dashboardApi('/finance/summary');
+  const result_result_data = await dashboardApi('/finance/summary');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `💰 Finance Summary:\n- Expected: ${data.totalExpected || 0}\n- Received: ${data.totalReceived || 0}\n- Pending: ${data.totalPending || 0}\n- Overdue: ${data.overduePayments || 0}` });
 }
 
@@ -1550,7 +1406,10 @@ async function dashboardCreateIdea(params) {
   if (params.description || params.content) {
     body.content = { blocks: [{ type: 'paragraph', content: params.description || params.content || '' }] };
   }
-  const data = await dashboardApi('/ideas', 'POST', body);
+  const result_result_data = await dashboardApi('/ideas', 'POST', body);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const idea = data.data || data;
   notifyChange('idea', { title: idea.title || params.title, description: params.description || params.content, type: body.type, priority: body.priority });
   return ok({ stdout: `💡 Ideia criada: "${idea.title || params.title}" (ID: ${idea.id || 'n/a'})` });
@@ -1563,7 +1422,9 @@ async function dashboardListIdeas(params) {
   if (params.priority) query.set('priority', params.priority);
   if (params.search) query.set('search', params.search);
   if (params.limit) query.set('limit', String(params.limit));
-  const data = await dashboardApi(`/ideas?${query.toString()}`);
+  const result_data = await dashboardApi(`/ideas?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const ideas = data.data?.ideas || data.ideas || [];
   const lines = ideas.map(i => `- [${i.status}] ${i.title} (tipo: ${i.type}, prio: ${i.priority})`).join('\n');
   return ok({ stdout: `💡 ${ideas.length} ideia(s):\n${lines || 'Nenhuma ideia encontrada.'}` });
@@ -1575,42 +1436,37 @@ async function dashboardListIdeas(params) {
 
 // ── TAREFAS ──
 
-async function dashboardUpdateTask(params) {
-  const id = params.id || params.taskId;
-  if (!id) return { error: 'ID da tarefa obrigatório' };
-  const body = {};
-  if (params.title !== undefined) body.title = params.title;
-  if (params.description !== undefined) body.description = params.description;
-  if (params.status !== undefined) body.status = params.status;
-  if (params.priority !== undefined) body.priority = params.priority;
-  if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
-  if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  await dashboardApi(`/tasks/${id}`, 'PUT', body);
-  notifyChange('task', { ...body, _action: 'update' });
-  return ok({ stdout: `✏️ Tarefa ${id} atualizada.` });
-}
 
 async function dashboardDeleteTask(params) {
   const id = params.id || params.taskId;
-  if (!id) return { error: 'ID da tarefa obrigatório' };
-  await dashboardApi(`/tasks/${id}`, 'DELETE');
+  if (!id) return err('ID da tarefa obrigatório');
+  const result_result = await dashboardApi(`/tasks/${id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('task', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Tarefa ${id} excluída.` });
 }
 
 async function dashboardCompleteTask(params) {
   const id = params.id || params.taskId;
-  if (!id) return { error: 'ID da tarefa obrigatório' };
-  await dashboardApi(`/tasks/${id}`, 'PUT', { status: 'completed' });
+  if (!id) return err('ID da tarefa obrigatório');
+  const result_result = await dashboardApi(`/tasks/${id}`, 'PUT', { status: 'completed' });
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('task', { id, status: 'completed', _action: 'complete' });
   return ok({ stdout: `✅ Tarefa ${id} marcada como concluída.` });
 }
 
 async function dashboardAddComment(params) {
   const id = params.id || params.taskId;
-  if (!id) return { error: 'ID da tarefa obrigatório' };
-  if (!params.comment && !params.text) return { error: 'Comentário obrigatório' };
-  await dashboardApi(`/tasks/${id}/comments`, 'POST', { text: params.comment || params.text });
+  if (!id) return err('ID da tarefa obrigatório');
+  if (!params.comment && !params.text) return err('Comentário obrigatório');
+  const result_result = await dashboardApi(`/tasks/${id}/comments`, 'POST', { text: params.comment || params.text });
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `💬 Comentário adicionado à tarefa ${id}.` });
 }
 
@@ -1618,7 +1474,7 @@ async function dashboardAddComment(params) {
 
 async function dashboardUpdateLead(params) {
   const id = params.id || params.leadId;
-  if (!id) return { error: 'ID do lead obrigatório' };
+  if (!id) return err('ID do lead obrigatório');
   const body = {};
   if (params.name !== undefined) body.displayName = params.name;
   if (params.email !== undefined) body.email = params.email;
@@ -1627,23 +1483,32 @@ async function dashboardUpdateLead(params) {
   if (params.estimatedValue !== undefined) body.estimatedValue = params.estimatedValue;
   if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
   if (params.notes !== undefined) body.notes = params.notes;
-  await dashboardApi(`/leads/${id}`, 'PUT', body);
+  const result_result = await dashboardApi(`/leads/${id}`, 'PUT', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('lead', { ...body, _action: 'update' });
   return ok({ stdout: `✏️ Lead ${id} atualizado.` });
 }
 
 async function dashboardConvertLead(params) {
   const id = params.id || params.leadId;
-  if (!id) return { error: 'ID do lead obrigatório' };
-  await dashboardApi(`/leads/${id}/convert`, 'POST', {});
+  if (!id) return err('ID do lead obrigatório');
+  const result_result = await dashboardApi(`/leads/${id}/convert`, 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('lead', { id, _action: 'convert' });
   return ok({ stdout: `🔄 Lead ${id} convertido em cliente.` });
 }
 
 async function dashboardDeleteLead(params) {
   const id = params.id || params.leadId;
-  if (!id) return { error: 'ID do lead obrigatório' };
-  await dashboardApi(`/leads/${id}`, 'DELETE');
+  if (!id) return err('ID do lead obrigatório');
+  const result_result = await dashboardApi(`/leads/${id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('lead', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Lead ${id} excluído.` });
 }
@@ -1658,7 +1523,10 @@ async function dashboardCreatePayment(params) {
     date: params.date || new Date().toISOString().split('T')[0],
     status: params.status || 'pending',
   };
-  const data = await dashboardApi('/payments', 'POST', body);
+  const result_result_data = await dashboardApi('/payments', 'POST', body);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   notifyChange('payment', { amount: body.amount, description: body.description, clientName: body.from, dueDate: body.date, status: body.status });
   return ok({ stdout: `💰 Pagamento registrado: €${body.amount} — ${body.description}` });
 }
@@ -1667,7 +1535,9 @@ async function dashboardListPayments(params) {
   const query = new URLSearchParams();
   if (params.status) query.set('status', params.status);
   if (params.from) query.set('from', params.from);
-  const data = await dashboardApi(`/payments?${query.toString()}`);
+  const result_data = await dashboardApi(`/payments?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const items = data.payments || data || [];
   const lines = items.map(p => `- ${p.status === 'received' ? '✅' : '⏳'} €${p.amount} — ${p.description} (${p.from || '?'})`).join('\n');
   return ok({ stdout: `💰 ${items.length} pagamento(s):\n${lines || 'Nenhum pagamento.'}` });
@@ -1675,20 +1545,26 @@ async function dashboardListPayments(params) {
 
 async function dashboardUpdatePayment(params) {
   const id = params.id || params.paymentId;
-  if (!id) return { error: 'ID do pagamento obrigatório' };
+  if (!id) return err('ID do pagamento obrigatório');
   const body = {};
   if (params.amount !== undefined) body.amount = parseFloat(params.amount);
   if (params.description !== undefined) body.description = params.description;
   if (params.status !== undefined) body.status = params.status;
-  await dashboardApi(`/payments/${id}`, 'PUT', body);
+  const result_result = await dashboardApi(`/payments/${id}`, 'PUT', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('payment', { id, ...body, _action: 'update' });
   return ok({ stdout: `✏️ Pagamento ${id} atualizado.` });
 }
 
 async function dashboardDeletePayment(params) {
   const id = params.id || params.paymentId;
-  if (!id) return { error: 'ID do pagamento obrigatório' };
-  await dashboardApi(`/payments/${id}`, 'DELETE');
+  if (!id) return err('ID do pagamento obrigatório');
+  const result_result = await dashboardApi(`/payments/${id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('payment', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Pagamento ${id} excluído.` });
 }
@@ -1696,8 +1572,11 @@ async function dashboardDeletePayment(params) {
 async function dashboardReceiveSplit(params) {
   const id = params.id || params.paymentId;
   const personId = params.personId || params.person;
-  if (!id || !personId) return { error: 'paymentId e personId obrigatórios' };
-  await dashboardApi(`/payments/${id}/split/${personId}/receive`, 'POST', {});
+  if (!id || !personId) return err('paymentId e personId obrigatórios');
+  const result_result = await dashboardApi(`/payments/${id}/split/${personId}/receive`, 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `💰 Split recebido para ${personId} no pagamento ${id}.` });
 }
 
@@ -1713,7 +1592,10 @@ async function dashboardCreateExpense(params) {
     status: params.status || 'pending',
   };
   if (params.splitAmong) body.splitAmong = params.splitAmong;
-  const data = await dashboardApi('/expenses', 'POST', body);
+  const result_result_data = await dashboardApi('/expenses', 'POST', body);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   notifyChange('expense', { amount: body.amount, description: body.description, category: body.category, dueDate: body.date, status: body.status });
   return ok({ stdout: `📤 Despesa registrada: €${body.amount} — ${body.description}` });
 }
@@ -1722,7 +1604,9 @@ async function dashboardListExpenses(params) {
   const query = new URLSearchParams();
   if (params.status) query.set('status', params.status);
   if (params.category) query.set('category', params.category);
-  const data = await dashboardApi(`/expenses?${query.toString()}`);
+  const result_data = await dashboardApi(`/expenses?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const items = data.expenses || data || [];
   const lines = items.map(e => `- ${e.status === 'paid' ? '✅' : '⏳'} €${e.amount} — ${e.description} (${e.category || '?'})`).join('\n');
   return ok({ stdout: `📤 ${items.length} despesa(s):\n${lines || 'Nenhuma despesa.'}` });
@@ -1730,29 +1614,38 @@ async function dashboardListExpenses(params) {
 
 async function dashboardUpdateExpense(params) {
   const id = params.id || params.expenseId;
-  if (!id) return { error: 'ID da despesa obrigatório' };
+  if (!id) return err('ID da despesa obrigatório');
   const body = {};
   if (params.amount !== undefined) body.amount = parseFloat(params.amount);
   if (params.description !== undefined) body.description = params.description;
   if (params.status !== undefined) body.status = params.status;
   if (params.category !== undefined) body.category = params.category;
-  await dashboardApi(`/expenses/${id}`, 'PUT', body);
+  const result_result = await dashboardApi(`/expenses/${id}`, 'PUT', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('expense', { id, ...body, _action: 'update' });
   return ok({ stdout: `✏️ Despesa ${id} atualizada.` });
 }
 
 async function dashboardDeleteExpense(params) {
   const id = params.id || params.expenseId;
-  if (!id) return { error: 'ID da despesa obrigatório' };
-  await dashboardApi(`/expenses/${id}`, 'DELETE');
+  if (!id) return err('ID da despesa obrigatório');
+  const result_result = await dashboardApi(`/expenses/${id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('expense', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Despesa ${id} excluída.` });
 }
 
 async function dashboardPayExpense(params) {
   const id = params.id || params.expenseId;
-  if (!id) return { error: 'ID da despesa obrigatório' };
-  await dashboardApi(`/expenses/${id}/pay`, 'POST', {});
+  if (!id) return err('ID da despesa obrigatório');
+  const result_result = await dashboardApi(`/expenses/${id}/pay`, 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('expense', { id, status: 'paid', _action: 'pay' });
   return ok({ stdout: `✅ Despesa ${id} marcada como paga.` });
 }
@@ -1764,7 +1657,10 @@ async function dashboardCreateExpenseTemplate(params) {
     description: params.description || '',
     category: params.category || 'other',
   };
-  await dashboardApi('/expenses/templates', 'POST', body);
+  const result_result = await dashboardApi('/expenses/templates', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `📋 Template de despesa "${body.name}" criado.` });
 }
 
@@ -1774,14 +1670,20 @@ async function dashboardQuickExpense(params) {
     description: params.description || params.descricao || '',
     category: params.category || 'other',
   };
-  await dashboardApi('/expenses/quick', 'POST', body);
+  const result_result = await dashboardApi('/expenses/quick', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `⚡ Despesa rápida: €${body.amount} — ${body.description}` });
 }
 
 // ── FINANCEIRO — CAIXA ──
 
 async function dashboardGetCashBox(params) {
-  const data = await dashboardApi('/cash-box');
+  const result_result_data = await dashboardApi('/cash-box');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `💵 Caixa: €${data.balance?.value || data.balance || 0}\nÚltima atualização: ${data.lastUpdate || 'N/A'}` });
 }
 
@@ -1793,14 +1695,19 @@ async function dashboardAddCashEntry(params) {
     category: params.category || 'general',
     date: params.date || new Date().toISOString().split('T')[0],
   };
-  await dashboardApi('/cash-box/entries', 'POST', body);
+  const result_result = await dashboardApi('/cash-box/entries', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `💵 Entrada de caixa: €${body.amount} (${body.type}) — ${body.description}` });
 }
 
 async function dashboardListCashHistory(params) {
   const query = new URLSearchParams();
   if (params.limit) query.set('limit', String(params.limit));
-  const data = await dashboardApi(`/cash-box/history?${query.toString()}`);
+  const result_data = await dashboardApi(`/cash-box/history?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const items = data.history || data.entries || data || [];
   const lines = items.map(h => `- ${h.type === 'income' ? '📥' : '📤'} €${h.amount} — ${h.description}`).join('\n');
   return ok({ stdout: `💵 Histórico do caixa (${items.length} itens):\n${lines || 'Vazio.'}` });
@@ -1808,7 +1715,10 @@ async function dashboardListCashHistory(params) {
 
 async function dashboardReconcileCashBox(params) {
   const body = { actualBalance: parseFloat(params.actualBalance || params.balance || 0) };
-  await dashboardApi('/cash-box/reconcile', 'POST', body);
+  const result_result = await dashboardApi('/cash-box/reconcile', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `🔍 Caixa reconciliado com saldo real: €${body.actualBalance}` });
 }
 
@@ -1817,12 +1727,18 @@ async function dashboardAdjustCashBox(params) {
     amount: parseFloat(params.amount || params.valor || 0),
     reason: params.reason || params.motivo || 'Ajuste manual',
   };
-  await dashboardApi('/cash-box/adjust', 'POST', body);
+  const result_result = await dashboardApi('/cash-box/adjust', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `⚖️ Caixa ajustado em €${body.amount}: ${body.reason}` });
 }
 
 async function dashboardGetCashBoxProjection(params) {
-  const data = await dashboardApi('/cash-box/projection');
+  const result_result_data = await dashboardApi('/cash-box/projection');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `📈 Projeção do caixa: €${data.projectedBalance || data.balance || 'N/A'}` });
 }
 
@@ -1832,7 +1748,10 @@ async function dashboardCreateCashPayment(params) {
     description: params.description || params.descricao || '',
     from: params.from || params.de || '',
   };
-  await dashboardApi('/cash-box/payments', 'POST', body);
+  const result_result = await dashboardApi('/cash-box/payments', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `💰 Pagamento no caixa: €${body.amount} — ${body.description}` });
 }
 
@@ -1846,13 +1765,19 @@ async function dashboardCreateQuote(params) {
     description: params.description || params.descricao || '',
     status: params.status || 'draft',
   };
-  await dashboardApi('/quotes', 'POST', body);
+  const result_result = await dashboardApi('/quotes', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('quote', { clientName: body.clientName, description: body.projectName, value: body.totalAmount, status: body.status });
   return ok({ stdout: `📄 Orçamento criado: "${body.projectName}" — €${body.totalAmount}` });
 }
 
 async function dashboardListQuotes(params) {
-  const data = await dashboardApi('/quotes');
+  const result_result_data = await dashboardApi('/quotes');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.quotes || data || [];
   const lines = items.map(q => `- [${q.status}] ${q.projectName || q.clientName} — €${q.totalAmount}`).join('\n');
   return ok({ stdout: `📄 ${items.length} orçamento(s):\n${lines || 'Nenhum orçamento.'}` });
@@ -1860,20 +1785,26 @@ async function dashboardListQuotes(params) {
 
 async function dashboardUpdateQuote(params) {
   const id = params.id || params.quoteId;
-  if (!id) return { error: 'ID do orçamento obrigatório' };
+  if (!id) return err('ID do orçamento obrigatório');
   const body = {};
   if (params.totalAmount !== undefined) body.totalAmount = parseFloat(params.totalAmount);
   if (params.status !== undefined) body.status = params.status;
   if (params.description !== undefined) body.description = params.description;
-  await dashboardApi(`/quotes/${id}`, 'PUT', body);
+  const result_result = await dashboardApi(`/quotes/${id}`, 'PUT', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('quote', { id, ...body, _action: 'update' });
   return ok({ stdout: `✏️ Orçamento ${id} atualizado.` });
 }
 
 async function dashboardDeleteQuote(params) {
   const id = params.id || params.quoteId;
-  if (!id) return { error: 'ID do orçamento obrigatório' };
-  await dashboardApi(`/quotes/${id}`, 'DELETE');
+  if (!id) return err('ID do orçamento obrigatório');
+  const result_result = await dashboardApi(`/quotes/${id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('quote', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Orçamento ${id} excluído.` });
 }
@@ -1881,7 +1812,10 @@ async function dashboardDeleteQuote(params) {
 // ── PROJETOS ──
 
 async function dashboardListProjects(params) {
-  const data = await dashboardApi('/projects');
+  const result_result_data = await dashboardApi('/projects');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.projects || data || [];
   const lines = items.map(p => `- ${p.name || p.title} (${p.status || '?'})`).join('\n');
   return ok({ stdout: `📁 ${items.length} projeto(s):\n${lines || 'Nenhum projeto.'}` });
@@ -1890,7 +1824,10 @@ async function dashboardListProjects(params) {
 // ── CLIENTES ──
 
 async function dashboardListClients(params) {
-  const data = await dashboardApi('/schema/clients');
+  const result_result_data = await dashboardApi('/schema/clients');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.clients || data || [];
   const lines = items.map(c => `- ${c.displayName || c.name || c.id}`).join('\n');
   return ok({ stdout: `👥 ${items.length} cliente(s):\n${lines || 'Nenhum cliente.'}` });
@@ -1905,8 +1842,11 @@ async function dashboardAddLink(params) {
     description: params.description || params.contexto || '',
     tags: params.tags || [],
   };
-  if (!body.url) return { error: 'URL obrigatória' };
-  await dashboardApi('/links', 'POST', body);
+  if (!body.url) return err('URL obrigatória');
+  const result_result = await dashboardApi('/links', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('link', { title: body.title, url: body.url, description: body.description });
   return ok({ stdout: `🔗 Link adicionado: ${body.url}` });
 }
@@ -1915,7 +1855,9 @@ async function dashboardListLinks(params) {
   const query = new URLSearchParams();
   if (params.platform) query.set('platform', params.platform);
   if (params.search) query.set('search', params.search);
-  const data = await dashboardApi(`/links?${query.toString()}`);
+  const result_data = await dashboardApi(`/links?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const items = data.links || data || [];
   const lines = items.map(l => `- ${l.title || l.url} (${l.platform || 'link'})`).join('\n');
   return ok({ stdout: `🔗 ${items.length} link(s):\n${lines || 'Nenhum link.'}` });
@@ -1923,26 +1865,38 @@ async function dashboardListLinks(params) {
 
 async function dashboardDeleteLink(params) {
   const id = params.id || params.linkId;
-  if (!id) return { error: 'ID do link obrigatório' };
-  await dashboardApi(`/links/${id}`, 'DELETE');
+  if (!id) return err('ID do link obrigatório');
+  const result_result = await dashboardApi(`/links/${id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   notifyChange('link', { id, _action: 'delete' });
   return ok({ stdout: `🗑️ Link ${id} excluído.` });
 }
 
 async function dashboardEnrichLink(params) {
   const id = params.id || params.linkId;
-  if (!id) return { error: 'ID do link obrigatório' };
-  await dashboardApi('/links/enrich', 'POST', { id });
+  if (!id) return err('ID do link obrigatório');
+  const result_result = await dashboardApi('/links/enrich', 'POST', { id });
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `✨ Link ${id} enriquecido.` });
 }
 
 async function dashboardSyncLinks(params) {
-  await dashboardApi('/links/sync', 'POST', {});
+  const result_result = await dashboardApi('/links/sync', 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `🔄 Links sincronizados.` });
 }
 
 async function dashboardGetLinksStats(params) {
-  const data = await dashboardApi('/links/stats');
+  const result_result_data = await dashboardApi('/links/stats');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `🔗 Stats: ${data.total || 0} total, ${data.broken || 0} quebrados.` });
 }
 
@@ -1956,8 +1910,11 @@ async function dashboardSendEmail(params) {
     cc: params.cc || '',
     bcc: params.bcc || '',
   };
-  if (!body.to || !body.subject) return { error: 'Destinatário e assunto obrigatórios' };
-  await dashboardApi('/emails/send', 'POST', body);
+  if (!body.to || !body.subject) return err('Destinatário e assunto obrigatórios');
+  const result_result = await dashboardApi('/emails/send', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `📧 Email enviado para ${body.to}: "${body.subject}"` });
 }
 
@@ -1965,14 +1922,19 @@ async function dashboardListEmails(params) {
   const query = new URLSearchParams();
   if (params.folder) query.set('folder', params.folder);
   if (params.limit) query.set('limit', String(params.limit));
-  const data = await dashboardApi(`/emails?${query.toString()}`);
+  const result_data = await dashboardApi(`/emails?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const items = data.emails || data.messages || data || [];
   const lines = items.map(e => `- ${e.read ? '✓' : '○'} ${e.subject} (${e.from || '?'})`).join('\n');
   return ok({ stdout: `📧 ${items.length} email(s):\n${lines || 'Nenhum email.'}` });
 }
 
 async function dashboardSyncEmails(params) {
-  await dashboardApi('/emails/sync', 'POST', {});
+  const result_result = await dashboardApi('/emails/sync', 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `🔄 Emails sincronizados.` });
 }
 
@@ -1983,8 +1945,11 @@ async function dashboardSendWhatsApp(params) {
     phone: params.phone || params.number || params.numero || '',
     message: params.message || params.text || params.mensagem || '',
   };
-  if (!body.phone || !body.message) return { error: 'Número e mensagem obrigatórios' };
-  await dashboardApi('/whatsapp/send', 'POST', body);
+  if (!body.phone || !body.message) return err('Número e mensagem obrigatórios');
+  const result_result = await dashboardApi('/whatsapp/send', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `💬 WhatsApp enviado para ${body.phone}.` });
 }
 
@@ -1992,31 +1957,45 @@ async function dashboardGetWhatsAppHistory(params) {
   const query = new URLSearchParams();
   if (params.limit) query.set('limit', String(params.limit || 10));
   if (params.chatId) query.set('chatId', params.chatId);
-  const data = await dashboardApi(`/whatsapp/history?${query.toString()}`);
+  const result_data = await dashboardApi(`/whatsapp/history?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const items = data.history || data.messages || data || [];
   const lines = items.slice(0, 10).map(m => `- [${m.author || '?'}]: ${(m.body || m.text || '(mídia)').slice(0, 80)}`).join('\n');
   return ok({ stdout: `💬 ${items.length} mensagem(s):\n${lines || 'Vazio.'}` });
 }
 
 async function dashboardScanWhatsApp(params) {
-  await dashboardApi('/whatsapp-agent/refresh', 'POST', {});
+  const result_result = await dashboardApi('/whatsapp-agent/refresh', 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `🔍 Scan do WhatsApp iniciado.` });
 }
 
 async function dashboardGetWhatsAppStatus(params) {
-  const data = await dashboardApi('/whatsapp-agent/status');
+  const result_result_data = await dashboardApi('/whatsapp-agent/status');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `📱 WhatsApp: ${data.status || data.state || 'N/A'} | ${data.totalMessages || data.total || 0} msgs` });
 }
 
 async function dashboardGetWhatsAppClassifications(params) {
-  const data = await dashboardApi('/classifications/stats');
+  const result_result_data = await dashboardApi('/classifications/stats');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `🏷️ Classificações: ${JSON.stringify(data, null, 2).slice(0, 400)}` });
 }
 
 // ── SISTEMA ──
 
 async function dashboardGetSystemStatus(params) {
-  const data = await dashboardApi('/system/status');
+  const result_result_data = await dashboardApi('/system/status');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `🖥️ Sistema: ${data.status || 'OK'} | Backend: ${data.backend || '?'} | Frontend: ${data.frontend || '?'}` });
 }
 
@@ -2024,7 +2003,9 @@ async function dashboardGetSystemLogs(params) {
   const query = new URLSearchParams();
   if (params.service) query.set('service', params.service);
   if (params.lines) query.set('lines', String(params.lines));
-  const data = await dashboardApi(`/system/logs?${query.toString()}`);
+  const result_data = await dashboardApi(`/system/logs?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const lines = (data.logs || data || []).slice(-20).join('\n');
   return ok({ stdout: `📝 Logs:\n${lines || 'Nenhum log.'}` });
 }
@@ -2034,14 +2015,20 @@ async function dashboardControlService(params) {
     service: params.service || 'backend',
     action: params.action || params.command || 'status',
   };
-  await dashboardApi('/system/control', 'POST', body);
+  const result_result = await dashboardApi('/system/control', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `⚙️ ${body.service}: ${body.action}` });
 }
 
 // ── NOTIFICAÇÕES ──
 
 async function dashboardListNotifications(params) {
-  const data = await dashboardApi('/notifications');
+  const result_result_data = await dashboardApi('/notifications');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.notifications || data || [];
   const lines = items.map(n => `- ${n.read ? '✓' : '○'} ${n.title || n.message || 'Notificação'}`).join('\n');
   return ok({ stdout: `🔔 ${items.length} notificação(ões):\n${lines || 'Nenhuma.'}` });
@@ -2049,27 +2036,39 @@ async function dashboardListNotifications(params) {
 
 async function dashboardMarkNotificationRead(params) {
   const id = params.id || params.notificationId;
-  if (!id) return { error: 'ID obrigatório' };
-  await dashboardApi(`/notifications/${id}/read`, 'POST', {});
+  if (!id) return err('ID obrigatório');
+  const result_result = await dashboardApi(`/notifications/${id}/read`, 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `✅ Notificação ${id} lida.` });
 }
 
 async function dashboardMarkAllNotificationsRead(params) {
-  await dashboardApi('/notifications/read-all', 'POST', {});
+  const result_result = await dashboardApi('/notifications/read-all', 'POST', {});
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `✅ Todas lidas.` });
 }
 
 // ── USUÁRIOS / MEMBROS ──
 
 async function dashboardListUsers(params) {
-  const data = await dashboardApi('/users');
+  const result_result_data = await dashboardApi('/users');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.users || data || [];
   const lines = items.map(u => `- ${u.name || u.username || u.id} (${u.role || 'user'})`).join('\n');
   return ok({ stdout: `👤 ${items.length} usuário(s):\n${lines || 'Nenhum.'}` });
 }
 
 async function dashboardListMembers(params) {
-  const data = await dashboardApi('/members');
+  const result_result_data = await dashboardApi('/members');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.members || data || [];
   const lines = items.map(m => `- ${m.name || m.displayName || m.id} (${m.role || '?'})`).join('\n');
   return ok({ stdout: `👥 ${items.length} membro(s):\n${lines || 'Nenhum.'}` });
@@ -2078,7 +2077,10 @@ async function dashboardListMembers(params) {
 // ── BUG DETECTOR ──
 
 async function dashboardListBugReports(params) {
-  const data = await dashboardApi('/bugdetector/reports');
+  const result_result_data = await dashboardApi('/bugdetector/reports');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.reports || data || [];
   const lines = items.map(r => `- ${r.filename || r.id}: ${r.summary || r.title || 'Relatório'}`).join('\n');
   return ok({ stdout: `🐛 ${items.length} relatório(s):\n${lines || 'Nenhum.'}` });
@@ -2086,22 +2088,31 @@ async function dashboardListBugReports(params) {
 
 async function dashboardDeleteBugReport(params) {
   const filename = params.filename || params.id;
-  if (!filename) return { error: 'Filename obrigatório' };
-  await dashboardApi(`/bugdetector/reports/${filename}`, 'DELETE');
+  if (!filename) return err('Filename obrigatório');
+  const result_result = await dashboardApi(`/bugdetector/reports/${filename}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `🗑️ Relatório ${filename} excluído.` });
 }
 
 // ── GITHUB / VERCEL ──
 
 async function dashboardListGitHubRepos(params) {
-  const data = await dashboardApi('/github-repos');
+  const result_result_data = await dashboardApi('/github-repos');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.repos || data || [];
   const lines = items.map(r => `- ${r.name || r.full_name || r.repo} (${r.language || '?'})`).join('\n');
   return ok({ stdout: `🐙 ${items.length} repo(s):\n${lines || 'Nenhum.'}` });
 }
 
 async function dashboardListVercelProjects(params) {
-  const data = await dashboardApi('/vercel-projects');
+  const result_result_data = await dashboardApi('/vercel-projects');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.projects || data || [];
   const lines = items.map(p => `- ${p.name || p.project} (${p.framework || '?'})`).join('\n');
   return ok({ stdout: `▲ ${items.length} projeto(s):\n${lines || 'Nenhum.'}` });
@@ -2110,7 +2121,10 @@ async function dashboardListVercelProjects(params) {
 // ── OPERAÇÕES ──
 
 async function dashboardListOpsAlerts(params) {
-  const data = await dashboardApi('/ops');
+  const result_result_data = await dashboardApi('/ops');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const items = data.alerts || data || [];
   const lines = items.map(a => `- [${a.severity || '?'}] ${a.title || a.message || 'Alerta'}`).join('\n');
   return ok({ stdout: `⚠️ ${items.length} alerta(s):\n${lines || 'Nenhum.'}` });
@@ -2122,14 +2136,20 @@ async function dashboardCreateOpsAlert(params) {
     message: params.message || params.descricao || '',
     severity: params.severity || 'medium',
   };
-  await dashboardApi('/ops/alerts', 'POST', body);
+  const result_result = await dashboardApi('/ops/alerts', 'POST', body);
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `⚠️ Alerta: "${body.title}"` });
 }
 
 async function dashboardDeleteOpsAlert(params) {
   const id = params.id || params.alertId;
-  if (!id) return { error: 'ID obrigatório' };
-  await dashboardApi(`/ops/alerts/${id}`, 'DELETE');
+  if (!id) return err('ID obrigatório');
+  const result_result = await dashboardApi(`/ops/alerts/${id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `🗑️ Alerta ${id} excluído.` });
 }
 
@@ -2138,19 +2158,27 @@ async function dashboardDeleteOpsAlert(params) {
 async function dashboardListTransactions(params) {
   const query = new URLSearchParams();
   if (params.limit) query.set('limit', String(params.limit));
-  const data = await dashboardApi(`/transactions?${query.toString()}`);
+  const result_data = await dashboardApi(`/transactions?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const items = data.transactions || data || [];
   const lines = items.map(t => `- ${t.type || '?'} €${t.amount} — ${t.description || ''}`).join('\n');
   return ok({ stdout: `💳 ${items.length} transação(ões):\n${lines || 'Nenhuma.'}` });
 }
 
 async function dashboardGetNexoState(params) {
-  const data = await dashboardApi('/nexo-state');
+  const result_result_data = await dashboardApi('/nexo-state');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `🌐 NEXO State:\n${JSON.stringify(data, null, 2).slice(0, 500)}` });
 }
 
 async function dashboardGetConfig(params) {
-  const data = await dashboardApi('/config/dashboard');
+  const result_result_data = await dashboardApi('/config/dashboard');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `⚙️ Config:\n${JSON.stringify(data, null, 2).slice(0, 500)}` });
 }
 
@@ -2163,14 +2191,19 @@ async function dashboardListVotingSessions(params) {
   if (params.status) query.set('status', params.status);
   if (params.page) query.set('page', String(params.page));
   if (params.limit) query.set('limit', String(params.limit));
-  const data = await dashboardApi(`/voting/sessions?${query.toString()}`);
+  const result_data = await dashboardApi(`/voting/sessions?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const sessions = data.sessions || [];
   const lines = sessions.map(s => `- [${s.status}] ${s.title} (tipo: ${s.type}, quorum: ${s.quorumRequired})`).join('\n');
   return ok({ stdout: `🗳️ ${data.pagination?.total || sessions.length} sessão(ões) de votação:\n${lines || 'Nenhuma sessão encontrada.'}` });
 }
 
 async function dashboardGetVotingSession(params) {
-  const data = await dashboardApi(`/voting/sessions/${params.id}`);
+  const result_result_data = await dashboardApi(`/voting/sessions/${params.id}`);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const votes = data.votes || {};
   const voteLines = Object.entries(votes).map(([k, v]) => `  ${k}: ${v ? v.vote : 'não votou'}`).join('\n');
   return ok({ stdout: `🗳️ Sessão "${data.title}" [${data.status}]\n${data.description || ''}\nVotos:\n${voteLines}` });
@@ -2187,20 +2220,28 @@ async function dashboardCreateVotingSession(params) {
     body.toolName = params.toolName;
     body.toolParams = params.toolParams || {};
   }
-  const data = await dashboardApi('/voting/sessions', 'POST', body);
+  const result_result_data = await dashboardApi('/voting/sessions', 'POST', body);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `🗳️ Sessão de votação criada: "${data.title}" (ID: ${data.id}, quorum: ${data.quorumRequired})` });
 }
 
 async function dashboardVoteInSession(params) {
-  const data = await dashboardApi(`/voting/sessions/${params.id}/vote`, 'POST', {
+  const result_data = await dashboardApi(`/voting/sessions/${params.id}/vote`, 'POST', {
     vote: params.vote,
     comment: params.comment || ''
   });
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   return ok({ stdout: `🗳️ Voto registrado em "${data.session?.title}": ${params.vote}\nContagem: ${data.tally?.yes || 0} sim, ${data.tally?.no || 0} não` });
 }
 
 async function dashboardDeleteVotingSession(params) {
-  await dashboardApi(`/voting/sessions/${params.id}`, 'DELETE');
+  const result_result = await dashboardApi(`/voting/sessions/${params.id}`, 'DELETE');
+  if (!result_result.success) return result_result;
+  const result = result_result.data;
+  if (!result.success) return result;
   return ok({ stdout: `🗑️ Sessão de votação deletada (ID: ${params.id})` });
 }
 
@@ -2213,7 +2254,9 @@ async function dashboardListRoadmaps(params) {
   if (params.status) query.set('status', params.status);
   if (params.client_id) query.set('client_id', params.client_id);
   if (params.project_type) query.set('project_type', params.project_type);
-  const data = await dashboardApi(`/roadmaps?${query.toString()}`);
+  const result_data = await dashboardApi(`/roadmaps?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
   const roadmaps = data.roadmaps || [];
   const lines = roadmaps.map(r => {
     const phases = r.phases || [];
@@ -2224,7 +2267,10 @@ async function dashboardListRoadmaps(params) {
 }
 
 async function dashboardGetRoadmap(params) {
-  const data = await dashboardApi(`/roadmaps/${params.id}`);
+  const result_result_data = await dashboardApi(`/roadmaps/${params.id}`);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const phases = data.phases || [];
   const current = data.current_phase_index || 0;
   const phaseLines = phases.map((p, i) => `  ${i + 1}. [${p.status}] ${p.title}${i === current ? ' ← ATUAL' : ''}`).join('\n');
@@ -2244,29 +2290,44 @@ async function dashboardCreateRoadmap(params) {
     subdomain: params.subdomain || null,
     onboarding_answers: params.onboardingAnswers || params.onboarding_answers || {}
   };
-  const data = await dashboardApi('/roadmaps', 'POST', body);
+  const result_result_data = await dashboardApi('/roadmaps', 'POST', body);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `🎯 Projeto criado: "${data.title}" (ID: ${data.id}, tipo: ${data.project_type})` });
 }
 
 async function dashboardAdvanceRoadmapPhase(params) {
-  const data = await dashboardApi(`/roadmaps/${params.id}/advance`, 'POST', { reason: params.reason || 'Avanço de fase' });
+  const result_result_data = await dashboardApi(`/roadmaps/${params.id}/advance`, 'POST', { reason: params.reason || 'Avanço de fase' });
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `➡️ Fase avançada! Agora na fase ${data.current_phase_index + 1}` });
 }
 
 async function dashboardListProjectTypes(params) {
-  const data = await dashboardApi('/roadmaps/project-templates');
+  const result_result_data = await dashboardApi('/roadmaps/project-templates');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   const templates = data.templates || [];
   const lines = templates.map(t => `- ${t.project_type}: ${t.name} (${(t.default_phases || []).length} fases padrão)`).join('\n');
   return ok({ stdout: `📋 ${templates.length} tipo(s) de projeto:\n${lines || 'Nenhum template encontrado.'}` });
 }
 
 async function dashboardJoinTimeline(params) {
-  const data = await dashboardApi(`/roadmaps/timelines/${params.timelineId}/join`, 'POST');
+  const result_result_data = await dashboardApi(`/roadmaps/timelines/${params.timelineId}/join`, 'POST');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `👤 Entrou na timeline. Colaboradores ativos: ${data.collaborators?.length || 0}` });
 }
 
 async function dashboardAdvanceTimelineStep(params) {
-  const data = await dashboardApi(`/roadmaps/timelines/${params.timelineId}/advance-step`, 'POST');
+  const result_result_data = await dashboardApi(`/roadmaps/timelines/${params.timelineId}/advance-step`, 'POST');
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `➡️ Step avançado! Timeline: ${data.timeline?.title || params.timelineId}` });
 }
 
@@ -2280,7 +2341,10 @@ async function dashboardCreateReviewVote(params) {
     linkedRoadmapId: params.linkedRoadmapId || null,
     reviewMeetingAt: params.reviewMeetingAt || null
   };
-  const data = await dashboardApi('/voting/sessions', 'POST', body);
+  const result_result_data = await dashboardApi('/voting/sessions', 'POST', body);
+  if (!result_result_data.success) return result_result_data;
+  const result_data = result_result_data.data;
+  const data = result_data;
   return ok({ stdout: `🗳️ Votação de revisão criada: "${data.title}" (ID: ${data.id})` });
 }
 
