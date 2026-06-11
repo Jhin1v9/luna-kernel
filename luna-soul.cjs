@@ -2427,7 +2427,10 @@ class LunaSoul extends EventEmitter {
             const successCount = domActionResults.filter(d => d.result?.success).length;
             const totalCount = domActionResults.length;
             const statusEmoji = successCount === totalCount ? '✅' : '⚠️';
-            loopInput = `${statusEmoji} FERRAMENTA EXECUTADA — ${toolsUsed}\n\n🎯 O QUE ACONTECEU:\nVocê enviou: ${toolsUsed}\nLuna executou no PC real do usuário.\nEste é o resultado REAL.\n\n📊 STATUS: ${successCount}/${totalCount} sucesso(s)\n\n📝 RESULTADO:\n${outputText}\n\n➡️ SUA VEZ — OBRIGATÓRIO:\nResponda AGORA com um JSON de RESPOSTA, NÃO reenvie a mesma ferramenta:\n\`\`\`json\n{"response": "Sua resposta aqui baseada no resultado acima"}\n\`\`\`\n\nREGRAS:\n- Se o resultado acima já tem a informação que você precisava → responda ao usuário.\n- Se precisa de MAIS informações → use readFile/grep/searchFiles com PARÂMETROS DIFERENTES.\n- NUNCA repita ${toolsUsed} com os mesmos parâmetros.`;
+            // v10.16-fix: Remove redundant JSON-format instructions from loopInput.
+            // The miniReminder + _buildContext already enforce JSON-only output.
+            // Including format examples here causes Kimi to echo them literally.
+            loopInput = `${statusEmoji} FERRAMENTA EXECUTADA — ${toolsUsed}\n\n🎯 O QUE ACONTECEU:\nVocê enviou: ${toolsUsed}\nLuna executou no PC real do usuário.\nEste é o resultado REAL.\n\n📊 STATUS: ${successCount}/${totalCount} sucesso(s)\n\n📝 RESULTADO:\n${outputText}\n\nREGRAS:\n- Se o resultado acima já tem a informação que você precisava → responda ao usuário.\n- Se precisa de MAIS informações → use readFile/grep/searchFiles com PARÂMETROS DIFERENTES.\n- NUNCA repita ${toolsUsed} com os mesmos parâmetros.`;
             loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
             continue; // Continue loop — send result back to Kimi
           }
@@ -2617,6 +2620,8 @@ class LunaSoul extends EventEmitter {
           ? `\n\n🚨 CORREÇÃO NECESSÁRIA:\nO arquivo que você criou contém erros de validação/build listados acima.\nVocê DEVE corrigir o arquivo usando writeFile com o CONTEÚDO CORRIGIDO.\nNÃO envie "response" — envie a ferramenta writeFile com a versão corrigida.\n`
           : '';
 
+        // v10.16-fix: Remove redundant JSON-format instructions from loopInput.
+        // The miniReminder + _buildContext already enforce JSON-only output.
         loopInput = `✅ FERRAMENTA EXECUTADA — ${toolsUsed}
 
 🎯 O QUE ACONTECEU:
@@ -2628,12 +2633,6 @@ Este é o resultado REAL.
 
 📝 RESULTADO:
 ${outputText}${fixInstructions}
-
-➡️ SUA VEZ — OBRIGATÓRIO:
-Responda AGORA com um JSON de RESPOSTA, NÃO reenvie a mesma ferramenta:
-\`\`\`json
-{"response": "Sua resposta aqui baseada no resultado acima"}
-\`\`\`
 
 REGRAS:
 - Se o resultado acima já tem a informação que você precisava → responda ao usuário.
