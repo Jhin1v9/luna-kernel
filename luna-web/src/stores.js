@@ -116,3 +116,11 @@ export const compactState = writable({
   message: '',
   steps: [],
 });
+
+// v10.17: Changelog modal state
+export const changelogModalOpen = writable(false);
+export const changelogData = writable({
+  version: '',
+  date: '',
+  updates: []
+});

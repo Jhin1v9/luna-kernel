@@ -1630,11 +1630,29 @@ class LunaSoul extends EventEmitter {
       console.log(`[DEBUG-LUNA] _shouldCompact returning true (explicit)`);
       return true;
     }
-    const eventCount = this.sessionManager?.getEventCount?.(sessionId)
-      || this.sessionManager?.readContext?.(sessionId)?.length
-      || 0;
-    const should = eventCount > 100;
-    console.log(`[DEBUG-LUNA] _shouldCompact returning ${should} (eventCount=${eventCount})`);
+
+    // v10.15-fix: Threshold baseado em tokens estimados (220K), não contagem de eventos.
+    // Kimi K2.6 suporta 256K tokens. Compactar em 220K dá margem de segurança.
+    // 1 token ≈ 4 bytes em média para texto em português/JSON.
+    const TOKEN_THRESHOLD = 220000;
+
+    let estimatedTokens = 0;
+    try {
+      const ctxFile = this.sessionManager?._contextFile?.(sessionId);
+      if (ctxFile && fs.existsSync(ctxFile)) {
+        const stats = fs.statSync(ctxFile);
+        estimatedTokens = Math.floor(stats.size / 4);
+      }
+    } catch {}
+
+    // Fallback: estima pelo número de eventos
+    if (estimatedTokens === 0) {
+      const eventCount = this.sessionManager?.readContext?.(sessionId)?.length || 0;
+      estimatedTokens = eventCount * 180; // ~180 tokens/evento (média medida)
+    }
+
+    const should = estimatedTokens > TOKEN_THRESHOLD;
+    console.log(`[DEBUG-LUNA] _shouldCompact returning ${should} (estTokens=${estimatedTokens}, threshold=${TOKEN_THRESHOLD})`);
     return should;
   }
 
@@ -1674,16 +1692,19 @@ class LunaSoul extends EventEmitter {
         // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
         // v10.12-fix-deadlock: The parent sendMessageStream still holds session.processing=true.
         // We must release it before calling sendMessage, otherwise we deadlock.
+        // v10.16-fix: Timeout de 30s para evitar travamento indefinido.
         yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
+        let bridgeSession = null;
+        let wasProcessing = false;
         try {
-          const bridgeSession = this.kimiBridge.userSessions?.get(userId);
-          const wasProcessing = bridgeSession?.processing;
+          bridgeSession = this.kimiBridge.userSessions?.get(userId);
+          wasProcessing = bridgeSession?.processing;
           if (bridgeSession) bridgeSession.processing = false;
 
-          const sendResult = await this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' });
-
-          // Restore if needed (sendMessage normally sets false in its finally, but be safe)
-          if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
+          const sendResult = await Promise.race([
+            this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (30s)')), 30000))
+          ]);
 
           const respLen = sendResult?.response?.length || 0;
           console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
@@ -1692,6 +1713,9 @@ class LunaSoul extends EventEmitter {
           console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
           yield { type: 'compact_progress', message: `⚠️ Checkpoint não enviado: ${sendErr.message}. Usando fallback local...`, sessionId };
           // Non-fatal: the summary is still stored in local context below
+        } finally {
+          // v10.16-fix: ALWAYS restore processing state, even on timeout/error
+          if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
         }
       }
 
@@ -2153,8 +2177,9 @@ class LunaSoul extends EventEmitter {
       }
     }
 
-    // v5.6-fix: AUTO-COMPACT REMOVIDO. O usuário controla quando criar nova thread.
-    // Se contexto ficar grande, Kimi Web emitirá context_limit — tratado no loop abaixo.
+    // v5.6-fix: AUTO-COMPACT REATIVADO v10.14.
+    // Compactação proativa ANTES de enviar pro Kimi — evita que o Kimi pare de responder
+    // silenciosamente quando o contexto fica muito grande.
 
     // Auto-continue loop: Kimi decides → Luna executes → result goes back to Kimi → Kimi responds
     let loopInput = messageInput;
@@ -2180,6 +2205,10 @@ class LunaSoul extends EventEmitter {
 
       // Accumulate DOM-extracted action results for auto-continue
       const domActionResults = [];
+      // v10.13: Background action promises for non-blocking execution
+      const domActionPromises = [];
+      // v10.13: EventBus for async tool results during stream consumption
+      const eventBus = new EventBus();
 
       yield { type: 'thinking_start', sessionId };
 
@@ -2190,11 +2219,29 @@ class LunaSoul extends EventEmitter {
 
       while (!streamSuccess && bridgeRetryCount <= MAX_BRIDGE_RETRIES) {
         try {
+          // v10.15-fix: Auto-compact proativo antes de enviar pro Kimi.
+          // Se o contexto estimado ultrapassar 220K tokens, compacta ANTES de enviar.
+          // Limite do Kimi K2.6 é 256K tokens — 220K dá margem de segurança.
+          // compact_start/compact_progress/compact_end já têm animação de fases da lua no frontend.
+          if (bridgeRetryCount === 0 && this._shouldCompact(sessionId)) {
+            const compactResult = yield* this._autoCompact(sessionId, userId);
+            if (compactResult.success) {
+              // Rebuild context after compact
+              loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+            }
+          }
+
           // v6.0-fix: Pass files to sendMessageStream so the bridge can inject
           // text file contents directly into the prompt (bypassing placeholder)
           const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files });
 
           for await (const event of stream) {
+            // v10.13: Drain any completed background actions BEFORE processing stream event
+            // This ensures action_end events reach the frontend as soon as tools complete
+            while (eventBus.queue.length > 0) {
+              yield eventBus.queue.shift();
+            }
+
           switch (event.type) {
             case 'thinking_delta':
               fullThinking += event.text;
@@ -2259,14 +2306,13 @@ class LunaSoul extends EventEmitter {
               // DOM MIRROR v3.2: Kimi Web showed Python code in the DOM.
               // We ALWAYS execute locally — Python is a native Linux command on the user's machine.
               // Kimi's sandbox result is captured as metadata for comparison/fallback only.
+              // v10.13: NON-BLOCKING — tools execute in background so stream keeps flowing
               const code = event.code || '';
               const codeHash = require('crypto').createHash('sha256').update(code).digest('hex').slice(0, 16);
               const kimiResult = event.kimiResult || '';
               const kimiImages = event.kimiImages || [];
 
               // v7.6-fix: Deduplication by both code hash AND tool+params hash.
-              // This prevents loops when Kimi generates the same tool call with
-              // slightly different formatting (e.g., extra whitespace, different quotes).
               // v8.5-fix: normalize flat JSON params into event.action.params
               if (event.action?.tool && !event.action?.params) {
                 const { tool, type, ...rest } = event.action;
@@ -2283,8 +2329,6 @@ class LunaSoul extends EventEmitter {
               };
 
               // v8.6-fix: CRITICAL — Save Kimi's own tool JSON to history BEFORE executing.
-              // Without this, Kimi never sees her own action in the context on the next loop,
-              // causing infinite loops where she re-sends the same tool forever.
               if (code) {
                 this.sessionManager.appendEvent(sessionId, {
                   type: 'assistant',
@@ -2294,51 +2338,21 @@ class LunaSoul extends EventEmitter {
               }
 
               yield { type: 'action_start', tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId };
-              let actionResult;
-              const pendingProgressEvents = [];
-              const emitProgress = (ev) => pendingProgressEvents.push({ type: 'action_progress', tool: parsedAction.tool, ...ev, sessionId });
-              try {
-                actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress);
-                while (pendingProgressEvents.length > 0) {
-                  yield pendingProgressEvents.shift();
-                }
 
-                // ── FALLBACK: if local execution failed AND Kimi has a sandbox result, use it ──
-                const localFailed = !actionResult?.success || actionResult?.result?.stderr;
-                if (localFailed && kimiResult) {
-                  console.log(`[DOM MIRROR] Local execution failed, falling back to Kimi sandbox result (${kimiResult.length} chars)`);
-                  actionResult = {
-                    success: true,
-                    result: {
-                      stdout: kimiResult,
-                      stderr: actionResult?.result?.stderr || '',
-                      output: kimiResult,
-                      images: kimiImages.map(img => img.src),
-                    },
-                    tool: parsedAction.tool,
-                    source: 'kimi_sandbox_fallback',
-                  };
-                }
-              } catch (actionErr) {
-                console.error(`[DOM MIRROR] Action error: ${actionErr.message}`);
-                actionResult = { success: false, error: actionErr.message, tool: parsedAction.tool };
-              }
-
-              // v9.5-fix: Store result in cache so skipped duplicates can replay it.
-              // v8.7-fix: ONLY mark as executed AFTER successful execution.
-              if (actionResult?.success) {
-                this._markActionExecuted(sessionId, toolHash, actionResult);
-              }
-
-              yield { type: 'action_end', tool: parsedAction.tool, result: actionResult, source: event.source || 'dom_mirror', sessionId };
-              yield actionResult;
-              domActionResults.push({
+              // v10.13: Create placeholder result for auto-continue tracking
+              const domResult = {
                 tool: parsedAction.tool,
-                result: actionResult,
+                result: null,
                 code: event.code,
                 kimiResult,
                 kimiImages,
-              });
+              };
+              domActionResults.push(domResult);
+
+              // v10.13: Fire-and-forget execution — push results to eventBus
+              const actionPromise = this._executeActionAsync(parsedAction, sessionId, options, toolHash, kimiResult, kimiImages, event.source || 'dom_mirror', eventBus, domResult);
+              domActionPromises.push(actionPromise);
+
               break;
             }
 
@@ -2370,6 +2384,17 @@ class LunaSoul extends EventEmitter {
               break;
           }
         }
+
+        // v10.13: Stream ended — drain eventBus and wait for background actions
+        // with real-time yielding (each action_end arrives as soon as it completes)
+        if (domActionPromises.length > 0) {
+          console.log(`[LUNA] Waiting for ${domActionPromises.length} background action(s) to complete...`);
+          for await (const ev of this._waitPromisesWithDrain(domActionPromises, eventBus)) {
+            yield ev;
+          }
+          console.log(`[LUNA] All ${domActionPromises.length} background action(s) completed.`);
+        }
+
       } catch (err) {
         if (err.message === 'STREAM_CANCELLED') {
           // v6.4-fix: If DOM actions were detected but not yet fed back to Kimi,
@@ -2509,12 +2534,24 @@ class LunaSoul extends EventEmitter {
 
       yield { type: 'mode_detected', mode: parsed.mode, sessionId };
 
-      // Execute tools and yield progress
-      const result = await this._processModeResult(parsed, sessionId, loopInput, options);
+      // v10.13: Execute tools and yield progress via EventBus (non-blocking)
+      const modeResultEventBus = new EventBus();
+      const result = await this._processModeResult(parsed, sessionId, loopInput, options, modeResultEventBus);
 
-      // Yield all events from mode processing
+      // Yield events that were already emitted synchronously
       for (const ev of result.events) {
         yield ev;
+      }
+
+      // v10.13: Wait for background actions and drain their events in real-time
+      if (result.pendingPromises && result.pendingPromises.length > 0) {
+        for await (const ev of this._waitPromisesWithDrain(result.pendingPromises, modeResultEventBus)) {
+          yield ev;
+        }
+      }
+      // Final drain for any stragglers
+      while (modeResultEventBus.queue.length > 0) {
+        yield modeResultEventBus.queue.shift();
       }
 
       // v7.3-fix: If Kimi said CHAT or DONE AND there are NO pending DOM actions,
@@ -2759,71 +2796,54 @@ REGRAS:
 
   /** Build the special system prompt for Plan Mode (read-only investigation) */
   _buildPlanModePrompt(userInput) {
+    const homeDir = process.env.HOME || '/home/jhin';
     return `[SYSTEM: MODO DETETIVE]
 
-Você é Sherlock Holmes. O cliente pediu: "${userInput}"
+Você é Sherlock Holmes no PC local do usuário (${homeDir}).
+Missão: "${userInput}"
 
-Sua missão: INVESTIGAR o projeto antes de propor qualquer solução. Você tem acesso a um terminal Python seguro (ipython) para examinar arquivos.
+⚠️ REGRA ABSOLUTA: Você DEVE usar ferramentas de leitura para investigar. NÃO escreva texto explicativo antes de executar ferramentas. VÁ DIRETO para as ferramentas.
 
-COMO FUNCIONA:
-1. Você escreve código Python em blocos ipython
-2. O sistema executa e retorna o resultado
-3. Você analisa e escreve mais código se necessário
-4. SÓ DEPOIS de investigar, você escreve o plano
+CADA ferramenta aparece como card no chat. O usuário quer VER você investigando.
 
-EXEMPLO — comece assim:
-\`\`\`python
-import os
-# Liste o diretório do projeto
-for root, dirs, files in os.walk('/home/jhin/NEXO_DASHBOARD_PRO'):
-    level = root.replace('/home/jhin/NEXO_DASHBOARD_PRO', '').count(os.sep)
-    indent = ' ' * 2 * level
-    print(f'{indent}{os.path.basename(root)}/')
-    subindent = ' ' * 2 * (level + 1)
-    for file in files[:5]:
-        print(f'{subindent}{file}')
-    if len(files) > 5:
-        print(f'{subindent}... e mais {len(files)-5} arquivos')
-    if level >= 2:
-        del dirs[:]
+SINTAXE — use EXATAMENTE assim, uma por mensagem:
+\`\`\`json
+{"tool": "listFiles", "params": "/home/jhin"}
 \`\`\`
 
-Depois do resultado, continue investigando:
-\`\`\`python
-# Leia arquivos relevantes
-with open('/home/jhin/NEXO_DASHBOARD_PRO/package.json') as f:
-    print(f.read())
+Aguarde o resultado, depois execute a próxima:
+\`\`\`json
+{"tool": "viewDirectory", "params": "/home/jhin/NEXO_DASHBOARD_PRO"}
 \`\`\`
 
-REGRAS:
-- Use APENAS leitura (open, os.listdir, glob, etc.)
-- NUNCA escreva, delete ou execute comandos de sistema (os.system, subprocess)
-- Se não souber o caminho exato, use glob ou os.walk para encontrar
-- SEMPRE investigue antes de propor soluções
+Ferramentas disponíveis (SÓ LEITURA):
+- listFiles — lista arquivos
+- viewDirectory — estrutura de pastas
+- readFile — lê arquivo
+- grep — busca texto em arquivos
+- searchFiles — busca arquivos
+- getFileInfo — info do arquivo
 
-QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
+INVESTIGAÇÃO OBRIGATÓRIA (mínimo 5 ferramentas):
+1. listFiles "/home/jhin"
+2. viewDirectory no projeto
+3. readFile package.json
+4. readFile README ou outro arquivo chave
+5. grep ou searchFiles no código
 
-# Plano de Ação: [Título]
+SÓ DEPOIS de ver os resultados, escreva:
 
-## Resumo Executivo
-[2-3 frases]
+# Plano: [Título]
+## Resumo: [2 frases]
+## Análise:
+- \`arquivo\`: [relevância]
+## Passos:
+1. [Arquivo]: [Ação]
+## Riscos:
+- [Risco]: [Mitigação]
+## Estimativa: X passos | Y arquivos | ~Z min
 
-## Análise do Codebase
-- \`caminho/arquivo.ext\`: [relevância]
-
-## Passos de Implementação
-1. **[Arquivo]**: [Ação específica]
-2. **[Arquivo]**: [Ação específica]
-
-## Riscos Identificados
-- [Risco e mitigação]
-
-## Estimativa
-[X passos | Y arquivos | ~Z minutos]
-
-⚠️ IMPORTANTE: NÃO inclua no plano opções como "Aprovar", "Rejeitar", "Revisar" ou pedidos para o usuário escolher A/B/C. O sistema Luna já mostra botões de aprovação automaticamente. Foque apenas no conteúdo do plano.
-
-➡️ COMECE INVESTIGANDO AGORA usando Python.`;
+➡️ COMECE AGORA com listFiles"/home/jhin"`;
   }
 
   /** Stream-aware mode processor */
@@ -2912,10 +2932,11 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
    * Non-generator version of _processModeStream.
    * Returns { events: [], output: string, tool: string } for auto-continue loop.
    */
-  async _processModeResult(parsed, sessionId, originalInput, options) {
+  async _processModeResult(parsed, sessionId, originalInput, options, eventBus = null) {
     console.log(`[DEBUG-LUNA] _processModeResult started mode=${parsed.mode || 'CHAT'}`);
     const mode = parsed.mode || 'CHAT';
     const events = [];
+    const pendingPromises = [];
     let output = '';
     let tool = '';
 
@@ -2967,34 +2988,51 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
           output = parsed.response;
         }
         events.push({ type: 'action_start', tool: parsed.tool, params: parsed.params, sessionId });
-        let actionResult;
-        try {
-          actionResult = await this._handleAction(parsed, sessionId, options);
-        } catch (actionErr) {
-          console.error(`[_processModeResult ACTION] Action error: ${actionErr.message}`);
-          actionResult = { success: false, error: actionErr.message, tool: parsed.tool };
-        }
 
-        // v9.5-fix: Store result in cache so skipped duplicates can replay it.
-        if (actionResult?.success) {
-          this._markActionExecuted(sessionId, _toolHash, actionResult);
-        }
-
-        events.push({ type: 'action_end', tool: parsed.tool, result: actionResult, sessionId });
-        // Append action output to response output
-        // v8.5-fix: Prioritize friendlyMessage (human-readable) over raw JSON
-        // v10.0-fix: Include validation message when needsFix is true
-        if (!actionResult.result?.friendlyMessage && !actionResult.result?.stdout && !actionResult.result?.output && !actionResult.result?.text && !actionResult.result?.message) {
-          console.log('[LUNA] Tool raw result (debug):', JSON.stringify(actionResult.result).slice(0, 500));
-        }
-        let actionOutput;
-        if (actionResult.result?.needsFix && actionResult.result?.message) {
-          // Validation errors take priority — Kimi MUST see them
-          actionOutput = actionResult.result.message;
+        // v10.13: Non-blocking action execution
+        if (eventBus) {
+          const actionPromise = this._handleAction(parsed, sessionId, options).then(actionResult => {
+            if (actionResult?.success) {
+              this._markActionExecuted(sessionId, _toolHash, actionResult);
+            }
+            eventBus.push({ type: 'action_end', tool: parsed.tool, result: actionResult, sessionId });
+            let actionOutput;
+            if (actionResult.result?.needsFix && actionResult.result?.message) {
+              actionOutput = actionResult.result.message;
+            } else {
+              actionOutput = actionResult.result?.friendlyMessage || actionResult.result?.stdout || actionResult.result?.output || actionResult.result?.text || '[Resultado da ferramenta não possui saída legível]';
+            }
+            return actionOutput;
+          }).catch(actionErr => {
+            console.error(`[_processModeResult ACTION] Action error: ${actionErr.message}`);
+            const errorResult = { success: false, error: actionErr.message, tool: parsed.tool };
+            eventBus.push({ type: 'action_end', tool: parsed.tool, result: errorResult, sessionId });
+            return `[Erro: ${actionErr.message}]`;
+          });
+          pendingPromises.push(actionPromise);
+          // placeholder output until promise resolves
+          output = output ? `${output}\n\n[Executando ${parsed.tool}...]` : `[Executando ${parsed.tool}...]`;
         } else {
-          actionOutput = actionResult.result?.friendlyMessage || actionResult.result?.stdout || actionResult.result?.output || actionResult.result?.text || '[Resultado da ferramenta não possui saída legível]';
+          // Legacy blocking path (fallback)
+          let actionResult;
+          try {
+            actionResult = await this._handleAction(parsed, sessionId, options);
+          } catch (actionErr) {
+            console.error(`[_processModeResult ACTION] Action error: ${actionErr.message}`);
+            actionResult = { success: false, error: actionErr.message, tool: parsed.tool };
+          }
+          if (actionResult?.success) {
+            this._markActionExecuted(sessionId, _toolHash, actionResult);
+          }
+          events.push({ type: 'action_end', tool: parsed.tool, result: actionResult, sessionId });
+          let actionOutput;
+          if (actionResult.result?.needsFix && actionResult.result?.message) {
+            actionOutput = actionResult.result.message;
+          } else {
+            actionOutput = actionResult.result?.friendlyMessage || actionResult.result?.stdout || actionResult.result?.output || actionResult.result?.text || '[Resultado da ferramenta não possui saída legível]';
+          }
+          output = output ? `${output}\n\n${actionOutput}` : actionOutput;
         }
-        output = output ? `${output}\n\n${actionOutput}` : actionOutput;
         break;
       }
 
@@ -3007,47 +3045,91 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
           output = parsed.response;
         }
         events.push({ type: 'plan_start', steps, sessionId });
-        for (let i = 0; i < steps.length; i++) {
-          const step = steps[i];
-          events.push({
-            type: 'plan_step',
-            stepIndex: i,
-            total: steps.length,
-            tool: step.tool,
-            params: step.params,
-            sessionId,
-          });
-          let stepResult;
-          try {
-            stepResult = await this._handleAction(
-              { tool: step.tool, params: step.params, reasoning: step.reasoning },
-              sessionId,
-              options
-            );
-          } catch (stepErr) {
-            console.error(`[PLAN STEP] Action error: ${stepErr.message}`);
-            stepResult = { success: false, error: stepErr.message };
-          }
-          if (!stepResult.success) {
-            events.push({ type: 'plan_error', stepIndex: i, error: stepResult.error, sessionId });
-            output = `Falha no passo ${i + 1}: ${stepResult.error}`;
-            break;
-          }
-          // v10.0-fix: Stop plan if a step has validation errors (needsFix)
-          // This prevents the plan from continuing with broken code.
-          // v10.1-fix: Accumulate step output so plan results are sent back to Kimi
-          const stepOutput = stepResult.result?.friendlyMessage || stepResult.result?.stdout || stepResult.result?.output || stepResult.result?.text || '[Resultado não possui saída legível]';
-          output = output ? `${output}\n\n[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}` : `[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}`;
 
-          if (stepResult.result?.needsFix) {
-            const fixMsg = stepResult.result?.message || `Erros de validação no passo ${i + 1}`;
-            events.push({ type: 'plan_error', stepIndex: i, error: fixMsg, sessionId });
-            output = `🚨 PLAN INTERROMPIDO — Passo ${i + 1} precisa de correção:\n${fixMsg}\n\nCorrija o arquivo acima antes de continuar com os demais passos.`;
-            break;
+        // v10.13: Execute plan in background so frontend keeps receiving events
+        if (eventBus) {
+          const planPromise = (async () => {
+            for (let i = 0; i < steps.length; i++) {
+              const step = steps[i];
+              eventBus.push({
+                type: 'plan_step',
+                stepIndex: i,
+                total: steps.length,
+                tool: step.tool,
+                params: step.params,
+                sessionId,
+              });
+              let stepResult;
+              try {
+                stepResult = await this._handleAction(
+                  { tool: step.tool, params: step.params, reasoning: step.reasoning },
+                  sessionId,
+                  options
+                );
+              } catch (stepErr) {
+                console.error(`[PLAN STEP] Action error: ${stepErr.message}`);
+                stepResult = { success: false, error: stepErr.message };
+              }
+              if (!stepResult.success) {
+                eventBus.push({ type: 'plan_error', stepIndex: i, error: stepResult.error, sessionId });
+                return `Falha no passo ${i + 1}: ${stepResult.error}`;
+              }
+              const stepOutput = stepResult.result?.friendlyMessage || stepResult.result?.stdout || stepResult.result?.output || stepResult.result?.text || '[Resultado não possui saída legível]';
+              const accOutput = i > 0 ? `[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}` : `[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}`;
+              eventBus.push({ type: 'plan_step_done', stepIndex: i, output: stepOutput, sessionId });
+
+              if (stepResult.result?.needsFix) {
+                const fixMsg = stepResult.result?.message || `Erros de validação no passo ${i + 1}`;
+                eventBus.push({ type: 'plan_error', stepIndex: i, error: fixMsg, sessionId });
+                return `🚨 PLAN INTERROMPIDO — Passo ${i + 1} precisa de correção:\n${fixMsg}`;
+              }
+              await new Promise(r => setTimeout(r, 500));
+            }
+            eventBus.push({ type: 'plan_complete', sessionId });
+            return output;
+          })();
+          pendingPromises.push(planPromise);
+        } else {
+          // Legacy blocking path
+          for (let i = 0; i < steps.length; i++) {
+            const step = steps[i];
+            events.push({
+              type: 'plan_step',
+              stepIndex: i,
+              total: steps.length,
+              tool: step.tool,
+              params: step.params,
+              sessionId,
+            });
+            let stepResult;
+            try {
+              stepResult = await this._handleAction(
+                { tool: step.tool, params: step.params, reasoning: step.reasoning },
+                sessionId,
+                options
+              );
+            } catch (stepErr) {
+              console.error(`[PLAN STEP] Action error: ${stepErr.message}`);
+              stepResult = { success: false, error: stepErr.message };
+            }
+            if (!stepResult.success) {
+              events.push({ type: 'plan_error', stepIndex: i, error: stepResult.error, sessionId });
+              output = `Falha no passo ${i + 1}: ${stepResult.error}`;
+              break;
+            }
+            const stepOutput = stepResult.result?.friendlyMessage || stepResult.result?.stdout || stepResult.result?.output || stepResult.result?.text || '[Resultado não possui da legível]';
+            output = output ? `${output}\n\n[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}` : `[Passo ${i + 1}/${steps.length}] ${step.tool}: ${stepOutput}`;
+
+            if (stepResult.result?.needsFix) {
+              const fixMsg = stepResult.result?.message || `Erros de validação no passo ${i + 1}`;
+              events.push({ type: 'plan_error', stepIndex: i, error: fixMsg, sessionId });
+              output = `🚨 PLAN INTERROMPIDO — Passo ${i + 1} precisa de correção:\n${fixMsg}\n\nCorrija o arquivo acima antes de continuar com os demais passos.`;
+              break;
+            }
+            await new Promise(r => setTimeout(r, 500));
           }
-          await new Promise(r => setTimeout(r, 500));
+          events.push({ type: 'plan_complete', sessionId });
         }
-        events.push({ type: 'plan_complete', sessionId });
         break;
       }
 
@@ -3098,8 +3180,8 @@ QUANDO TERMINAR DE INVESTIGAR, escreva o plano em markdown:
         events.push(this._handleChat({ response: `Modo desconhecido: ${mode}. Tool: ${parsed.tool || 'unknown'}` }, sessionId));
     }
 
-    console.log(`[DEBUG-LUNA] _processModeResult finished mode=${mode} events=${events.length}`);
-    return { events, output, tool };
+    console.log(`[DEBUG-LUNA] _processModeResult finished mode=${mode} events=${events.length} pending=${pendingPromises.length}`);
+    return { events, output, tool, pendingPromises };
   }
 
   /** Stream-aware plan handler */
@@ -3449,6 +3531,77 @@ FERRAMENTAS: readFile, writeFile, replaceInFile, executeShell, searchFiles, grep
 
     this.emit('response', { type: 'chat', content: response, sessionId });
     return { type: 'assistant', success: true, mode: 'CHAT', response, sessionId };
+  }
+
+  /**
+   * v10.13: Wait for promises while draining eventBus in real-time.
+   * Yields events as soon as each background action completes.
+   */
+  async *_waitPromisesWithDrain(promises, eventBus) {
+    if (promises.length === 0) return;
+    const pending = new Set(promises);
+    // Attach handlers to track completion without blocking
+    for (const p of pending) {
+      p.then(() => pending.delete(p)).catch(() => pending.delete(p));
+    }
+    while (pending.size > 0) {
+      // Drain all available events immediately
+      while (eventBus.queue.length > 0) {
+        yield eventBus.queue.shift();
+      }
+      // Wait a short tick before checking again
+      await new Promise(r => setTimeout(r, 100));
+    }
+    // Final drain — catch any events that arrived after last check
+    while (eventBus.queue.length > 0) {
+      yield eventBus.queue.shift();
+    }
+  }
+
+  /**
+   * v10.13: Execute a tool in background, pushing results to an EventBus.
+   * This allows the main stream to keep flowing while tools run.
+   */
+  async _executeActionAsync(parsedAction, sessionId, options, toolHash, kimiResult, kimiImages, source, eventBus, domResult) {
+    const emitProgress = (ev) => eventBus.push({ type: 'action_progress', tool: parsedAction.tool, ...ev, sessionId });
+    try {
+      let actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress);
+
+      // ── FALLBACK: if local execution failed AND Kimi has a sandbox result, use it ──
+      const localFailed = !actionResult?.success || actionResult?.result?.stderr;
+      if (localFailed && kimiResult) {
+        console.log(`[DOM MIRROR] Local execution failed, falling back to Kimi sandbox result (${kimiResult.length} chars)`);
+        actionResult = {
+          success: true,
+          result: {
+            stdout: kimiResult,
+            stderr: actionResult?.result?.stderr || '',
+            output: kimiResult,
+            images: kimiImages.map(img => img.src),
+          },
+          tool: parsedAction.tool,
+          source: 'kimi_sandbox_fallback',
+        };
+      }
+
+      // v9.5-fix: Store result in cache so skipped duplicates can replay it.
+      if (actionResult?.success) {
+        this._markActionExecuted(sessionId, toolHash, actionResult);
+      }
+
+      // Update the placeholder result for auto-continue
+      domResult.result = actionResult;
+
+      // Push completion events to eventBus
+      eventBus.push({ type: 'action_end', tool: parsedAction.tool, result: actionResult, source, sessionId });
+      eventBus.push(actionResult);
+    } catch (actionErr) {
+      console.error(`[DOM MIRROR] Action error: ${actionErr.message}`);
+      const errorResult = { success: false, error: actionErr.message, tool: parsedAction.tool };
+      domResult.result = errorResult;
+      eventBus.push({ type: 'action_end', tool: parsedAction.tool, result: errorResult, source, sessionId });
+      eventBus.push(errorResult);
+    }
   }
 
   /** ACTION mode — execute a tool */

@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState } from './stores.js';
+  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState, changelogModalOpen, changelogData } from './stores.js';
 
   // Update CSS theme variables when mode changes
   $: {
@@ -26,6 +26,7 @@
 
   import ParticleBackground from './components/ParticleBackground.svelte';
   import WelcomeScreen from './components/WelcomeScreen.svelte';
+  import ChangelogModal from './components/ChangelogModal.svelte';
 
 
   let configOpen = false;
@@ -153,6 +154,22 @@
       }
       const cfg = await fetchConfig();
       if (cfg) lunaConfig.set(cfg);
+
+      // v10.17: Load changelog and show if new version
+      try {
+        const changelogRes = await fetch('/CHANGELOG.json');
+        if (changelogRes.ok) {
+          const data = await changelogRes.json();
+          changelogData.set(data);
+          const seenVersion = localStorage.getItem('luna_changelog_seen');
+          if (data.version && data.version !== seenVersion) {
+            // Show changelog after a short delay for UX
+            setTimeout(() => changelogModalOpen.set(true), 1500);
+          }
+        }
+      } catch (e) {
+        console.warn('Changelog load error:', e);
+      }
     } catch (e) {
       console.error('Init error:', e);
     }
@@ -234,6 +251,8 @@
 
     <!-- StatusBar removido — mais espaço para o chat -->
 
+    <!-- v10.17: Changelog modal -->
+    <ChangelogModal />
   </div>
 {:else if authChecked}
   <LoginPage />
