@@ -7,7 +7,6 @@
   <div class="compacting-backdrop">
     <div class="compacting-card">
       <MoonPhase
-        phase={$compactState.phase}
         size={80}
         color="#c9a227"
         glowIntensity={0.3}

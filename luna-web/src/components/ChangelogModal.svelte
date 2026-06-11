@@ -1,20 +1,6 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
   import { changelogModalOpen, changelogData } from '../stores.js';
   import MoonPhase from './MoonPhase.svelte';
-
-  let currentPhase = 0;
-  let phaseInterval;
-
-  onMount(() => {
-    phaseInterval = setInterval(() => {
-      currentPhase = (currentPhase + 1) % 8;
-    }, 1200);
-  });
-
-  onDestroy(() => {
-    clearInterval(phaseInterval);
-  });
 
   function closeModal() {
     changelogModalOpen.set(false);
@@ -58,7 +44,6 @@
       <div class="changelog-header">
         <div class="moon-container">
           <MoonPhase
-            phase={currentPhase}
             size={90}
             color="#f0c040"
             glowIntensity={0.55}
