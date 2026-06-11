@@ -1,7 +1,7 @@
 #!/bin/bash
 # Luna Auto-Sync Script v1.1
 # Roda em cada máquina (pai, nonoke, jhin) para manter atualizado com GitHub
-# Recomendado: cron a cada 5 minutos: */5 * * * * /home/<user>/luna-sync.sh
+# Recomendado: cron a cada 5 minutos: */5 * * * * /home/elias-mendes/luna-sync.sh
 
 set -e
 
