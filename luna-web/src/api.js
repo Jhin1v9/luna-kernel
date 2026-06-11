@@ -229,6 +229,45 @@ export async function cancelStream(sessionId) {
   });
 }
 
+// v10.16: Manual context compaction — triggered by user via /compact command or button
+export async function compactSession(sessionId, userId = 'luna-default', onEvent) {
+  const res = await fetch('/api/luna/compact', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ sessionId, userId })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erro ao compactar' }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  // Server returns SSE text/event-stream — read line by line
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // keep incomplete line
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('data:')) {
+        try {
+          const event = JSON.parse(trimmed.slice(5).trim());
+          if (onEvent) onEvent(event);
+          if (event.type === 'done' || event.type === 'compact_end' || event.type === 'compact_error') {
+            return event;
+          }
+        } catch (e) {
+          // ignore parse errors
+        }
+      }
+    }
+  }
+  return { type: 'done' };
+}
+
 export async function fetchSessions() {
   try {
     const res = await fetch('/api/chat/sessions', { headers: authHeaders(false) });

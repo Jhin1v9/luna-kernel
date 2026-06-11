@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
   import { lunaStore, MODE_COLORS } from '../stores.js';
-  import { fetchPersonas, setSessionPersona } from '../api.js';
+  import { fetchPersonas, setSessionPersona, compactSession } from '../api.js';
 
   const dispatch = createEventDispatcher();
 
@@ -88,6 +88,23 @@
   function onExport()     { dispatch('export'); }
   function onToggleSidebar() { dispatch('toggleSidebar'); }
   function onGoHome()     { dispatch('goHome'); }
+
+  let compacting = false;
+  async function onCompact() {
+    if (!sessionId || compacting) return;
+    compacting = true;
+    try {
+      await compactSession(sessionId, 'luna-default', (ev) => {
+        // Forward compact events to parent (ChatArea) so it can show animation
+        dispatch('compactEvent', ev);
+      });
+    } catch (e) {
+      console.error('Compact failed:', e);
+      dispatch('compactEvent', { type: 'compact_error', message: e.message });
+    } finally {
+      compacting = false;
+    }
+  }
 </script>
 
 <svelte:window on:click={handleClickOutside} />
@@ -201,6 +218,19 @@
         </div>
       {/if}
     </div>
+
+    <!-- Compact -->
+    <button class="icon-btn" on:click={onCompact} disabled={compacting || !sessionId} title="Compactar contexto" aria-label="Compactar">
+      {#if compacting}
+        <svg class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182"/>
+        </svg>
+      {:else}
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/>
+        </svg>
+      {/if}
+    </button>
 
     <!-- Clear -->
     <button class="icon-btn" on:click={onClear} title="Limpar conversa" aria-label="Limpar">

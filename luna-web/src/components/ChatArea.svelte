@@ -1368,6 +1368,7 @@
     on:modeChange={(e) => currentMode.set(e.detail)}
     on:clear={handleClear}
     on:export={handleExport}
+    on:compactEvent={(e) => handleEvent(e.detail)}
     on:openConfig
     on:newChat
     on:editTitle
