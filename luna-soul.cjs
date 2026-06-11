@@ -775,10 +775,13 @@ function isIncompleteResponse(text) {
   if (/\.\.\.$/.test(t.slice(-10))) return true;
 
   // 6. Ends mid-sentence (no punctuation at end)
-  // Include common terminal emojis as valid "end punctuation"
+  // v10.16-fix: Só considerar incompleto por falta de pontuação se o texto
+  // parece estruturado (tags ou code blocks). Texto puro CHAT sem pontuação
+  // não é incompleto — é apenas uma resposta casual.
   const lastChar = t.slice(-1);
   const endPunct = /[.!?;:\]})"'\n🌙✅🎉🚀🔧🔍✨⚠️❌⏳💡📁🏆🤝🎮📊🎯🛠️🔄]/;
-  if (!endPunct.test(lastChar) && t.length > 50) {
+  const hasStructuredTags = /\[\[(action|response)\]\]|```/.test(t);
+  if (!endPunct.test(lastChar) && t.length > 50 && hasStructuredTags) {
     const lastLine = t.split('\n').pop().trim();
     const lineEnd = /[.!?;:\]})🌙✅🎉🚀🔧🔍✨⚠️❌⏳💡📁🏆🤝🎮📊🎯🛠️🔄]$/;
     if (lastLine.length > 15 && !lineEnd.test(lastLine)) return true;
@@ -2195,7 +2198,7 @@ class LunaSoul extends EventEmitter {
     let safety = 0;
     const MAX_LOOPS = Number.MAX_SAFE_INTEGER; // ILIMITADO — o usuário pediu zero limites
     let autoContinues = 0;
-    const MAX_AUTO_CONTINUES = Number.MAX_SAFE_INTEGER; // SEM LIMITES — DONO ABSOLUTO
+    const MAX_AUTO_CONTINUES = 3; // v10.16-fix: teto real para evitar loop infinito
 
     while (safety < MAX_LOOPS) {
       safety++;
@@ -2524,8 +2527,12 @@ class LunaSoul extends EventEmitter {
         parsed.response = fullResponse;
       }
 
+      // v10.16-fix: CHAT/DONE puro nunca deve auto-continuar — entrega imediata ao frontend
+      const isPureChat = (parsed.mode === 'CHAT' || parsed.mode === 'DONE') && domActionResults.length === 0;
+
       // v3.4: Auto-healing — detect incomplete responses and auto-continue
-      if (isIncompleteResponse(fullResponse) && autoContinues < MAX_AUTO_CONTINUES) {
+      // v10.16-fix: Só aplicar em ACTION/PLAN; CHAT/DONE sempre entregar direto
+      if (!isPureChat && isIncompleteResponse(fullResponse) && autoContinues < MAX_AUTO_CONTINUES) {
         autoContinues++;
         yield { type: 'warning', message: `⏳ Resposta incompleta detectada — auto-continuando (${autoContinues})...`, sessionId };
         loopContext = await this._buildContext(sessionId, '[CONTINUE] Por favor, continue de onde parou. Complete a action/response que estava em andamento.', { ...options, isFirstMessage: false });

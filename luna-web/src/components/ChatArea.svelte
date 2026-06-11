@@ -619,8 +619,11 @@
         console.log('[done] finalResponse length:', finalResponse?.length, 'content:', finalResponse?.substring(0, 100));
 
         // v8.5-fix: prevent duplicate final message if response_done already handled it
+        // v10.16-fix: Also check for existing assistant message with same messageId
         const msgs = get(messages);
-        const alreadyHasDone = msgs.some(m => m.messageId === (event.messageId || currentMessageId) && m.type === 'done');
+        const alreadyHasDone = msgs.some(m =>
+          m.messageId === (event.messageId || currentMessageId) && (m.type === 'done' || m.type === 'assistant')
+        );
         if (alreadyHasDone) {
           console.log('[DEBUG-LUNA] Skipping duplicate done event');
           break;
@@ -853,9 +856,15 @@
     // NAO reconecta se ja esta conectado na mesma sessao
     if (lastConnectedSessionId === sessionId && sseManager.eventSource) return;
 
-    // v4.0-fix: Do NOT reload history while streaming is active — prevents overwriting current state
-    if ($isStreaming) {
-      console.log('[connectSSE] Skipping history reload while streaming is active');
+    // v10.16-fix: If streaming in another session, cancel it first so we can switch
+    if ($isStreaming && lastConnectedSessionId && lastConnectedSessionId !== sessionId) {
+      console.log(`[connectSSE] Cancelling stream in ${lastConnectedSessionId} before switching to ${sessionId}`);
+      await cancelStream(lastConnectedSessionId);
+      isStreaming.set(false);
+    }
+    // v4.0-fix: If still streaming in SAME session, skip to avoid overwriting current state
+    if ($isStreaming && lastConnectedSessionId === sessionId) {
+      console.log('[connectSSE] Skipping history reload while streaming is active in same session');
       return;
     }
 
@@ -863,6 +872,17 @@
     thinkingId = null;
     responseBuffer = ''; // v9.5-fix: Clear buffer on session switch/reconnect
     processedEventIds.clear(); // v4.2: Clear dedup set on reconnect
+    // v10.16-fix: Clear ALL cross-session state to prevent stale tool/ACK bleeds
+    currentMessageId = null;
+    userMessageAdded = false;
+    showTyping = false;
+    pendingToolCount = 0;
+    toolInstanceMap = new Map();
+    toolStartTimes = new Map();
+    toolTimeoutTimers = new Map();
+    runningToolTimers = new Map();
+    progressBuffers.clear();
+    flushedContentHashes.clear();
     sseManager.disconnect();
     sseManager = new SSEManager();
 
