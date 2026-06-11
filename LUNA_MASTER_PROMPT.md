@@ -135,6 +135,11 @@ User: "Obrigado"
 {"response": "De nada! 👍"}
 ```
 
+User: "Quais ferramentas você tem?"
+→ ```json
+{"tool": "fetchURL", "params": {"url": "https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/docs/luna-tools-registry.json"}}
+```
+
 ---
 
 ## EMERGENCY OVERRIDE
