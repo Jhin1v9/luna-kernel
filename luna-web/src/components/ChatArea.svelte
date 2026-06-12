@@ -367,6 +367,10 @@
 
     const { type } = event;
 
+    if (type.startsWith('plan')) {
+      console.log('[PLAN UI] SSE event=', type, event, 'planModeState=', get(planModeState));
+    }
+
     switch (type) {
       case 'user': {
         // v3.6-fix: Handle user messages from SSE history sync
@@ -604,7 +608,7 @@
         messages.update(msgs => [...msgs, {
           id: 'ctxlim-' + Date.now(),
           type: 'system',
-          content: event.message || '🔁 Limite de contexto atingido. Use /newchat para criar uma nova thread.',
+          content: event.message || '🔁 Limite de contexto atingido. Compactando e recriando a thread automaticamente...',
           timestamp: new Date().toISOString()
         }]);
         isStreaming.set(false);
@@ -768,6 +772,7 @@
       case 'plan_start': {
         // v10.13-fix: Don't activate planModeState from SSE events — only user can toggle plan mode.
         // This prevents the agent's auto-detected PLAN mode from locking the chat input.
+        showTyping = false;
         messages.update(msgs => [...msgs, {
           id: 'plan-start-' + Date.now(),
           type: 'system',
@@ -793,15 +798,16 @@
         });
         break;
       }
-      case 'plan_display':
-      case 'plan_awaiting_approval': {
+      case 'plan_display': {
+        isStreaming.set(false);
+        showTyping = false;
         messages.update(msgs => {
           // Remove incomplete plan deltas
           const cleaned = msgs.filter(m => !(m.type === 'plan' && !m.isComplete));
           return [...cleaned, {
             id: 'plan-' + Date.now(),
             type: 'plan',
-            content: event.plan || '',
+            content: event.plan || '(plano vazio)',
             planPath: event.planPath,
             isComplete: true,
             status: 'awaiting_approval',
@@ -810,11 +816,27 @@
         });
         break;
       }
+      case 'plan_awaiting_approval': {
+        isStreaming.set(false);
+        showTyping = false;
+        planModeState.update(s => ({
+          ...s,
+          active: true,
+          status: 'awaiting_approval',
+          plan: event.plan || null,
+          planPath: event.planPath || null,
+          sessionId: event.sessionId || s.sessionId
+        }));
+        break;
+      }
       case 'plan_approved': {
         // Only deactivate if user had manually activated plan mode
         if ($planModeState.active) {
           planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
         }
+        messages.update(msgs => msgs.map(m =>
+          m.type === 'plan' ? { ...m, status: 'approved' } : m
+        ));
         messages.update(msgs => [...msgs, {
           id: 'plan-approved-' + Date.now(),
           type: 'system',
@@ -828,6 +850,9 @@
         if ($planModeState.active) {
           planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
         }
+        messages.update(msgs => msgs.map(m =>
+          m.type === 'plan' ? { ...m, status: 'rejected' } : m
+        ));
         messages.update(msgs => [...msgs, {
           id: 'plan-rejected-' + Date.now(),
           type: 'system',
@@ -968,6 +993,7 @@
   });
 
   async function handleSend(msg, files) {
+    console.log('[handleSend] START', { msg: msg.slice(0,80), active: get(planModeState).active, status: get(planModeState).status, isStreaming: get(isStreaming), stack: new Error().stack?.split('\n').slice(2,5).join(' | ') });
     if (!msg.trim()) return;
 
     // v6.1-fix: Abort any active stream from a previous message before starting
@@ -1056,6 +1082,7 @@
     try {
       playSound('messageSent');
 
+      console.log('[handleSend] branches', { isSlash: isSlashCommand(msg), msg: msg.slice(0,80), activeGet: get(planModeState).active, statusGet: get(planModeState).status, activeDollar: $planModeState.active, statusDollar: $planModeState.status });
       // v5.0: Slash commands — ALL messages starting with / go to Luna directly, NOT Kimi
       if (isSlashCommand(msg)) {
         const cmd = msg.split(' ')[0];
@@ -1188,6 +1215,8 @@
           isStreaming.set(false);
           currentSessionId.set(null);
           messages.set([]);
+          // v10.18-fix: reset stale plan-mode state when creating a new session
+          planModeState.set({ active: false, status: 'idle', plan: null, planPath: null, sessionId: null });
           return;
         }
         else if (slashDef.handler === 'help') {
@@ -1236,13 +1265,13 @@
         }
         // Plan mode
         else if (slashDef.handler === 'planMode') {
-          if ($isStreaming || $planModeState.status === 'processing') {
+          if ($planModeState.status === 'processing') {
             console.log('[handleSend] Plan mode already processing, ignoring duplicate');
             isStreaming.set(false);
             return;
           }
           const planMsg = args.join(' ');
-          planModeState.update(s => ({ ...s, status: 'processing' }));
+          planModeState.update(s => ({ ...s, active: true, status: 'processing' }));
           await startPlanMode(planMsg, activeSessionId);
           return;
         }
@@ -1286,13 +1315,15 @@
           }]);
         }
       } else if ($planModeState.active) {
+        console.log('[handleSend] entering active branch', { statusGet: get(planModeState).status, statusDollar: $planModeState.status });
         // v4.2-fix: Prevent double plan submission
-        if ($isStreaming || $planModeState.status === 'processing') {
+        if ($planModeState.status === 'processing') {
           console.log('[handleSend] Plan mode already processing, ignoring duplicate');
           return;
         }
         const planMsg = msg.startsWith('/plan') ? msg.slice(5).trim() : msg;
-        planModeState.update(s => ({ ...s, status: 'processing' }));
+        planModeState.update(s => ({ ...s, active: true, status: 'processing' }));
+        console.log('[handleSend] calling startPlanMode', { planMsg, activeSessionId });
         await startPlanMode(planMsg, activeSessionId);
       } else {
         await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId);
