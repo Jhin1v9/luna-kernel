@@ -20,6 +20,7 @@
     "@rive-app/canvas": "^2.37.8",
     "highlight.js": "^11.9.0",
     "lucide-svelte": "^0.400.0",
+    "marked": "^18.0.5",
     "svelte-markdown": "^0.4.1"
   }
 }

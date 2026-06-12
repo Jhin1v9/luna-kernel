@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { marked } from 'marked';
   import { formatTime } from '../utils.js';
   import LunaAvatar from './LunaAvatar.svelte';
 
@@ -14,14 +15,24 @@
   $: hasCode = content.includes('```') || /function|class|const|let|var|import|export/.test(content);
   $: hasSearch = /search|pesquis|buscar|encontrar|resultados?/i.test(content);
   $: hasAction = /pronto|feito|completado|done|finished|success/i.test(content) && (hasCode || content.length > 200);
-  $: personalityClass = hasCode ? 'has-code' : hasSearch ? 'has-search' : hasAction ? 'has-action' : '';
+  $: hasTable = /\|.*\|/.test(content);
+  $: personalityClass = [
+    hasCode ? 'has-code' : '',
+    hasSearch ? 'has-search' : '',
+    hasAction ? 'has-action' : '',
+    hasTable ? 'has-table' : ''
+  ].filter(Boolean).join(' ');
 
   let contentEl;
   let copiedCode = null;
-  let copiedMessage = false; // v8.4-fix: Copy whole message state
+  let copiedMessage = false;
 
-  const renderer = {
-    code(code, language) {
+  // Configure marked: only override code blocks to keep the Luna copy header.
+  // All other markdown (tables, lists, headings, etc.) renders natively and is styled via CSS.
+  const lunaRenderer = {
+    code(token) {
+      const code = token.text;
+      const language = token.lang || '';
       const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       return `<div class="code-block-wrapper">
         <div class="code-header">
@@ -31,89 +42,35 @@
         <pre><code class="hljs ${language ? 'language-' + language : ''}">${escaped}</code></pre>
       </div>`;
     },
-    codespan(code) {
+    codespan(token) {
+      const code = token.text;
       const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       return `<code class="inline-code">${escaped}</code>`;
-    },
-    heading(text, level) {
-      return `<h${level} class="md-h${level}">${text}</h${level}>`;
-    },
-    paragraph(text) {
-      return `<p class="md-p">${text}</p>`;
-    },
-    strong(text) {
-      return `<strong class="md-strong">${text}</strong>`;
-    },
-    em(text) {
-      return `<em class="md-em">${text}</em>`;
-    },
-    link(href, title, text) {
-      return `<a href="${href}" class="md-link" target="_blank" rel="noopener" title="${title || ''}">${text}</a>`;
-    },
-    list(body, ordered) {
-      const tag = ordered ? 'ol' : 'ul';
-      return `<${tag} class="md-list">${body}</${tag}>`;
-    },
-    listitem(text) {
-      return `<li class="md-li">${text}</li>`;
-    },
-    blockquote(quote) {
-      return `<blockquote class="md-blockquote">${quote}</blockquote>`;
-    },
-    hr() {
-      return `<hr class="md-hr">`;
-    },
-    table(header, body) {
-      return `<div class="md-table-wrapper"><table class="md-table"><thead>${header}</thead><tbody>${body}</tbody></table></div>`;
-    },
-    tablerow(content) {
-      return `<tr>${content}</tr>`;
-    },
-    tablecell(content, flags) {
-      const tag = flags.header ? 'th' : 'td';
-      return `<${tag}>${content}</${tag}>`;
     }
   };
 
+  marked.use({
+    renderer: lunaRenderer,
+    gfm: true,
+    breaks: false,
+    headerIds: false,
+    mangle: false
+  });
+
   function renderMarkdown(text) {
     if (!text) return '';
-
-    // v8.5-fix: ChatArea.svelte already strips tool blocks via stripToolBlocksFromBuffer.
-    // AssistantMessage should just render what it receives.
-    let working = text.trim();
-
-    // Unescape literal \n sequences
-    let html = working.replace(/\\n/g, '\n');
-    html = html
-      .replace(/^### (.*$)/gim, '<h3 class="md-h3">$1</h3>')
-      .replace(/^## (.*$)/gim, '<h2 class="md-h2">$1</h2>')
-      .replace(/^# (.*$)/gim, '<h1 class="md-h1">$1</h1>')
-      .replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => renderer.code(code, lang))
-      .replace(/`([^`]+)`/g, (match, code) => renderer.codespan(code))
-      .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-      .replace(/\*\*(.*?)\*\*/g, '<strong class="md-strong">$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em class="md-em">$1</em>')
-      .replace(/__(.*?)__/g, '<strong class="md-strong">$1</strong>')
-      .replace(/_(.*?)_/g, '<em class="md-em">$1</em>')
-      .replace(/^> (.*$)/gim, '<blockquote class="md-blockquote">$1</blockquote>')
-      .replace(/^- (.*$)/gim, '<li class="md-li">$1</li>')
-      .replace(/^\d+\. (.*$)/gim, '<li class="md-li">$1</li>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="md-link" target="_blank" rel="noopener">$1</a>')
-      .replace(/^---$/gim, '<hr class="md-hr">');
-
-    // Wrap lists
-    html = html.replace(/(<li[^>]*>.*?<\/li>\n?)+/gs, match => `<ul class="md-list">${match}</ul>`);
-
-    // Wrap paragraphs
-    const blocks = html.split('\n\n');
-    html = blocks.map(block => {
-      const trimmed = block.trim();
-      if (!trimmed) return '';
-      if (trimmed.startsWith('<')) return trimmed;
-      return `<p class="md-p">${trimmed.replace(/\n/g, '<br>')}</p>`;
-    }).join('\n');
-
-    return html;
+    // Unescape literal \n sequences that may come from JSON
+    const working = text.trim().replace(/\\n/g, '\n');
+    try {
+      let html = marked.parse(working, { async: false });
+      // Wrap native <table> elements for the Luna glow frame
+      html = html.replace(/<table>/g, '<div class="md-table-wrapper"><table>');
+      html = html.replace(/<\/table>/g, '</table></div>');
+      return html;
+    } catch (e) {
+      console.warn('Markdown render error:', e);
+      return `<p>${working.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</p>`;
+    }
   }
 
   async function highlightCode() {
@@ -151,7 +108,6 @@
     }
   }
 
-  // v8.4-fix: Copy entire message content
   async function copyMessage() {
     try {
       await navigator.clipboard.writeText(content || '');
@@ -176,7 +132,17 @@
     <div class="message-header">
       <LunaAvatar state={avatarState} size={32} />
       <span class="name">Luna</span>
+      {#if hasTable}
+        <span class="content-badge table-badge">📊 tabela</span>
+      {/if}
+      {#if hasCode}
+        <span class="content-badge code-badge">💻 código</span>
+      {/if}
     </div>
+    <button class="copy-message-btn" on:click={copyMessage} title="Copiar mensagem" aria-label="Copiar mensagem">
+      {#if copiedMessage}✅{:else}📋{/if}
+      <span>{copiedMessage ? 'Copiado' : 'Copiar'}</span>
+    </button>
     <div class="message-body" bind:this={contentEl} on:click={handleCopy} on:keydown={(e) => e.key === 'Enter' && handleCopy(e)} role="button" tabindex="0" aria-label="Clique para copiar codigo">
       {@html renderMarkdown(content)}
     </div>
@@ -209,7 +175,7 @@
     flex-direction: column;
     align-items: flex-start;
     margin-right: auto;
-    max-width: 90%;
+    max-width: 92%;
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
   .assistant-message {
@@ -217,24 +183,27 @@
     background: rgba(18, 18, 31, 0.72);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    border-radius: 12px;
+    border-radius: 16px;
     border-top-left-radius: 4px;
-    padding: 14px 18px;
+    padding: 16px 20px;
     color: var(--luna-text);
     font-size: 15px;
-    line-height: 1.6;
+    line-height: 1.65;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    box-shadow:
+      0 4px 24px rgba(0, 0, 0, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
   .assistant-message::before {
     content: '';
     position: absolute;
     inset: -1px;
     border-radius: inherit;
-    background: linear-gradient(90deg, var(--luna-accent), transparent, var(--luna-accent));
+    background: linear-gradient(90deg, var(--luna-accent), transparent 40%, transparent 60%, var(--luna-accent));
     background-size: 200% 100%;
-    animation: gradientRotate 4s linear infinite;
+    animation: gradientRotate 5s linear infinite;
     z-index: -1;
-    opacity: 0.5;
+    opacity: 0.55;
     pointer-events: none;
   }
   .assistant-message::after {
@@ -242,11 +211,11 @@
     position: absolute;
     inset: -1px;
     border-radius: inherit;
-    background: linear-gradient(180deg, var(--luna-accent-glow), transparent 60%);
+    background: linear-gradient(180deg, var(--luna-accent-glow), transparent 55%);
     z-index: -2;
-    opacity: 0.3;
+    opacity: 0.35;
     pointer-events: none;
-    filter: blur(8px);
+    filter: blur(10px);
   }
   @keyframes gradientRotate {
     0% { background-position: 0% 50%; }
@@ -262,115 +231,264 @@
     font-weight: 600;
     font-size: 14px;
     color: var(--luna-accent);
+    text-shadow: 0 0 12px var(--luna-accent-glow);
   }
-  .message-body :global(.md-p) {
-    margin-bottom: 0.75rem;
-    line-height: 1.7;
+  .content-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    margin-left: 4px;
   }
-  .message-body :global(.md-p:last-child) {
+  .table-badge {
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(99, 102, 241, 0.15));
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    color: #d8b4fe;
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.15);
+  }
+  .code-badge {
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(59, 130, 246, 0.15));
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    color: #a5f3fc;
+    box-shadow: 0 0 10px rgba(6, 182, 212, 0.15);
+  }
+
+  /* ── Native Markdown Typography ── */
+  .message-body :global(p) {
+    margin-bottom: 0.85rem;
+    line-height: 1.75;
+  }
+  .message-body :global(p:last-child) {
     margin-bottom: 0;
   }
-  .message-body :global(.md-h1),
-  .message-body :global(.md-h2),
-  .message-body :global(.md-h3) {
-    margin-top: 1.25rem;
-    margin-bottom: 0.5rem;
-    font-weight: 600;
+  .message-body :global(h1),
+  .message-body :global(h2),
+  .message-body :global(h3),
+  .message-body :global(h4) {
+    margin-top: 1.35rem;
+    margin-bottom: 0.6rem;
+    font-weight: 700;
     color: var(--luna-text);
+    letter-spacing: -0.01em;
+    text-shadow: 0 0 18px var(--luna-accent-glow), 0 0 40px rgba(168, 85, 247, 0.15);
   }
-  .message-body :global(.md-h1) { font-size: 1.4rem; }
-  .message-body :global(.md-h2) { font-size: 1.2rem; }
-  .message-body :global(.md-h3) { font-size: 1.05rem; }
-  .message-body :global(.md-strong) {
-    font-weight: 600;
-    color: var(--luna-text);
+  .message-body :global(h1) { font-size: 1.55rem; }
+  .message-body :global(h2) { font-size: 1.3rem; }
+  .message-body :global(h3) { font-size: 1.1rem; }
+  .message-body :global(h4) { font-size: 1rem; }
+  .message-body :global(strong) {
+    font-weight: 700;
+    color: #f1f5f9;
+    text-shadow: 0 0 8px rgba(255, 255, 255, 0.08);
   }
-  .message-body :global(.md-link) {
+  .message-body :global(em) {
+    color: #cbd5e1;
+    font-style: italic;
+  }
+
+  /* ── Links ── */
+  .message-body :global(a) {
     color: var(--luna-primary);
     text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: all 0.2s;
+    font-weight: 500;
   }
-  .message-body :global(.md-link:hover) {
-    text-decoration: underline;
+  .message-body :global(a:hover) {
+    color: var(--luna-primary-hover);
+    border-bottom-color: var(--luna-primary-hover);
+    text-shadow: 0 0 8px rgba(233, 69, 96, 0.3);
   }
-  .message-body :global(.md-list) {
-    margin: 0.5rem 0 0.75rem 1.5rem;
+
+  /* ── Lists ── */
+  .message-body :global(ul),
+  .message-body :global(ol) {
+    margin: 0.75rem 0 1rem 0.25rem;
+    padding-left: 1.25rem;
   }
-  .message-body :global(.md-li) {
-    margin-bottom: 0.25rem;
+  .message-body :global(li) {
+    position: relative;
+    margin-bottom: 0.4rem;
+    padding-left: 0.25rem;
+    line-height: 1.7;
   }
-  .message-body :global(.md-blockquote) {
-    border-left: 3px solid var(--luna-accent);
-    padding-left: 1rem;
-    margin: 0.75rem 0;
+  .message-body :global(ul) {
+    list-style: none;
+  }
+  .message-body :global(ul li::before) {
+    content: '';
+    position: absolute;
+    left: -1.25rem;
+    top: 0.45em;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--luna-accent) 0%, transparent 70%);
+    box-shadow: 0 0 8px var(--luna-accent-glow);
+  }
+  .message-body :global(ol) {
+    counter-reset: luna-ol;
+    list-style: none;
+  }
+  .message-body :global(ol li) {
+    counter-increment: luna-ol;
+  }
+  .message-body :global(ol li::before) {
+    content: counter(luna-ol) ".";
+    position: absolute;
+    left: -1.25rem;
+    color: var(--luna-accent);
+    font-weight: 700;
+    font-size: 0.85em;
+    text-shadow: 0 0 8px var(--luna-accent-glow);
+  }
+
+  /* ── Blockquote ── */
+  .message-body :global(blockquote) {
+    display: flex;
+    gap: 12px;
+    border-left: none;
+    padding: 14px 16px;
+    margin: 1rem 0;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(99, 102, 241, 0.05));
+    border: 1px solid rgba(168, 85, 247, 0.15);
+    box-shadow: 0 0 20px rgba(168, 85, 247, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.03);
     color: var(--luna-text-secondary);
     font-style: italic;
   }
-  .message-body :global(.md-hr) {
+  .message-body :global(blockquote::before) {
+    content: '🌙';
+    font-size: 1.3rem;
+    opacity: 0.8;
+    filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.4));
+  }
+  .message-body :global(blockquote > p:last-child) {
+    margin-bottom: 0;
+  }
+
+  /* ── Horizontal rule ── */
+  .message-body :global(hr) {
     border: none;
     border-top: 1px solid var(--luna-border);
-    margin: 1rem 0;
+    margin: 1.25rem 0;
   }
+
+  /* ── Tables ── */
   .message-body :global(.md-table-wrapper) {
+    position: relative;
     overflow-x: auto;
-    margin: 0.75rem 0;
+    margin: 1.25rem 0;
+    border-radius: 14px;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(6, 182, 212, 0.15), rgba(168, 85, 247, 0.25));
+    background-size: 200% 200%;
+    animation: tableGlow 6s ease infinite;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), 0 0 40px rgba(168, 85, 247, 0.1);
   }
-  .message-body :global(.md-table) {
+  @keyframes tableGlow {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+  .message-body :global(table) {
+    position: relative;
+    z-index: 1;
     width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 13.5px;
+    border-radius: 13px;
+    overflow: hidden;
+    background: rgba(13, 13, 26, 0.85);
   }
-  .message-body :global(.md-table th),
-  .message-body :global(.md-table td) {
-    border: 1px solid var(--luna-border);
-    padding: 6px 10px;
-    text-align: left;
+  .message-body :global(thead) {
+    background: linear-gradient(90deg, rgba(168, 85, 247, 0.22), rgba(6, 182, 212, 0.12));
   }
-  .message-body :global(.md-table th) {
-    background: var(--luna-elevated);
+  .message-body :global(th) {
+    padding: 12px 14px;
+    font-weight: 700;
+    color: #f8fafc;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid rgba(168, 85, 247, 0.35);
+    text-shadow: 0 0 10px rgba(168, 85, 247, 0.35);
+    white-space: nowrap;
+  }
+  .message-body :global(td) {
+    padding: 11px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: #e2e8f0;
+    transition: background 0.15s, color 0.15s;
+  }
+  .message-body :global(tr:last-child td) {
+    border-bottom: none;
+  }
+  .message-body :global(tbody tr:nth-child(even)) {
+    background: rgba(255, 255, 255, 0.015);
+  }
+  .message-body :global(tbody tr:hover td) {
+    background: rgba(168, 85, 247, 0.08);
+    color: #fff;
+  }
+  .message-body :global(td:first-child) {
     font-weight: 600;
+    color: #f1f5f9;
   }
+
+  /* ── Inline code ── */
   .message-body :global(.inline-code) {
-    background: rgba(255,255,255,0.06);
-    padding: 2px 6px;
-    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 2px 7px;
+    border-radius: 5px;
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
     color: var(--luna-primary-hover);
+    border: 1px solid rgba(255, 255, 255, 0.06);
   }
+
+  /* ── Code blocks ── */
   .message-body :global(.code-block-wrapper) {
-    margin: 0.75rem 0;
-    border-radius: 8px;
+    margin: 1rem 0;
+    border-radius: 12px;
     overflow: hidden;
-    background: #0d0d1a;
+    background: rgba(10, 10, 20, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   }
   .message-body :global(.code-header) {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 6px 12px;
-    background: rgba(255,255,255,0.03);
-    border-bottom: 1px solid var(--luna-border);
+    padding: 8px 14px;
+    background: linear-gradient(90deg, rgba(168, 85, 247, 0.12), rgba(6, 182, 212, 0.08));
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
   .message-body :global(.code-lang) {
     font-size: 11px;
-    color: var(--luna-text-secondary);
+    color: #c4b5fd;
     font-family: 'JetBrains Mono', monospace;
     text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
   }
   .message-body :global(.copy-btn) {
     font-size: 11px;
-    padding: 3px 10px;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid var(--luna-border);
-    border-radius: 4px;
+    padding: 4px 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
     color: var(--luna-text-secondary);
     cursor: pointer;
     transition: all 0.15s;
     font-family: 'JetBrains Mono', monospace;
   }
   .message-body :global(.copy-btn:hover) {
-    background: rgba(255,255,255,0.1);
+    background: rgba(255, 255, 255, 0.12);
     color: var(--luna-text);
+    border-color: rgba(255, 255, 255, 0.18);
   }
   .message-body :global(.copy-btn.copied) {
     background: rgba(34, 197, 94, 0.2);
@@ -379,7 +497,7 @@
   }
   .message-body :global(pre) {
     margin: 0;
-    padding: 12px 14px;
+    padding: 14px 16px;
     overflow-x: auto;
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
@@ -390,12 +508,13 @@
     padding: 0;
     font-family: 'JetBrains Mono', monospace;
   }
+
   .message-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-top: 10px;
-    padding-top: 8px;
+    margin-top: 12px;
+    padding-top: 10px;
     border-top: 1px solid var(--luna-border);
   }
   .message-time {
@@ -424,7 +543,7 @@
   }
   .feedback-btn:hover {
     opacity: 1;
-    background: rgba(255,255,255,0.06);
+    background: rgba(255, 255, 255, 0.06);
   }
   .luna-signature {
     position: absolute;
@@ -437,6 +556,34 @@
   }
   .assistant-message:hover .luna-signature {
     opacity: 0.35;
+  }
+
+  /* Copy message button */
+  .copy-message-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    color: var(--luna-text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.2s;
+    z-index: 2;
+  }
+  .assistant-message:hover .copy-message-btn {
+    opacity: 1;
+  }
+  .copy-message-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--luna-text);
+    border-color: rgba(255, 255, 255, 0.15);
   }
 
   /* Visual personality effects */
@@ -461,13 +608,17 @@
   .assistant-message-wrapper.has-action .assistant-message {
     animation: successPulse 1s ease-out;
   }
+  .assistant-message-wrapper.has-table .assistant-message::before {
+    opacity: 0.75;
+    animation: gradientRotate 3s linear infinite;
+  }
   @keyframes successPulse {
     0% { box-shadow: 0 0 0 0 var(--luna-accent-glow); }
-    50% { box-shadow: 0 0 20px 4px var(--luna-accent-glow); }
+    50% { box-shadow: 0 0 24px 6px var(--luna-accent-glow); }
     100% { box-shadow: 0 0 0 0 transparent; }
   }
 
-  /* v8.2: Tool badge styling */
+  /* Tool badge styling */
   .md-tool-badge {
     display: inline-flex;
     align-items: center;
@@ -483,41 +634,13 @@
     white-space: nowrap;
   }
   .md-inline-code {
-    background: rgba(255,255,255,0.05);
+    background: rgba(255, 255, 255, 0.05);
     border-radius: 4px;
     padding: 2px 6px;
     font-size: 12px;
     color: #a5b4fc;
     font-family: var(--font-mono, 'SF Mono', monospace);
     word-break: break-all;
-  }
-
-  /* v8.4-fix: Copy message button */
-  .copy-message-btn {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 6px 10px;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 8px;
-    color: var(--luna-text-secondary);
-    font-size: 12px;
-    cursor: pointer;
-    opacity: 0;
-    transition: all 0.2s;
-    z-index: 2;
-  }
-  .assistant-message:hover .copy-message-btn {
-    opacity: 1;
-  }
-  .copy-message-btn:hover {
-    background: rgba(255,255,255,0.12);
-    color: var(--luna-text);
-    border-color: rgba(255,255,255,0.15);
   }
 
   @keyframes fadeInUp {
