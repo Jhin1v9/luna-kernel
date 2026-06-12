@@ -5,6 +5,7 @@
   // Update CSS theme variables when mode changes
   $: {
     const root = document.documentElement;
+    console.log(`[PLAN UI] tema planModeState.active=`, $planModeState.active);
     if ($planModeState.active) {
       root.style.setProperty('--luna-accent', PLAN_MODE_COLORS.primary);
       root.style.setProperty('--luna-accent-glow', PLAN_MODE_COLORS.glow);
@@ -33,6 +34,7 @@
   let mobileSidebarOpen = false;
   let authChecked = false;
   let sidebarCollapsed = false;
+  let sessionsLoading = false;
 
   // Quando não há sessão ativa, Luna vai dormir 💤
   $: if (!$currentSessionId) mascotState.set('sleep');
@@ -43,6 +45,8 @@
       const newSession = { ...res.session, updatedAt: new Date().toISOString() };
       sessions.update(s => [newSession, ...s]);
       currentSessionId.set(res.session.id);
+      // v10.18-fix: reset stale plan-mode state so a new session can start a fresh plan
+      planModeState.set({ active: false, status: 'idle', plan: null, planPath: null, sessionId: null });
     }
   }
 
@@ -136,42 +140,54 @@
     }
     authChecked = true;
 
-    try {
-      const res = await fetchSessions();
-      if (res.ok && res.sessions) {
-        sessions.set(res.sessions);
+    // v10.20-fix: load sessions in the background so UI renders immediately
+    sessionsLoading = true;
+    fetchSessions()
+      .then(res => {
+        if (res.ok && res.sessions) {
+          sessions.set(res.sessions);
+        }
 
         // v5.3: Check URL first, then localStorage, then fallback
         const urlSessionId = getSessionFromURL();
-        if (urlSessionId && res.sessions.find(s => s.id === urlSessionId)) {
+        if (urlSessionId) {
           currentSessionId.set(urlSessionId);
-        } else {
+        } else if (res.ok && res.sessions) {
           const storedId = $currentSessionId;
           if (storedId && !res.sessions.find(s => s.id === storedId)) {
             currentSessionId.set(null);
           }
         }
-      }
+      })
+      .catch(e => {
+        console.error('Sessions load error:', e);
+      })
+      .finally(() => {
+        sessionsLoading = false;
+      });
+
+    try {
       const cfg = await fetchConfig();
       if (cfg) lunaConfig.set(cfg);
-
-      // v10.17: Load changelog and show if new version
-      try {
-        const changelogRes = await fetch('/CHANGELOG.json');
-        if (changelogRes.ok) {
-          const data = await changelogRes.json();
-          changelogData.set(data);
-          const seenVersion = localStorage.getItem('luna_changelog_seen');
-          if (data.version && data.version !== seenVersion) {
-            // Show changelog after a short delay for UX
-            setTimeout(() => changelogModalOpen.set(true), 1500);
-          }
-        }
-      } catch (e) {
-        console.warn('Changelog load error:', e);
-      }
     } catch (e) {
       console.error('Init error:', e);
+    }
+
+    // v10.18: Load changelog independently (newest release first) and show if new version
+    try {
+      const changelogRes = await fetch('/CHANGELOG.json');
+      if (changelogRes.ok) {
+        const data = await changelogRes.json();
+        changelogData.set(data);
+        const latestVersion = data.releases && data.releases[0] ? data.releases[0].version : data.version;
+        const seenVersion = localStorage.getItem('luna_changelog_seen');
+        if (latestVersion && latestVersion !== seenVersion) {
+          // Show changelog after a short delay for UX
+          setTimeout(() => changelogModalOpen.set(true), 1500);
+        }
+      }
+    } catch (e) {
+      console.warn('Changelog load error:', e);
     }
 
     // Start agent status polling
@@ -199,10 +215,17 @@
       <Sidebar
         sessions={$sessions}
         currentId={$currentSessionId}
+        loading={sessionsLoading}
         onSelect={(id) => {
           const sess = $sessions.find(s => s.id === id);
           if (sess?.mode) currentMode.set(sess.mode);
           currentSessionId.set(id);
+          // v10.18-fix: sync plan-mode state with selected session
+          if (sess?.planMode) {
+            planModeState.set({ active: true, status: sess.planStatus || 'idle', plan: null, planPath: null, sessionId: id });
+          } else {
+            planModeState.set({ active: false, status: 'idle', plan: null, planPath: null, sessionId: null });
+          }
         }}
         onNew={handleNewSession}
         onRename={handleRename}
@@ -235,6 +258,12 @@
               const sess = $sessions.find(s => s.id === id);
               if (sess?.mode) currentMode.set(sess.mode);
               currentSessionId.set(id);
+              // v10.18-fix: sync plan-mode state with selected session
+              if (sess?.planMode) {
+                planModeState.set({ active: true, status: sess.planStatus || 'idle', plan: null, planPath: null, sessionId: id });
+              } else {
+                planModeState.set({ active: false, status: 'idle', plan: null, planPath: null, sessionId: null });
+              }
             }}
           />
         {/if}
