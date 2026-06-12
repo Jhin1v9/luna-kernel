@@ -40,6 +40,7 @@
     "getCurrentDirectory": "Retorna cwd atual. Sem params.",
     "setVisibleMode": "Ativa/desativa terminal visível. Params: mode.",
     "getVisibleMode": "Retorna modo visível atual. Sem params.",
+    "lunaSelfUpdate": "Atualiza Luna do GitHub. Verifica commit local vs origin/main, faz pull, build e reinicia luna-vite. Params: dryRun (bool).",
     "openDebugTerminal": "Abre terminal com logs PM2. Params: process, lines.",
     "validateProject": "Valida projeto com luna-code-validator. Params: path.",
     "dashboardCreateTask": "Cria tarefa no dashboard. Params: title, description, status, priority.",

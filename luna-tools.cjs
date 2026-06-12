@@ -1170,6 +1170,49 @@ function think(thought) {
   return ok({ thought, note: 'Reasoning recorded. Use this to think step-by-step before taking action.' });
 }
 
+// v10.18: Atualiza a Luna a partir do GitHub (fetch → pull → build → restart)
+async function lunaSelfUpdate(params = {}) {
+  const { dryRun = false } = params;
+  const token = process.env.INTERNAL_API_TOKEN || '';
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    if (dryRun) {
+      const res = await fetch('http://localhost:3458/api/system/update/status', { headers });
+      const data = await res.json();
+      return ok({
+        upToDate: data.upToDate,
+        localCommit: data.localCommit,
+        remoteCommit: data.remoteCommit,
+        recentLog: data.recentLog,
+        workingTreeChanges: data.workingTreeChanges,
+        note: dryRun ? 'Modo dry-run: não foram feitas alterações' : undefined
+      });
+    }
+
+    const res = await fetch('http://localhost:3458/api/system/update', {
+      method: 'POST',
+      headers
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return err(`Luna self-update failed: ${data.error || res.statusText}`, { details: data });
+    }
+    return ok({
+      updated: data.pulled,
+      localCommit: data.localCommit,
+      remoteCommit: data.remoteCommit,
+      pulled: data.pulled,
+      built: data.built,
+      restarted: data.restarted,
+      messages: data.messages
+    });
+  } catch (e) {
+    return err(`Luna self-update error: ${e.message}`);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 12. DEBUG TOOLS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2510,6 +2553,8 @@ module.exports = {
   // v10.2: Visible mode control
   setVisibleMode,
   getVisibleMode,
+  // v10.18: Self-update from GitHub
+  lunaSelfUpdate,
   // Debug
   openDebugTerminal,
   // Project Validation

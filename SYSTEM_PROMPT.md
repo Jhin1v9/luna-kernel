@@ -98,6 +98,11 @@ Buscar registry completo de ferramentas (super leve, ~9KB):
 {"tool": "fetchURL", "params": {"url": "https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/docs/luna-tools-registry.json"}}
 ```
 
+Auto-atualização da Luna (verifica GitHub, pull, build e restart):
+```json
+{"tool": "lunaSelfUpdate", "params": {"dryRun": true}}
+```
+
 ---
 
 ## WORKFLOW ITERATIVO

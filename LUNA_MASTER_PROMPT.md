@@ -140,6 +140,11 @@ User: "Quais ferramentas você tem?"
 {"tool": "fetchURL", "params": {"url": "https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/docs/luna-tools-registry.json"}}
 ```
 
+User: "Atualiza a Luna"
+→ ```json
+{"tool": "lunaSelfUpdate", "params": {"dryRun": true}}
+```
+
 ---
 
 ## EMERGENCY OVERRIDE
