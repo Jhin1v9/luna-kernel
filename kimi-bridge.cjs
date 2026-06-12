@@ -1899,7 +1899,8 @@ class KimiBridge {
           return markdown ? (markdown.innerText || '').trim() : '';
         }, targetAssistantIndex).catch(() => '');
       }
-      return await page.locator('.markdown-container .markdown').last().innerText({ timeout: 0 }).catch(() => '');
+      // v10.18-fix: Use finite timeout — landing page has no markdown yet.
+      return await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
     };
 
     // Phase 0: Wait for text to CHANGE from initialText — this ensures we don't
@@ -2114,21 +2115,49 @@ class KimiBridge {
     });
 
     const oldUrl = page.url();
-    log.info(`Creating new chat for user ${hashUserId(userId)} (current: ${oldUrl})`);
+    const context = page.context();
+    const pagesBefore = new Set(context.pages());
+    log.info(`Creating new chat for user ${hashUserId(userId)} (current: ${oldUrl}, pages=${pagesBefore.size})`);
 
-    // v5.3-fix: Usar goto na MESMA aba em vez de clicar no botão "new chat".
-    // O botão "new chat" abre uma NOVA ABA no navegador, causando acúmulo de abas
-    // e problemas de memória. goto na mesma aba é limpo, rápido e previsível.
+    // v10.18-fix: Kimi now opens a NEW TAB on ?chat_enter_method=new_chat.
+    // We detect the new page and migrate the session to it, closing the stale tab.
     await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded', timeout: 0 });
     await page.waitForTimeout(2500);
-    let newUrl = page.url();
+
+    // Find any new page that opened in the same context
+    let newPage = null;
+    const pagesAfter = context.pages();
+    for (const p of pagesAfter) {
+      if (!pagesBefore.has(p)) {
+        const url = await p.url().catch(() => '');
+        log.info(`newChat detected new tab: ${url}`);
+        if (url.includes('/chat/') || url.includes('kimi.com')) {
+          newPage = p;
+          break;
+        }
+      }
+    }
+
+    if (newPage) {
+      // Migrate to the new tab
+      try {
+        if (!page.isClosed()) await page.close();
+        log.info(`Closed stale tab for user ${hashUserId(userId)}`);
+      } catch (e) {
+        log.warn(`Failed to close stale tab: ${e.message}`);
+      }
+      session.page = newPage;
+      newPage._lunaUserId = userId;
+    }
+
+    let newUrl = session.page.url();
 
     // v5.3-fix: Post-navigation verification — aguardar URL válida com paciência
     if (!newUrl.includes('/chat/')) {
       log.warn(`newChat: URL ainda não é chat válido (${newUrl}), aguardando...`);
       const deadline = Date.now() + 10000;
       while (Date.now() < deadline) {
-        newUrl = page.url();
+        newUrl = session.page.url();
         if (newUrl.includes('/chat/')) break;
         await new Promise(r => setTimeout(r, 1000));
       }
@@ -2137,10 +2166,10 @@ class KimiBridge {
     // v5.3-fix: Inject stream interceptor na página atual (evaluate) + futuras (addInitScript)
     // ISSO é a correção crítica: sem _injectStreamInterceptorEvaluate, o agente não captura
     // as respostas da API na aba atual e fica "dormindo" para sempre.
-    await this._injectStreamInterceptor(page);           // addInitScript — para futuras navs
-    await this._injectStreamInterceptorEvaluate(page);   // evaluate — para página ATUAL (CRÍTICO!)
-    await this._injectDomObserverEvaluate(page);
-    await this._injectEventQueueObserver(page);          // v8.5: ultra-light observer para tempo real
+    await this._injectStreamInterceptor(session.page);           // addInitScript — para futuras navs
+    await this._injectStreamInterceptorEvaluate(session.page);   // evaluate — para página ATUAL (CRÍTICO!)
+    await this._injectDomObserverEvaluate(session.page);
+    await this._injectEventQueueObserver(session.page);          // v8.5: ultra-light observer para tempo real
 
     // v3.4: Verify we actually got a new chat URL
     const chatIdOld = oldUrl.includes('/chat/') ? oldUrl.split('/chat/')[1].split('?')[0] : null;
@@ -2151,7 +2180,7 @@ class KimiBridge {
 
     // Step 6: Mark chat with user identifier
     try {
-      await page.evaluate((uid) => {
+      await session.page.evaluate((uid) => {
         const titleEl = document.querySelector('[class*="chat-title"], [class*="title"], h1, .chat-header-title');
         if (titleEl && !titleEl.textContent.includes(uid)) {
           titleEl.textContent = `[${uid}] ${titleEl.textContent}`;
@@ -2163,8 +2192,7 @@ class KimiBridge {
       log.warn(`Failed to mark chat with user ID: ${e.message}`);
     }
 
-    // Update session
-    session.page = page;
+    // Update session (session.page was already migrated to the new tab above)
     session.chatUrl = newUrl;
     this._saveChatUrl(userId, session.chatUrl);
 
@@ -2267,19 +2295,26 @@ class KimiBridge {
       // Step 4: Send optional text
       if (text && text.trim()) {
         const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+        // v10.18-fix: Focus the editor first for Lexical contenteditable.
+        // Playwright's click() can hang on the landing editor, so we use JS focus().
+        await inputLocator.evaluate((el) => el.focus());
+        await page.waitForTimeout(200);
         await inputLocator.fill('');
         await page.waitForTimeout(300);
-        if (text.length <= MAX_TEXT_TYPE_LENGTH) {
-          await inputLocator.type(text, { delay: 50 });
-        } else {
-          await inputLocator.fill(text);
-        }
+        // v10.18-fix: type() hangs on Kimi's Lexical contenteditable on landing page
+        await inputLocator.fill(text);
+        await page.waitForTimeout(200);
+        await inputLocator.evaluate((el) => {
+          const data = el.value || el.innerText || '';
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
         await page.waitForTimeout(500);
       }
 
       // Step 5: Press Enter to send
       const sendLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await sendLocator.press('Enter');
+      await this._pressEnterOnInput(sendLocator);
       log.info(`Image (+text) sent for user ${hashUserId(userId)}`);
 
       // Step 6: Wait for response
@@ -2519,19 +2554,26 @@ class KimiBridge {
       // Step 4: Send optional text
       if (text && text.trim()) {
         const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+        // v10.18-fix: Focus the editor first for Lexical contenteditable.
+        // Playwright's click() can hang on the landing editor, so we use JS focus().
+        await inputLocator.evaluate((el) => el.focus());
+        await page.waitForTimeout(200);
         await inputLocator.fill('');
         await page.waitForTimeout(300);
-        if (text.length <= MAX_TEXT_TYPE_LENGTH) {
-          await inputLocator.type(text, { delay: 50 });
-        } else {
-          await inputLocator.fill(text);
-        }
+        // v10.18-fix: type() hangs on Kimi's Lexical contenteditable on landing page
+        await inputLocator.fill(text);
+        await page.waitForTimeout(200);
+        await inputLocator.evaluate((el) => {
+          const data = el.value || el.innerText || '';
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
         await page.waitForTimeout(500);
       }
 
       // Step 5: Press Enter to send
       const sendLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await sendLocator.press('Enter');
+      await this._pressEnterOnInput(sendLocator);
       log.info(`File (+text) sent for user ${hashUserId(userId)}`);
       const sendResult = await checkAndRecoverLogin('send message');
       if (sendResult === 'RESTART_UPLOAD') {
@@ -2828,6 +2870,37 @@ class KimiBridge {
     return new Promise(r => setTimeout(r, ms));
   }
 
+  /**
+   * v10.18-fix: Dispatch native Enter key events to submit the Kimi input.
+   * Playwright's press('Enter') does not trigger the Lexical editor's submit
+   * handler on Kimi's landing page; native KeyboardEvent does.
+   */
+  async _pressEnterOnInput(inputLocator) {
+    try {
+      const el = await inputLocator.elementHandle();
+      if (el) {
+        await el.evaluate((node) => {
+          for (const type of ['keydown', 'keypress', 'keyup']) {
+            node.dispatchEvent(new KeyboardEvent(type, {
+              key: 'Enter',
+              code: 'Enter',
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+            }));
+          }
+        });
+        return;
+      }
+    } catch (e) {
+      log.warn(`_pressEnterOnInput dispatch failed: ${e.message}`);
+    }
+    // Fallback to Playwright's press if element handle is unavailable
+    await inputLocator.press('Enter');
+  }
+
   async sendMessage(userId, text, options = {}) {
     if (!text || !text.trim()) {
       throw new Error('Message text is required');
@@ -2930,19 +3003,30 @@ class KimiBridge {
 
       // Capture current text BEFORE sending — critical to detect new response.
       // If captured after Enter, fast responses will be mistaken for old text.
-      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 0 }).catch(() => '');
+      // v10.18-fix: Use a finite timeout. On Kimi's landing page there is no
+      // .markdown-container yet; timeout: 0 hangs forever waiting for one.
+      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+
+      // v10.18-fix: Focus the editor first. Kimi's Lexical contenteditable on the
+      // landing page does not register fill()/Enter events unless it is focused.
+      // Playwright's click() can hang on the landing editor, so we use JS focus().
+      await inputLocator.evaluate((el) => el.focus());
+      await page.waitForTimeout(200);
 
       // Clear any existing text first
       await inputLocator.fill('');
       await page.waitForTimeout(300);
 
-      // Type with human-like delay, but use fill for long texts
-      if (text.length <= MAX_TEXT_TYPE_LENGTH) {
-        await inputLocator.type(text, { delay: 50 });
-      } else {
-        log.info(`Text too long (${text.length} chars), using fill instead of type`);
-        await inputLocator.fill(text);
-      }
+      // v10.18-fix: Playwright's type() does not work reliably on Kimi's Lexical
+      // contenteditable editor on the landing page. Always use fill + native input
+      // events so the editor registers the text and the send button becomes active.
+      await inputLocator.fill(text);
+      await page.waitForTimeout(200);
+      await inputLocator.evaluate((el) => {
+        const data = el.value || el.innerText || '';
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
       await page.waitForTimeout(500 + Math.floor(Math.random() * 1000));
 
       // v7.7-INFALÍVEL: Capture full snapshot before sending
@@ -2950,7 +3034,7 @@ class KimiBridge {
       const preSendAssistantCount = preSendSnapshot.length;
 
       // Press Enter to send
-      await inputLocator.press('Enter');
+      await this._pressEnterOnInput(inputLocator);
       log.info(`Message sent for user ${hashUserId(userId)} (initialText=${initialText.length} chars, snapshot=${preSendAssistantCount} assistants)`);
 
       // v7.6-fix: Assistant detection for logging/compatibility
@@ -5719,7 +5803,7 @@ class KimiBridge {
       if (hasSendBtn) {
         await sendBtn.click({ timeout: 3000 });
       } else {
-        await inputLocator.press('Enter');
+        await this._pressEnterOnInput(inputLocator);
       }
 
       log.success(`Steer injected for user ${hashUserId(userId)}`);
@@ -5864,25 +5948,26 @@ class KimiBridge {
       const preSendAssistantCount = preSendSnapshot.length;
       log.info(`[sendMessageStream] Pre-send snapshot: ${preSendAssistantCount} assistants captured`);
 
+      // v10.18-fix: Focus the editor first. Kimi's Lexical contenteditable on the
+      // landing page does not register fill()/Enter events unless it is focused.
+      // Playwright's click() can hang on the landing editor, so we use JS focus().
+      await inputLocator.evaluate((el) => el.focus());
+      await page.waitForTimeout(200);
+
       await inputLocator.fill('');
       await page.waitForTimeout(300);
 
-      if (text.length <= MAX_TEXT_TYPE_LENGTH) {
-        await inputLocator.type(text, { delay: 50 });
-      } else {
-        log.info(`Text too long (${text.length} chars), using fill with event dispatch`);
-        await inputLocator.fill(text);
-        await page.waitForTimeout(200);
-        await page.evaluate(() => {
-          const el = document.querySelector('textarea, [contenteditable="true"]');
-          if (el) {
-            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: el.value || el.innerText }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-        });
-      }
+      // v10.18-fix: Always use fill + native input events. Playwright's type()
+      // hangs on Kimi's Lexical contenteditable editor on the landing page.
+      await inputLocator.fill(text);
+      await page.waitForTimeout(200);
+      await inputLocator.evaluate((el) => {
+        const data = el.value || el.innerText || '';
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
       await page.waitForTimeout(500);
-      await inputLocator.press('Enter');
+      await this._pressEnterOnInput(inputLocator);
       log.info(`Message sent, starting v7.0 stream consumer`);
 
       // v7.7: Keep assistant detection for logging/compatibility, but extraction
@@ -6511,23 +6596,26 @@ class KimiBridge {
       // Find input and send message
       const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
       await inputLocator.waitFor({ state: 'visible', timeout: 0 });
+      // v10.18-fix: Focus the editor first for Lexical contenteditable.
+      // Playwright's click() can hang on the landing editor, so we use JS focus().
+      await inputLocator.evaluate((el) => el.focus());
+      await page.waitForTimeout(200);
       await inputLocator.fill('');
       await page.waitForTimeout(300);
       // Use fill + event dispatch for large texts (contenteditable can be tricky with type())
       await inputLocator.fill(prompt);
       await page.waitForTimeout(200);
-      await page.evaluate(() => {
-        const el = document.querySelector('textarea, [contenteditable="true"]');
-        if (el) {
-          el.dispatchEvent(new InputEvent('input', { bubbles: true, data: el.value || el.innerText }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+      await inputLocator.evaluate((el) => {
+        const data = el.value || el.innerText || '';
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
       });
-      // Capture initial text BEFORE sending — critical for fast responses
-      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 0 }).catch(() => '');
+      // Capture initial text BEFORE sending — critical for fast responses.
+      // v10.18-fix: Use finite timeout — landing page has no markdown yet.
+      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
 
       await page.waitForTimeout(500);
-      await inputLocator.press('Enter');
+      await this._pressEnterOnInput(inputLocator);
       log.info('[anonymousConsult] Message sent, polling for response...');
 
       let lastResponse = '';
