@@ -482,6 +482,33 @@ class WorkspaceManager {
     return this.workspaces.get(userId) || null;
   }
 
+  ensureWorkspace(userId = 'default', workspacePath = null) {
+    if (this.workspaces.has(userId)) return this.workspaces.get(userId);
+    const targetPath = workspacePath || path.join(this.baseDir || '/home/jhin/.luna-workspace', userId);
+    // bootstrap is async but returns a promise that resolves to {success, manifest, formatted}
+    // Synchronously create the dir and a minimal manifest so callers can use it immediately.
+    if (!fs.existsSync(targetPath)) {
+      fs.mkdirSync(targetPath, { recursive: true });
+    }
+    const workspaceData = {
+      path: targetPath,
+      manifest: {
+        root: targetPath,
+        name: userId,
+        stack: { primary: 'unknown' },
+        summary: `Workspace isolado para ${userId}`,
+        gitState: null,
+        tree: [],
+      },
+      tree: [],
+      keyFiles: {},
+      activeFiles: new Map(),
+      createdAt: Date.now(),
+    };
+    this.workspaces.set(userId, workspaceData);
+    return workspaceData;
+  }
+
   getManifest(userId = 'default') {
     const ws = this.workspaces.get(userId);
     return ws ? ws.manifest : null;

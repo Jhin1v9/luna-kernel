@@ -23,6 +23,7 @@ const { ComputerUseEngine } = require('./computer-use-engine.cjs');
 const lunaTools = require('./luna-tools.cjs');
 const { workspaceManager } = require('./luna-workspace.cjs');
 const { LunaGit } = require('./luna-git.cjs');
+const { loadBrainContext } = require('./brain-loader.cjs');
 const { ToolGuard, validatePythonCode, checkDestructivePattern } = require('./luna-tool-guard.cjs');
 const { ResponseStreamParser, safeJsonParse, isBalancedBraces } = require('./response-stream-parser.cjs');
 const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cjs');
@@ -260,7 +261,7 @@ function loadMasterPrompt() {
 }
 
 function buildSystemPrompt(opts = {}) {
-  const { skillIndex = '', personaContent = '', memoryContext = '', personaRegistry = '', skillRegistry = '', agentsMd = '', masterPrompt = '', userId = 'luna-default' } = opts;
+  const { skillIndex = '', personaContent = '', memoryContext = '', personaRegistry = '', skillRegistry = '', agentsMd = '', masterPrompt = '', userId = 'luna-default', brainContext = '' } = opts;
 
   // v10.22-fix: workspace isolation per user/session
   const workspace = workspaceManager.getWorkspace(userId);
@@ -279,6 +280,7 @@ function buildSystemPrompt(opts = {}) {
       USER_ID: userId,
       WORKSPACE: workspacePath,
       WORKSPACE_CONTEXT: workspaceContext,
+      BRAIN_CONTEXT: brainContext ? '\n[BRAIN CONTEXT]\n' + brainContext.slice(0, 8000) + (brainContext.length > 8000 ? '\n...[truncated]...' : '') : '',
     };
     return interpolateTemplate(cfg.systemPrompt, vars).slice(0, 20000);
   }
@@ -2276,7 +2278,9 @@ class LunaSoul extends EventEmitter {
 
           // v6.0-fix: Pass files to sendMessageStream so the bridge can inject
           // text file contents directly into the prompt (bypassing placeholder)
-          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files });
+          // v10.23-fix: Start a fresh Kimi chat on the first message of a new web session
+          // to prevent context leakage from previous sessions/pages.
+          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: isFirstMessage && bridgeRetryCount === 0 });
 
           for await (const event of stream) {
             // v10.13: Drain any completed background actions BEFORE processing stream event
@@ -3533,8 +3537,16 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // Resolve user for workspace isolation
       const currentUserId = options.userId || session?.userId || 'luna-default';
 
+      // v10.23-fix: ensure every web/session user has an isolated workspace
+      const defaultWorkspaceBase = workspaceManager.baseDir || '/home/jhin/.luna-workspace';
+      const userWorkspacePath = path.join(defaultWorkspaceBase, currentUserId);
+      workspaceManager.ensureWorkspace(currentUserId, userWorkspacePath);
+
+      // v10.23-fix: load brain context as shared consciousness
+      const brainContext = loadBrainContext();
+
       // Build system prompt
-      const systemPrompt = buildSystemPrompt({ skillIndex, personaContent, memoryContext, personaRegistry, skillRegistry, agentsMd, masterPrompt, userId: currentUserId });
+      const systemPrompt = buildSystemPrompt({ skillIndex, personaContent, memoryContext, personaRegistry, skillRegistry, agentsMd, masterPrompt, userId: currentUserId, brainContext });
 
       // Workspace context (if set)
       const workspaceContext = workspaceManager.getFormattedManifest(currentUserId);
