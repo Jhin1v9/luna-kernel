@@ -292,8 +292,11 @@
     const tool = event.tool || '';
     const paramsKey = event.params ? JSON.stringify(event.params).slice(0, 50) : '';
     const text = event.text || event.content || event.fullResponse || '';
+    // v10.25-fix: include result.response so an empty 'done' and a contentful 'done'
+    // are not deduplicated (the latter must drive isStreaming=false).
+    const resultText = event.result?.response || event.result?.content || '';
     // v8.5-fix: include currentMessageId to prevent collision across different messages
-    const raw = `${currentMessageId || ''}:${type}:${tool}:${paramsKey}:${text.slice(0, 100)}`;
+    const raw = `${currentMessageId || ''}:${type}:${tool}:${paramsKey}:${text.slice(0, 100)}:${resultText.slice(0, 100)}`;
     let hash = 0;
     for (let i = 0; i < raw.length; i++) {
       const char = raw.charCodeAt(i);
@@ -628,24 +631,26 @@
         const alreadyHasDone = msgs.some(m =>
           m.messageId === (event.messageId || currentMessageId) && (m.type === 'done' || m.type === 'assistant')
         );
+
+        // v10.25-fix: Always finalize streaming, even if we skip creating a duplicate message.
+        // A 'done' event must release the input, regardless of whether its text was already rendered.
         if (alreadyHasDone) {
-          console.log('[DEBUG-LUNA] Skipping duplicate done event');
-          break;
+          console.log('[DEBUG-LUNA] done event text already rendered — skipping duplicate message but releasing input');
+        } else {
+          // v9.3-fix: Only flush if we haven't already rendered this response.
+          // response_done already flushes and resets currentAssistantId —
+          // flushing again here would create a DUPLICATE message.
+          if (finalResponse && currentAssistantId) {
+            responseBuffer = finalResponse;
+            flushResponseBuffer(finalResponse);
+          } else if (finalResponse && !currentAssistantId) {
+            // v9.4-fix: If response_done reset currentAssistantId but we still have
+            // a final response (e.g., no tools were used), create a new assistant message.
+            responseBuffer = finalResponse;
+            flushResponseBuffer(finalResponse);
+          }
         }
-        
-        // v9.3-fix: Only flush if we haven't already rendered this response.
-        // response_done already flushes and resets currentAssistantId —
-        // flushing again here would create a DUPLICATE message.
-        if (finalResponse && currentAssistantId) {
-          responseBuffer = finalResponse;
-          flushResponseBuffer(finalResponse);
-        } else if (finalResponse && !currentAssistantId) {
-          // v9.4-fix: If response_done reset currentAssistantId but we still have
-          // a final response (e.g., no tools were used), create a new assistant message.
-          responseBuffer = finalResponse;
-          flushResponseBuffer(finalResponse);
-        }
-        
+
         // v9.3-fix: Use pendingToolCount (current turn only) instead of scanning full history
         // v8.5-fix: safety timeout for stuck tools
         const toolStuckTimeout = 300000; // 5 min
