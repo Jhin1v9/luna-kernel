@@ -97,7 +97,14 @@ function hashUserId(userId) {
 function looksLikeJsonStart(text) {
   if (!text || typeof text !== 'string') return false;
   const t = text.trimStart();
-  return t.startsWith('{') && (t.includes('"response"') || t.includes('"tool"') || t.includes('"script"'));
+  // v10.24-fix: Also detect malformed Kimi wrappers like {"success":true,"mode":"RESPONSE","message":"..."}
+  return t.startsWith('{') && (
+    t.includes('"response"') ||
+    t.includes('"tool"') ||
+    t.includes('"script"') ||
+    t.includes('"mode"') ||
+    (t.includes('"success"') && t.includes('"message"'))
+  );
 }
 
 function isJsonComplete(text) {
@@ -130,8 +137,15 @@ function isJsonComplete(text) {
 
 function extractResponseFromCompleteJson(text) {
   if (!text) return null;
+  // v10.24-fix: Strip DOM-extracted code block headers before parsing
+  let cleaned = text
+    .replace(/^\s*```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+    .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '')
+    .trim();
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(cleaned);
     if (parsed.response !== undefined && typeof parsed.response === 'string') {
       return { type: 'response', text: parsed.response };
     }
@@ -141,12 +155,20 @@ function extractResponseFromCompleteJson(text) {
     if (parsed.script !== undefined) {
       return { type: 'script', script: parsed.script };
     }
+    // v10.24-fix: Tolerate malformed wrappers where Kimi sends {"success":true,"mode":"RESPONSE","message":"..."}
+    if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
+      return { type: 'response', text: parsed.message };
+    }
   } catch {}
   // Fallback regex extraction for malformed but complete JSON
   try {
-    const respMatch = text.match(/"response"\s*:\s*"([\s\S]*?)"\s*[,}]/);
+    const respMatch = cleaned.match(/"response"\s*:\s*"([\s\S]*?)"\s*[,}]/);
     if (respMatch) {
       return { type: 'response', text: respMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\') };
+    }
+    const msgMatch = cleaned.match(/"message"\s*:\s*"([\s\S]*?)"\s*[,}]/);
+    if (msgMatch) {
+      return { type: 'response', text: msgMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\') };
     }
   } catch {}
   return null;
@@ -2176,6 +2198,13 @@ class KimiBridge {
     const chatIdNew = newUrl.includes('/chat/') ? newUrl.split('/chat/')[1].split('?')[0] : null;
     if (chatIdOld && chatIdNew && chatIdOld === chatIdNew) {
       log.warn(`Still on same chat ID after newChat ( ${chatIdOld} ). URL did not change properly.`);
+    }
+
+    // v10.24-fix: Fail-fast if we couldn't get a valid /chat/ URL.
+    // Do NOT update session.chatUrl with an invalid landing page URL.
+    if (!newUrl.includes('/chat/')) {
+      log.error(`newChat failed for user ${hashUserId(userId)}: URL is not a valid chat (${newUrl}).`);
+      throw new Error(`NEW_CHAT_FAILED: Não foi possível criar uma nova thread válida no Kimi Web (URL: ${newUrl})`);
     }
 
     // Step 6: Mark chat with user identifier
@@ -5218,6 +5247,36 @@ class KimiBridge {
         const actions = [];
         const seen = new Set();
 
+        // v10.24-fix: Detect plain code blocks (bash/python) that are not wrapped in JSON.
+        function detectScriptBlock(text, el) {
+          const t = text.trim();
+          if (t.length < 3) return null;
+          if (t.startsWith('#!/bin/bash') || t.startsWith('#!/usr/bin/env bash') || t.startsWith('#!/bin/sh')) {
+            return { tool: 'executeScript', params: { code: t, language: 'bash' } };
+          }
+          if (t.startsWith('#!/usr/bin/env python') || t.startsWith('#!/usr/bin/python')) {
+            return { tool: 'executeScript', params: { code: t, language: 'python' } };
+          }
+          if (t.startsWith('#!/usr/bin/env node') || t.startsWith('#!/usr/bin/node')) {
+            return { tool: 'executeScript', params: { code: t, language: 'node' } };
+          }
+          const langClass = Array.from(el.classList || []).find(c => c.startsWith('language-'));
+          const lang = langClass ? langClass.replace('language-', '').toLowerCase() : '';
+          if (['bash', 'shell', 'sh', 'zsh'].includes(lang)) {
+            return { tool: 'executeScript', params: { code: t, language: 'bash' } };
+          }
+          if (['python', 'py', 'python3'].includes(lang)) {
+            return { tool: 'executeScript', params: { code: t, language: 'python' } };
+          }
+          if (['powershell', 'ps1', 'pwsh'].includes(lang)) {
+            return { tool: 'executeScript', params: { code: t, language: 'powershell' } };
+          }
+          if (['javascript', 'js', 'node'].includes(lang)) {
+            return { tool: 'executeScript', params: { code: t, language: 'node' } };
+          }
+          return null;
+        }
+
         // Find the LAST assistant segment
         const assistantSelectors = [
           '.segment-assistant', '.message-assistant',
@@ -5389,7 +5448,14 @@ class KimiBridge {
 
           const parsed = tolerantJsonParse(cleaned);
 
-          if (!parsed) continue;
+          if (!parsed) {
+            // v10.24-fix: JSON failed — maybe this is a plain bash/python code block.
+            const scriptBlock = detectScriptBlock(cleaned, el);
+            if (scriptBlock) {
+              actions.push({ ...scriptBlock, raw: text });
+            }
+            continue;
+          }
 
           // Detect response block
           if (parsed.response !== undefined && !parsed.tool && !parsed.script) {
@@ -5532,9 +5598,20 @@ class KimiBridge {
               raw: candidate.trim(),
             });
           }
+        } else if (parsed.script && typeof parsed.script === 'string') {
+          // v10.24-fix: Detect JSON-wrapped scripts like {"script": "..."}.
+          const key = JSON.stringify({ tool: 'executeScript', params: { code: parsed.script, language: parsed.language || 'bash' } });
+          if (!foundKeys.has(key)) {
+            foundKeys.add(key);
+            results.push({
+              tool: 'executeScript',
+              params: { code: parsed.script, language: parsed.language || 'bash' },
+              raw: candidate.trim(),
+            });
+          }
         }
       } catch (e) {
-        // Not valid JSON or no tool field
+        // Not valid JSON or no tool/script field
       }
     };
 
@@ -5594,8 +5671,15 @@ class KimiBridge {
       if (parsed.tool && typeof parsed.tool === 'string') {
         return cleaned; // Return raw JSON — parser will extract tool call
       }
+      if (parsed.script && typeof parsed.script === 'string') {
+        return cleaned; // Return raw JSON — parser will extract script call
+      }
       if (parsed.response && typeof parsed.response === 'string') {
         return parsed.response.trim();
+      }
+      // v10.24-fix: Tolerate malformed wrappers where Kimi sends {"success":true,"mode":"RESPONSE","message":"..."}
+      if (parsed.message && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
+        return parsed.message.trim();
       }
     } catch {}
 
@@ -5606,6 +5690,9 @@ class KimiBridge {
       try {
         const parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
         if (parsed.tool && typeof parsed.tool === 'string') {
+          return cleaned.slice(firstBrace, lastBrace + 1); // Return raw JSON
+        }
+        if (parsed.script && typeof parsed.script === 'string') {
           return cleaned.slice(firstBrace, lastBrace + 1); // Return raw JSON
         }
         if (parsed.response && typeof parsed.response === 'string') {
@@ -6144,7 +6231,11 @@ class KimiBridge {
                           yield { type: 'response_delta', text: extracted.text };
                         } else if (extracted.type === 'tool') {
                           yield { type: 'action_detected', action: { tool: extracted.tool, params: extracted.params }, source: 'json_buffer' };
+                        } else if (extracted.type === 'script') {
+                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: 'bash' } }, source: 'json_buffer' };
                         }
+                        // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
+                        isComplete = true;
                       }
                     }
                   }
@@ -6162,7 +6253,11 @@ class KimiBridge {
                           yield { type: 'response_delta', text: extracted.text };
                         } else if (extracted.type === 'tool') {
                           yield { type: 'action_detected', action: { tool: extracted.tool, params: extracted.params }, source: 'json_buffer' };
+                        } else if (extracted.type === 'script') {
+                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: 'bash' } }, source: 'json_buffer' };
                         }
+                        // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
+                        isComplete = true;
                       }
                     }
                   }
@@ -6177,8 +6272,16 @@ class KimiBridge {
                     jsonAccumulator = '';
                   }
                   const cleanR = extractResponseFromCompleteJson(r);
-                  if (cleanR && cleanR.type === 'response') {
-                    yield { type: 'response_delta', text: cleanR.text };
+                  if (cleanR) {
+                    if (cleanR.type === 'response') {
+                      yield { type: 'response_delta', text: cleanR.text };
+                    } else if (cleanR.type === 'tool') {
+                      yield { type: 'action_detected', action: { tool: cleanR.tool, params: cleanR.params }, source: 'json_buffer' };
+                    } else if (cleanR.type === 'script') {
+                      yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: cleanR.script, language: 'bash' } }, source: 'json_buffer' };
+                    }
+                    // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
+                    isComplete = true;
                   }
                 }
                 lastResponse = r;
@@ -6385,22 +6488,32 @@ class KimiBridge {
 
   /**
    * v7.0: Helper para gerar chave de deduplicação de ação.
+   * v10.24-fix: Use tool + normalized params as the single source of truth,
+   * independentemente da fonte (extension, network interceptor, DOM observer,
+   * snapshot diff). A mesma ação detectada por camadas diferentes deve gerar
+   * a MESMA chave, impedindo execução duplicada.
    */
   _dedupKeyForAction(ev) {
-    // v8.4-fix: Consistent dedup key regardless of source.
-    // Use tool + normalized params as the primary key. Fall back to code for dom_mirror.
     const tool = ev.action?.tool || ev.action?.type || '';
-    const params = ev.action?.params || {};
+    const params = this._normalizeActionParams(ev.action?.params || {});
     const paramsJson = JSON.stringify(params);
-    const paramsHash = crypto.createHash('sha256').update(`${tool}:${paramsJson}`).digest('hex').slice(0, 16);
+    return crypto.createHash('sha256').update(`${tool}:${paramsJson}`).digest('hex').slice(0, 16);
+  }
 
-    if (ev.source === 'dom_mirror' && ev.code) {
-      // Dom mirror may have code-level differences — also hash the code
-      const codeHash = crypto.createHash('sha256').update(ev.code).digest('hex').slice(0, 16);
-      return `${paramsHash}:${codeHash}`;
+  /**
+   * Normaliza params para deduplicação: ordena chaves de objetos e ignora
+   * diferenças irrelevantes (espaços, ordem de chaves).
+   */
+  _normalizeActionParams(params) {
+    if (params === null || typeof params !== 'object') return params;
+    if (Array.isArray(params)) {
+      return params.map(p => this._normalizeActionParams(p));
     }
-
-    return paramsHash;
+    const sorted = {};
+    for (const key of Object.keys(params).sort()) {
+      sorted[key] = this._normalizeActionParams(params[key]);
+    }
+    return sorted;
   }
 
   /**

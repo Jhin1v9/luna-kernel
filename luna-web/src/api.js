@@ -20,7 +20,7 @@ export class SSEManager {
   constructor() {
     this.eventSource = null;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = Infinity; // v5.2: Never give up
+    this.maxReconnectAttempts = 20; // v10.24-fix: Avoid infinite reconnect loops
     this.baseDelay = 1000;
     this.maxDelay = 30000;
     this.isIntentionallyClosed = false;
@@ -140,6 +140,16 @@ export class SSEManager {
         this.eventSource = null;
       }
       if (!this.isIntentionallyClosed && !this.gracefulClose) {
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+          this._setStatus('disconnected');
+          console.log('[SSE] Max reconnect attempts reached. Giving up.');
+          this._stopFallbackPolling();
+          // Notify caller so UI can show reconnect button
+          if (onEvent) {
+            onEvent({ type: 'error', error: 'Conexão com o servidor perdida. Recarregue a página ou tente uma nova mensagem.', source: 'sse' });
+          }
+          return;
+        }
         this._setStatus('reconnecting');
         // v5.2: Start fallback polling immediately
         this._startFallbackPolling(sessionId);
@@ -441,11 +451,13 @@ window.fetch = async function(...args) {
 // ============================================================
 
 export async function startPlanMode(message, sessionId) {
+  console.log('[startPlanMode] fetch /api/plan', { message: message.slice(0, 80), sessionId });
   const res = await fetch('/api/plan', {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ message, sessionId })
   });
+  console.log('[startPlanMode] response', res.status);
   return res.json();
 }
 

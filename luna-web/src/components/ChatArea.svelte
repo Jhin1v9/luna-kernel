@@ -108,6 +108,7 @@
         id: currentAssistantId,
         type: 'assistant',
         content: cleanText,
+        messageId: currentMessageId,
         timestamp: new Date().toISOString()
       }]);
     } else {
@@ -529,8 +530,6 @@
         const targetToolId = toolInstanceMap.get(event.toolInstanceId || event.id);
         if (targetToolId) {
           queueProgressChunk(targetToolId, event.chunk);
-        } else {
-          queueProgressChunk(event.tool, event.chunk);
         }
         break;
       }
@@ -567,11 +566,11 @@
         progressBuffers.delete(lastTool ? lastTool.id : event.tool);
         const isSuccess = event.result?.success !== false;
         messages.update(msgs => {
-          const tMsgs = msgs.filter(m => m.type === 'tool' && m.tool === event.tool && !m.result);
-          const lastT = tMsgs[tMsgs.length - 1];
-          if (lastT) {
+          // v10.24-fix: Update by matched toolInstanceId, not by tool name.
+          const targetId = lastTool ? lastTool.id : null;
+          if (targetId) {
             return msgs.map(m =>
-              m.id === lastT.id
+              m.id === targetId
                 ? { ...m, result: event.result, duration: parseFloat(duration), status: isSuccess ? 'completed' : 'failed' }
                 : m
             );
@@ -608,12 +607,14 @@
         mascotMessage.set('Limite de contexto atingido');
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
-        messages.update(msgs => [...msgs, {
-          id: 'ctxlim-' + Date.now(),
-          type: 'system',
-          content: event.message || '🔁 Limite de contexto atingido. Compactando e recriando a thread automaticamente...',
-          timestamp: new Date().toISOString()
-        }]);
+        // v10.24-fix: Reuse the existing CompactingAnimation modal.
+        // The modal already shows "Compactando contexto". Just activate it.
+        compactState.set({
+          active: true,
+          phase: 0,
+          message: 'Compactando contexto',
+          steps: ['Compactando contexto']
+        });
         isStreaming.set(false);
         currentAssistantId = null;
         break;
@@ -902,12 +903,13 @@
     thinkingId = null;
     responseBuffer = ''; // v9.5-fix: Clear buffer on session switch/reconnect
     processedEventIds.clear(); // v4.2: Clear dedup set on reconnect
-    // v10.16-fix: Clear ALL cross-session state to prevent stale tool/ACK bleeds
+    // v10.16-fix: Clear cross-session state to prevent stale tool/ACK bleeds
     currentMessageId = null;
     userMessageAdded = false;
     showTyping = false;
     pendingToolCount = 0;
-    toolInstanceMap = new Map();
+    // v10.24-fix: Do NOT clear toolInstanceMap here. If action_end arrives after
+    // a reconnect, we still need the mapping. It is cleaned by action_end.
     toolStartTimes = new Map();
     toolTimeoutTimers = new Map();
     runningToolTimers = new Map();

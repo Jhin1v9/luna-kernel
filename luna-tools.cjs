@@ -778,7 +778,8 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
       clearInterval(pollInterval);
       try { fs.unlinkSync(scriptFile); } catch {}
       try { fs.unlinkSync(tmpFile); } catch {}
-      resolve({ success: false, command, stdout: output, stderr: err.message, exitCode: 1, error: err.message });
+      const { reason, suggestion } = _classifyShellError(command, err.message, 1, false, opts.timeout || 60);
+      resolve({ success: false, command, stdout: output, stderr: err.message, exitCode: 1, error: err.message, reason, suggestion });
     });
 
     child.on('close', () => {
@@ -792,17 +793,21 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
           const cleanOutput = finalOutput.replace(/\[LUNA_EXIT_CODE=\d+\]\s*$/, '').trim();
           try { fs.unlinkSync(scriptFile); } catch {}
           try { fs.unlinkSync(tmpFile); } catch {}
+          const { reason, suggestion } = _classifyShellError(command, cleanOutput, exitCode, false, opts.timeout || 60);
           resolve({
             success: exitCode === 0,
             command,
             stdout: cleanOutput,
             stderr: '',
             exitCode,
+            reason: exitCode !== 0 ? reason : undefined,
+            suggestion: exitCode !== 0 ? suggestion : undefined,
           });
         } catch (e) {
           try { fs.unlinkSync(scriptFile); } catch {}
           try { fs.unlinkSync(tmpFile); } catch {}
-          resolve({ success: false, command, stdout: output, stderr: e.message, exitCode: 1, error: e.message });
+          const { reason, suggestion } = _classifyShellError(command, e.message, 1, false, opts.timeout || 60);
+          resolve({ success: false, command, stdout: output, stderr: e.message, exitCode: 1, error: e.message, reason, suggestion });
         }
       }, 500);
     });
@@ -815,13 +820,57 @@ let visibleMode = true;
 function setVisibleMode(mode) { visibleMode = mode; }
 function getVisibleMode() { return visibleMode; }
 
+// v10.24-fix: Track running visible shells to prevent duplicate terminals
+// for the exact same command/cwd. Key: `${cwd}\x00${command}`, Value: Promise.
+const _runningShells = new Map();
+
+function _makeShellKey(command, cwd) {
+  return `${cwd || process.cwd()}\x00${command}`;
+}
+
+// v10.24-fix: Classifica erros de shell para dar contexto claro à Kimi.
+function _classifyShellError(command, stderr, exitCode, killed, timeout) {
+  const reason = (() => {
+    if (killed) return `Timeout: comando excedeu ${timeout}s`;
+    if (exitCode === 127 || /command not found|comando não encontrado|not found/i.test(stderr)) return 'Command not found';
+    if (/permission denied|permissão negada|EACCES/i.test(stderr)) return 'Permission denied';
+    if (/no such file or directory|arquivo ou diretório inexistente|ENOENT/i.test(stderr)) return 'File or directory not found';
+    if (/cannot access|não é possível acessar/i.test(stderr)) return 'Path not accessible';
+    if (/syntax error|erro de sintaxe/i.test(stderr)) return 'Shell syntax error';
+    if (exitCode !== 0) return `Process exited with code ${exitCode}`;
+    return 'Unknown error';
+  })();
+
+  const suggestion = (() => {
+    if (killed) return 'O comando demorou demais. Tente aumentar o timeout ou executar em partes.';
+    if (reason === 'Permission denied') return 'O comando precisa de permissões elevadas. Tente usar sudo ou verifique o dono do arquivo.';
+    if (reason === 'Command not found') return 'O comando não está instalado ou não está no PATH. Verifique o nome ou instale o pacote.';
+    if (reason === 'File or directory not found') return 'Verifique se o caminho está correto e se o arquivo/diretório existe.';
+    if (reason === 'Path not accessible') return 'Verifique permissões e se o caminho existe.';
+    if (reason === 'Shell syntax error') return 'Reveja a sintaxe do comando. Aspas, parênteses e heredocs devem estar balanceados.';
+    return 'Analise o stderr acima e tente uma abordagem diferente.';
+  })();
+
+  return { reason, suggestion };
+}
+
 function executeShell(command, opts = {}, onProgress) {
   return new Promise((resolve) => {
     const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
     // v10.2-fix: Open visible terminal for ALL commands when visibleMode is on
     const isVisibleCommand = opts.visible !== undefined ? opts.visible : visibleMode;
     if (isVisibleCommand && process.env.DISPLAY) {
-      return executeShellVisible(command, opts, onProgress).then(resolve);
+      // v10.24-fix: Prevent duplicate visible terminals for the same command/cwd.
+      const key = _makeShellKey(command, cwd);
+      if (_runningShells.has(key)) {
+        console.log(`[LUNA] Reusing running visible shell for: ${command}`);
+        return _runningShells.get(key).then(resolve);
+      }
+      const promise = executeShellVisible(command, opts, onProgress).finally(() => {
+        _runningShells.delete(key);
+      });
+      _runningShells.set(key, promise);
+      return promise.then(resolve);
     }
     // v10.1-fix: Auto-detect build/install commands and use longer timeout
     const isBuildCommand = isVisibleCommand;
@@ -853,6 +902,7 @@ function executeShell(command, opts = {}, onProgress) {
 
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
+      const { reason, suggestion } = _classifyShellError(command, err.message, 1, false, opts.timeout || 60);
       resolve({
         success: false,
         command,
@@ -860,12 +910,15 @@ function executeShell(command, opts = {}, onProgress) {
         stderr,
         exitCode: 1,
         error: err.message,
+        reason,
+        suggestion,
       });
     });
 
     child.on('close', (code, signal) => {
       if (timer) clearTimeout(timer);
       if (killed && signal === 'SIGTERM') {
+        const { reason, suggestion } = _classifyShellError(command, stderr, null, true, opts.timeout || 60);
         resolve({
           success: false,
           command,
@@ -873,8 +926,11 @@ function executeShell(command, opts = {}, onProgress) {
           stderr,
           exitCode: null,
           error: `Command timed out after ${opts.timeout || 60}s`,
+          reason,
+          suggestion,
         });
       } else {
+        const { reason, suggestion } = _classifyShellError(command, stderr, code, false, opts.timeout || 60);
         resolve({
           success: code === 0,
           command,
@@ -882,6 +938,8 @@ function executeShell(command, opts = {}, onProgress) {
           stderr,
           exitCode: code ?? (signal ? 1 : 0),
           error: code !== 0 && !killed ? `Process exited with code ${code}` : undefined,
+          reason: code !== 0 && !killed ? reason : undefined,
+          suggestion: code !== 0 && !killed ? suggestion : undefined,
         });
       }
     });

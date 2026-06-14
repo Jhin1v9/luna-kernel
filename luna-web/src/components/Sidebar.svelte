@@ -3,6 +3,7 @@
   import { formatTime } from '../utils.js';
   import { user, mascotState } from '../stores.js';
   import { logout } from '../api.js';
+  import MoonPhase from './MoonPhase.svelte';
 
   export let sessions = [];
   export let currentId = null;
@@ -14,6 +15,7 @@
   export let mobileOpen = false;
   export let collapsed = false;
   export let onToggleCollapse = () => {};
+  export let loading = false;
 
   let editingId = null;
   let editTitle = '';
@@ -145,7 +147,12 @@
 
   <!-- Session List -->
   <div class="session-list">
-    {#if filteredSessions.length === 0}
+    {#if loading && filteredSessions.length === 0}
+      <div class="session-loader">
+        <MoonPhase size={56} color="#c9a227" glowIntensity={0.25} animated={true} />
+        <span class="session-loader-text">Carregando conversas...</span>
+      </div>
+    {:else if filteredSessions.length === 0}
       <div class="empty-state">
         <div class="empty-icon">💬</div>
         <div class="empty-text">{searchQuery ? 'Nenhuma sessao encontrada' : 'Nenhuma sessao ainda'}</div>
@@ -391,6 +398,21 @@
   .empty-icon { font-size: 32px; margin-bottom: 8px; }
   .empty-text { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
   .empty-hint { font-size: 12px; opacity: 0.7; }
+  .session-loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 16px;
+    gap: 14px;
+    color: var(--luna-text-secondary);
+  }
+  .session-loader-text {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--luna-text);
+    letter-spacing: 0.02em;
+  }
   .session-item {
     display: flex;
     align-items: center;

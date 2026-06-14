@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { planModeState, voiceState, voiceAudioData } from '../stores.js';
   import { Search, FileSearch, Shield, Eye, Mic, MicOff, RotateCcw, Power, PowerOff, Activity, HeartPulse, FileText } from 'lucide-svelte';
   import { voiceService } from '../lib/voiceService.js';
@@ -89,8 +90,10 @@
   }
 
   function handleKeydown(e) {
-    // Shift+Tab toggle plan mode
-    if (e.key === 'Tab' && e.shiftKey) {
+    console.log('[ChatInput keydown]', e.key, { shiftKey: e.shiftKey, altKey: e.altKey, repeat: e.repeat });
+    if (e.repeat) return;
+    // Shift+Tab or Shift+Alt toggle plan mode
+    if ((e.key === 'Tab' && e.shiftKey) || (e.key === 'Alt' && e.shiftKey)) {
       e.preventDefault();
       togglePlanMode();
       return;
@@ -165,11 +168,15 @@
   }
 
   function togglePlanMode() {
+    const prev = get(planModeState);
+    console.log(`[PLAN UI] togglePlanMode antes=`, prev);
     planModeState.update(s => ({ ...s, active: !s.active }));
+    console.log(`[PLAN UI] togglePlanMode depois=`, get(planModeState));
   }
 
   function handleSend() {
     const trimmed = text.trim();
+    console.log('[ChatInput handleSend]', trimmed.slice(0,80));
     if (!trimmed || disabled) return;
 
     // If /plan command, toggle plan mode and send

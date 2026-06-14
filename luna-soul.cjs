@@ -434,6 +434,11 @@ function parseKimiResponse(text) {
       if (parsed && !parsed.mode && parsed.script) {
         parsed.mode = 'SCRIPT';
       }
+      // v10.24-fix: Tolerate malformed response wrappers like {"success":..., "mode": "RESPONSE", "message": "..."}
+      if (parsed && !parsed.mode && parsed.message && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
+        parsed.mode = 'CHAT';
+        parsed.response = parsed.message;
+      }
       return parsed;
     } catch {}
   }
@@ -1726,10 +1731,11 @@ class LunaSoul extends EventEmitter {
         // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
         // v10.12-fix-deadlock: The parent sendMessageStream still holds session.processing=true.
         // We must release it before calling sendMessage, otherwise we deadlock.
-        // v10.16-fix: Timeout de 30s para evitar travamento indefinido.
+        // v10.24-fix: If checkpoint fails, DO NOT clear local context — preserve conversation.
         yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
         let bridgeSession = null;
         let wasProcessing = false;
+        let checkpointSent = false;
         try {
           bridgeSession = this.kimiBridge.userSessions?.get(userId);
           wasProcessing = bridgeSession?.processing;
@@ -1754,17 +1760,19 @@ class LunaSoul extends EventEmitter {
           const respLen = sendResult?.response?.length || 0;
           console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
           yield { type: 'compact_progress', message: `✅ Kimi recebeu o checkpoint (${respLen} chars)`, sessionId };
+          checkpointSent = true;
         } catch (sendErr) {
           console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
-          yield { type: 'compact_progress', message: `⚠️ Checkpoint não enviado: ${sendErr.message}. Usando fallback local...`, sessionId };
-          // Non-fatal: the summary is still stored in local context below
+          yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
+          console.log(`[DEBUG-LUNA] _autoCompact finished (checkpoint send failed)`);
+          return { success: false, error: sendErr.message };
         } finally {
           // v10.16-fix: ALWAYS restore processing state, even on timeout/error
           if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
         }
       }
 
-      // 5. Clear local context (only after newChat + send succeeded)
+      // 5. Clear local context ONLY after newChat + checkpoint send succeeded
       this.sessionManager.clearContext(sessionId);
 
       // 6. Store summary as first local event (fallback + loop continuity)
@@ -2298,15 +2306,24 @@ class LunaSoul extends EventEmitter {
             case 'response_delta': {
               let cleanText = event.text || '';
               // v9.3-fix: Strip JSON response wrappers before sending to frontend
-              if (cleanText.includes('"response"') && !cleanText.includes('"tool"')) {
+              // v10.24-fix: Also tolerate malformed wrappers with "message" instead of "response".
+              const isResponseDeltaWrapper = (cleanText.includes('"response"') || cleanText.includes('"message"')) && !cleanText.includes('"tool"') && !cleanText.includes('"script"');
+              if (isResponseDeltaWrapper) {
                 try {
                   const parsed = JSON.parse(cleanText);
                   if (parsed.response !== undefined && typeof parsed.response === 'string') {
                     cleanText = parsed.response;
+                  } else if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
+                    cleanText = parsed.message;
                   }
                 } catch {
                   const m = cleanText.match(/\{[\s\S]*?"response"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
-                  if (m) cleanText = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                  if (m) {
+                    cleanText = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                  } else {
+                    const m2 = cleanText.match(/\{[\s\S]*?"message"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
+                    if (m2) cleanText = m2[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                  }
                 }
               }
               fullResponse += cleanText;
@@ -2327,15 +2344,24 @@ class LunaSoul extends EventEmitter {
             case 'response_detected': {
               let respText = event.response || '';
               // v9.3-fix: Strip JSON response wrappers before sending to frontend
-              if (respText.includes('"response"') && !respText.includes('"tool"')) {
+              // v10.24-fix: Also tolerate malformed wrappers with "message" instead of "response".
+              const isResponseWrapper = (respText.includes('"response"') || respText.includes('"message"')) && !respText.includes('"tool"') && !respText.includes('"script"');
+              if (isResponseWrapper) {
                 try {
                   const parsed = JSON.parse(respText);
                   if (parsed.response !== undefined && typeof parsed.response === 'string') {
                     respText = parsed.response;
+                  } else if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
+                    respText = parsed.message;
                   }
                 } catch {
                   const m = respText.match(/\{[\s\S]*?"response"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
-                  if (m) respText = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                  if (m) {
+                    respText = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                  } else {
+                    const m2 = respText.match(/\{[\s\S]*?"message"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
+                    if (m2) respText = m2[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                  }
                 }
               }
               if (respText) {
@@ -2354,12 +2380,11 @@ class LunaSoul extends EventEmitter {
               // We ALWAYS execute locally — Python is a native Linux command on the user's machine.
               // Kimi's sandbox result is captured as metadata for comparison/fallback only.
               // v10.13: NON-BLOCKING — tools execute in background so stream keeps flowing
+              // v10.24-fix: Deduplicate via cache and emit stable toolInstanceId.
               const code = event.code || '';
-              const codeHash = require('crypto').createHash('sha256').update(code).digest('hex').slice(0, 16);
               const kimiResult = event.kimiResult || '';
               const kimiImages = event.kimiImages || [];
 
-              // v7.6-fix: Deduplication by both code hash AND tool+params hash.
               // v8.5-fix: normalize flat JSON params into event.action.params
               if (event.action?.tool && !event.action?.params) {
                 const { tool, type, ...rest } = event.action;
@@ -2367,13 +2392,27 @@ class LunaSoul extends EventEmitter {
               }
               const toolKey = `${event.action?.tool || event.action?.type || 'unknown'}:${JSON.stringify(event.action?.params || event.action || {})}`;
               const toolHash = require('crypto').createHash('sha256').update(toolKey).digest('hex').slice(0, 16);
-              console.log(`[DEBUG-LUNA] DOM dedup hash calculated: toolKey=${toolKey}, toolHash=${toolHash}`);
+              const toolInstanceId = nextToolEventId();
+              console.log(`[DEBUG-LUNA] DOM dedup hash calculated: toolKey=${toolKey}, toolHash=${toolHash}, toolInstanceId=${toolInstanceId}`);
 
               const parsedAction = {
                 mode: 'ACTION',
                 tool: event.action?.tool || event.action?.type,
                 params: event.action?.params || event.action,
               };
+
+              // v10.24-fix: If this exact action was already executed recently,
+              // replay the cached result instead of running again.
+              const cachedResult = this._getRecentActionResult(sessionId, toolHash);
+              if (cachedResult) {
+                console.log(`[LUNA] Skipping duplicate action (cached): ${parsedAction.tool}`);
+                yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId, cached: true };
+                const cachedEndEvent = { type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: cachedResult, source: event.source || 'dom_mirror', sessionId, cached: true };
+                eventBus.push(cachedEndEvent);
+                eventBus.push(cachedResult);
+                domActionResults.push({ tool: parsedAction.tool, result: cachedResult });
+                break;
+              }
 
               // v8.6-fix: CRITICAL — Save Kimi's own tool JSON to history BEFORE executing.
               if (code) {
@@ -2384,7 +2423,7 @@ class LunaSoul extends EventEmitter {
                 });
               }
 
-              yield { type: 'action_start', tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId };
+              yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId };
 
               // v10.13: Create placeholder result for auto-continue tracking
               const domResult = {
@@ -2397,7 +2436,7 @@ class LunaSoul extends EventEmitter {
               domActionResults.push(domResult);
 
               // v10.13: Fire-and-forget execution — push results to eventBus
-              const actionPromise = this._executeActionAsync(parsedAction, sessionId, options, toolHash, kimiResult, kimiImages, event.source || 'dom_mirror', eventBus, domResult);
+              const actionPromise = this._executeActionAsync(parsedAction, sessionId, options, toolHash, toolInstanceId, kimiResult, kimiImages, event.source || 'dom_mirror', eventBus, domResult);
               domActionPromises.push(actionPromise);
 
               break;
@@ -2456,11 +2495,17 @@ class LunaSoul extends EventEmitter {
               const stderr = innerResult?.stderr || '';
               const successMark = dar.result?.success ? '✅' : '❌';
               const msg = innerResult?.message || innerResult?.friendlyMessage || '';
-              if (!stdout && !msg) stdout = '[Resultado não possui saída legível]';
+              const error = innerResult?.error || dar.result?.error;
+              const reason = innerResult?.reason;
+              const suggestion = innerResult?.suggestion;
+              if (!stdout && !msg && !error) stdout = '[Resultado não possui saída legível]';
               outputText += `\n\n[LUNA-MIRROR] ${successMark} ${dar.tool} executado no PC local:`;
               if (msg) outputText += `\n--- message ---\n${msg}`;
               if (stdout) outputText += `\n--- stdout ---\n${stdout}`;
               if (stderr) outputText += `\n--- stderr ---\n${stderr}`;
+              if (error) outputText += `\n--- error ---\n${error}`;
+              if (reason) outputText += `\n--- reason ---\n${reason}`;
+              if (suggestion) outputText += `\n--- suggestion ---\n${suggestion}`;
             }
             const MAX_TOOL_RESULT_CHARS = 8000;
             if (outputText.length > MAX_TOOL_RESULT_CHARS) {
@@ -2637,13 +2682,19 @@ class LunaSoul extends EventEmitter {
             const successMark = dar.result?.success ? '✅' : '❌';
             // If there's a friendly message (e.g., validation errors), include it prominently
             const msg = innerResult?.message || innerResult?.friendlyMessage || '';
-            if (!stdout && !msg) {
+            const error = innerResult?.error || dar.result?.error;
+            const reason = innerResult?.reason;
+            const suggestion = innerResult?.suggestion;
+            if (!stdout && !msg && !error) {
               stdout = '[Resultado não possui saída legível]';
             }
             outputText += `\n\n[LUNA-MIRROR] ${successMark} ${dar.tool} executado no PC local:`;
             if (msg) outputText += `\n--- message ---\n${msg}`;
             if (stdout) outputText += `\n--- stdout ---\n${stdout}`;
             if (stderr) outputText += `\n--- stderr ---\n${stderr}`;
+            if (error) outputText += `\n--- error ---\n${error}`;
+            if (reason) outputText += `\n--- reason ---\n${reason}`;
+            if (suggestion) outputText += `\n--- suggestion ---\n${suggestion}`;
             if (dar.kimiResult) outputText += `\n--- sandbox (referência) ---\n${dar.kimiResult.slice(0, 500)}${dar.kimiResult.length > 500 ? '...' : ''}`;
           }
         }
@@ -2784,8 +2835,19 @@ REGRAS:
               };
               const toolKey = `${parsedAction.tool}:${JSON.stringify(parsedAction.params)}`;
               const toolHash = crypto.createHash('sha256').update(toolKey).digest('hex').slice(0, 16);
+              const toolInstanceId = nextToolEventId();
 
-              yield { type: 'action_start', tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId };
+              // v10.24-fix: Deduplicate plan-mode actions too.
+              const cachedResult = this._getRecentActionResult(sessionId, toolHash);
+              if (cachedResult) {
+                yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId, cached: true };
+                eventBus.push({ type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: cachedResult, source: event.source || 'dom_mirror', sessionId, cached: true });
+                eventBus.push(cachedResult);
+                domActionResults.push({ tool: parsedAction.tool, result: cachedResult });
+                break;
+              }
+
+              yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId };
 
               const domResult = {
                 tool: parsedAction.tool,
@@ -2802,6 +2864,7 @@ REGRAS:
                 sessionId,
                 { ...options, planMode: true },
                 toolHash,
+                toolInstanceId,
                 kimiResult,
                 kimiImages,
                 event.source || 'dom_mirror',
@@ -3384,15 +3447,17 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
       case 'SCRIPT': {
         const script = parsed.script || '';
-        events.push({ type: 'action_start', tool: 'executeShell', params: { command: script }, sessionId });
+        const language = parsed.language || (script.startsWith('#!/usr/bin/env python') || script.startsWith('#!/usr/bin/python') ? 'python' : 'bash');
+        const toolInstanceId = nextToolEventId();
+        events.push({ type: 'action_start', toolInstanceId, tool: 'executeScript', params: { code: script, language }, sessionId });
         let actionResult;
         try {
-          actionResult = await this._handleAction({ tool: 'executeShell', params: { command: script } }, sessionId, options);
+          actionResult = await this._handleAction({ tool: 'executeScript', params: { code: script, language } }, sessionId, options);
         } catch (scriptErr) {
           console.error(`[_processModeResult SCRIPT] Script error: ${scriptErr.message}`);
-          actionResult = { success: false, error: scriptErr.message, tool: 'executeShell' };
+          actionResult = { success: false, error: scriptErr.message, tool: 'executeScript' };
         }
-        events.push({ type: 'action_end', tool: 'executeShell', result: actionResult, sessionId });
+        events.push({ type: 'action_end', toolInstanceId, tool: 'executeScript', result: actionResult, sessionId });
         output = actionResult.result?.stdout || actionResult.result?.output || actionResult.result?.stderr || JSON.stringify(actionResult.result);
         break;
       }
@@ -3478,12 +3543,14 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         } else {
           resultOutput = raw || friendly;
         }
-        resultOutput = resultOutput.slice(0, 3000);
-        // v8.5-fix: If readFile returned raw code, summarize to prevent HTML/JSX leak
-        if (ev.tool === 'readFile' && resultOutput.length > 500 &&
-            (resultOutput.includes('className=') || resultOutput.includes('import ') || resultOutput.includes('export '))) {
-          const lines = resultOutput.split('\n').length;
-          resultOutput = `[Arquivo lido — ${lines} linhas de código. Conteúdo completo omitido do histórico para evitar poluição.]`;
+        // v10.24-fix: readFile deve devolver o conteúdo real para a Kimi continuar.
+        // Só truncamos quando o contexto está próximo do limite, e sempre com aviso.
+        const READFILE_MAX_CHARS = 8000;
+        if (ev.tool === 'readFile' && resultOutput.length > READFILE_MAX_CHARS) {
+          resultOutput = resultOutput.slice(0, READFILE_MAX_CHARS) +
+            `\n\n[... TRUNCADO: arquivo excedeu ${READFILE_MAX_CHARS} caracteres. Peça linhas específicas com readFile offset/limit se necessário.]`;
+        } else {
+          resultOutput = resultOutput.slice(0, 3000);
         }
         historyLines.push(`result: ${ev.success ? '✅' : '❌'} ${resultOutput}`);
       }
@@ -3812,8 +3879,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
    * v10.13: Execute a tool in background, pushing results to an EventBus.
    * This allows the main stream to keep flowing while tools run.
    */
-  async _executeActionAsync(parsedAction, sessionId, options, toolHash, kimiResult, kimiImages, source, eventBus, domResult) {
-    const emitProgress = (ev) => eventBus.push({ type: 'action_progress', tool: parsedAction.tool, ...ev, sessionId });
+  async _executeActionAsync(parsedAction, sessionId, options, toolHash, toolInstanceId, kimiResult, kimiImages, source, eventBus, domResult) {
+    const emitProgress = (ev) => eventBus.push({ type: 'action_progress', toolInstanceId, tool: parsedAction.tool, ...ev, sessionId });
     try {
       let actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress);
 
@@ -3834,22 +3901,22 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         };
       }
 
-      // v9.5-fix: Store result in cache so skipped duplicates can replay it.
-      if (actionResult?.success) {
-        this._markActionExecuted(sessionId, toolHash, actionResult);
-      }
+      // v10.24-fix: Store result in cache so skipped duplicates can replay it,
+      // including failures so the Kimi sees the error and can fix it.
+      this._markActionExecuted(sessionId, toolHash, actionResult);
 
       // Update the placeholder result for auto-continue
       domResult.result = actionResult;
 
       // Push completion events to eventBus
-      eventBus.push({ type: 'action_end', tool: parsedAction.tool, result: actionResult, source, sessionId });
+      eventBus.push({ type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: actionResult, source, sessionId });
       eventBus.push(actionResult);
     } catch (actionErr) {
       console.error(`[DOM MIRROR] Action error: ${actionErr.message}`);
       const errorResult = { success: false, error: actionErr.message, tool: parsedAction.tool };
+      this._markActionExecuted(sessionId, toolHash, errorResult);
       domResult.result = errorResult;
-      eventBus.push({ type: 'action_end', tool: parsedAction.tool, result: errorResult, source, sessionId });
+      eventBus.push({ type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: errorResult, source, sessionId });
       eventBus.push(errorResult);
     }
   }

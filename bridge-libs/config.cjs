@@ -44,7 +44,7 @@ function loadBridgeConfig() {
   // Merge with optional external config
   let external = {};
   try {
-    const ext = require('./config/luna-config');
+    const ext = require('../config/luna-config');
     if (ext?.KIMI) external = ext.KIMI;
   } catch {}
 
