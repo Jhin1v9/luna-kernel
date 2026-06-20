@@ -3333,6 +3333,83 @@ class KimiBridge {
   }
 
   /**
+   * Send a message to Kimi Web without waiting for the full response.
+   * Use this for checkpoint messages where we only need delivery confirmation.
+   * Returns once the message is submitted and the input no longer contains the original text.
+   */
+  async sendMessageNoWait(userId, text, options = {}) {
+    if (!text || !text.trim()) {
+      throw new Error('Message text is required');
+    }
+
+    const page = await this._getOrCreateUserPage(userId);
+    const session = this.userSessions.get(userId);
+    if (!session) {
+      throw new Error(`No session for user ${hashUserId(userId)}`);
+    }
+
+    session.lastActivity = Date.now();
+
+    // Verify session and optional mode
+    await this._verifySession(page);
+    if (options.mode && !['agent', 'swarm'].includes(options.mode)) {
+      await this.setMode(userId, options.mode);
+    }
+
+    const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+    const inputCount = await inputLocator.count();
+    if (inputCount === 0) {
+      throw new Error('Input field not found on Kimi Web');
+    }
+
+    await page.bringToFront();
+    await inputLocator.evaluate((el) => el.focus());
+    await page.waitForTimeout(200);
+
+    // Clear and fill
+    await inputLocator.fill('');
+    await page.waitForTimeout(300);
+    await inputLocator.fill(text);
+    await page.waitForTimeout(200);
+    await inputLocator.evaluate((el) => {
+      const data = el.value || el.innerText || '';
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForTimeout(500);
+
+    // Submit
+    await this._pressEnterOnInput(inputLocator);
+    log.info(`[sendMessageNoWait] Submitted message for user ${hashUserId(userId)}`);
+
+    // Wait for delivery confirmation: input cleared or no longer contains original text
+    const deliveryDeadline = Date.now() + 30000;
+    while (Date.now() < deliveryDeadline) {
+      try {
+        const currentValue = await inputLocator.inputValue().catch(async () => {
+          return await inputLocator.evaluate((el) => el.innerText || el.textContent || '');
+        });
+        if (!currentValue || !currentValue.includes(text.slice(0, 100))) {
+          log.info(`[sendMessageNoWait] Delivery confirmed for user ${hashUserId(userId)}`);
+          break;
+        }
+      } catch (e) {
+        // ignore transient read errors
+      }
+      await page.waitForTimeout(300);
+    }
+
+    // Capture and save URL after submit
+    const url = page.url();
+    if (url.includes('/chat/')) {
+      session.chatUrl = url;
+      this._saveChatUrl(userId, url);
+    }
+
+    return { sent: true, url };
+  }
+
+  /**
    * Get status for a user's session
    */
   async getStatus(userId) {
