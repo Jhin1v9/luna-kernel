@@ -1757,9 +1757,9 @@ class LunaSoul extends EventEmitter {
    * so Kimi processes it before any user message. This prevents "starting from scratch"
    * and eliminates the need for manual copy/paste.
    */
-  async *_compactContextManual(sessionId, userId = 'luna-default') {
-    console.log(`[DEBUG-LUNA] _compactContextManual started for session ${sessionId}`);
-    yield { type: 'compact_start', message: '📦 Contexto grande demais. Criando checkpoint inteligente...', sessionId };
+  async *_compactContext(sessionId, userId = 'luna-default') {
+    console.log(`[DEBUG-LUNA] _compactContext started for session ${sessionId}`);
+    yield { type: 'compact_start', message: '📦 Compactação manual iniciada. Criando checkpoint inteligente...', sessionId };
 
     try {
       // 1. Read all events
@@ -1771,86 +1771,102 @@ class LunaSoul extends EventEmitter {
       console.log(`[LUNA] Compact summary built: ${summary.length} chars, ${events.length} events`);
 
       // 3. Create new thread in Kimi Web
-      if (this.kimiBridge) {
-        yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
-        // v10.30-fix: Clear old chatUrl BEFORE calling newChat() so crash-recovery
-        // doesn't navigate back to the stale chat page if new tab creation fails.
-        try {
-          this.kimiBridge._clearChatUrl(userId);
-          console.log(`[LUNA-v10.30] Cleared old chatUrl before newChat for user ${userId}`);
-        } catch (e) {
-          console.warn(`[LUNA-v10.30] Failed to clear chatUrl: ${e.message}`);
-        }
-        try {
-          await this.kimiBridge.newChat(userId);
-          console.log(`[LUNA] New chat created for user ${userId}`);
-        } catch (err) {
-          yield { type: 'compact_error', message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`, sessionId };
-          console.log(`[DEBUG-LUNA] _compactContextManual finished (newChat failed)`);
-          return { success: false, error: err.message };
-        }
-
-        // 4. SEND CHECKPOINT TO KIMI WEB as first message
-        // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
-        // v10.12-fix-deadlock: The parent sendMessageStream still holds session.processing=true.
-        // We must release it before calling sendMessage, otherwise we deadlock.
-        // v10.24-fix: If checkpoint fails, DO NOT clear local context — preserve conversation.
-        yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
-        let bridgeSession = null;
-        let wasProcessing = false;
-        let checkpointSent = false;
-        try {
-          bridgeSession = this.kimiBridge.userSessions?.get(userId);
-          wasProcessing = bridgeSession?.processing;
-          if (bridgeSession) bridgeSession.processing = false;
-
-          // v10.18-fix: Wait for the new page to be ready before sending checkpoint
-          const page = bridgeSession?.page;
-          if (page) {
-            try {
-              await page.waitForSelector('textarea, [contenteditable="true"]', { timeout: 10000 });
-              console.log(`[LUNA] New chat input ready for checkpoint`);
-            } catch (e) {
-              console.warn(`[LUNA] New chat input not ready: ${e.message}`);
-            }
-          }
-
-          const sendResult = await Promise.race([
-            this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (60s)')), 60000))
-          ]);
-
-          const respLen = sendResult?.response?.length || 0;
-          console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
-          yield { type: 'compact_progress', message: `✅ Kimi recebeu o checkpoint (${respLen} chars)`, sessionId };
-          checkpointSent = true;
-        } catch (sendErr) {
-          console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
-          yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
-          console.log(`[DEBUG-LUNA] _compactContextManual finished (checkpoint send failed)`);
-          return { success: false, error: sendErr.message };
-        } finally {
-          // v10.16-fix: ALWAYS restore processing state, even on timeout/error
-          if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
-        }
+      if (!this.kimiBridge) {
+        throw new Error('Kimi bridge not available');
       }
 
-      // 5. Clear local context ONLY after newChat + checkpoint send succeeded
+      yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
+
+      // v10.32-fix: Clear old chatUrl BEFORE calling newChat() so crash-recovery
+      // doesn't navigate back to the stale chat page if new tab creation fails.
+      try {
+        this.kimiBridge._clearChatUrl(userId);
+        console.log(`[LUNA-v10.32] Cleared old chatUrl before newChat for user ${userId}`);
+      } catch (e) {
+        console.warn(`[LUNA-v10.32] Failed to clear chatUrl: ${e.message}`);
+      }
+
+      let newChatResult;
+      try {
+        newChatResult = await this.kimiBridge.newChat(userId);
+        console.log(`[LUNA] New chat created for user ${userId}: ${newChatResult?.chatUrl}`);
+      } catch (err) {
+        yield { type: 'compact_error', message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`, sessionId };
+        console.log(`[DEBUG-LUNA] _compactContext finished (newChat failed)`);
+        return { success: false, error: err.message };
+      }
+
+      // 4. SEND CHECKPOINT TO KIMI WEB as first message
+      // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
+      // v10.32-fix: Use sendMessageNoWait so compaction succeeds even if Kimi is slow.
+      yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
+
+      let bridgeSession = null;
+      let wasProcessing = false;
+      try {
+        bridgeSession = this.kimiBridge.userSessions?.get(userId);
+        wasProcessing = bridgeSession?.processing;
+        if (bridgeSession) bridgeSession.processing = false;
+
+        // Wait for the new page input to be ready
+        const page = bridgeSession?.page;
+        if (page) {
+          try {
+            await page.waitForSelector('textarea, [contenteditable="true"]', { timeout: 10000 });
+            console.log(`[LUNA] New chat input ready for checkpoint`);
+          } catch (e) {
+            console.warn(`[LUNA] New chat input not ready: ${e.message}`);
+          }
+        }
+
+        const sendResult = await Promise.race([
+          this.kimiBridge.sendMessageNoWait(userId, summary, { mode: 'thinking' }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (120s)')), 120000))
+        ]);
+
+        console.log(`[LUNA] Checkpoint submitted to new chat. URL: ${sendResult?.url}`);
+        yield { type: 'compact_progress', message: `✅ Checkpoint enviado para nova thread`, sessionId };
+      } catch (sendErr) {
+        console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
+        yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
+        console.log(`[DEBUG-LUNA] _compactContext finished (checkpoint send failed)`);
+        return { success: false, error: sendErr.message };
+      } finally {
+        // ALWAYS restore processing state, even on timeout/error
+        if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
+      }
+
+      // 5. Capture and persist the REAL new thread URL
+      let finalUrl;
+      try {
+        finalUrl = await this.kimiBridge._captureCurrentChatUrl(userId);
+        console.log(`[LUNA-v10.32] Captured final chatUrl after checkpoint: ${finalUrl}`);
+      } catch (captureErr) {
+        // Fallback to newChat result if capture fails
+        finalUrl = newChatResult?.chatUrl;
+        if (!finalUrl) {
+          yield { type: 'compact_error', message: `❌ Não foi possível confirmar URL da nova thread: ${captureErr.message}. Contexto preservado.`, sessionId };
+          return { success: false, error: captureErr.message };
+        }
+        console.warn(`[LUNA-v10.32] _captureCurrentChatUrl failed, using newChat URL: ${finalUrl}`);
+      }
+
+      // 6. Clear local context ONLY after newChat + checkpoint send + URL capture succeeded
       this.sessionManager.clearContext(sessionId);
 
-      // 6. Store summary as first local event (fallback + loop continuity)
+      // 7. Store summary as first local event (fallback + loop continuity)
       this.sessionManager.appendEvent(sessionId, {
         type: 'assistant',
         mode: 'CHAT',
-        response: `[CHECKPOINT] Contexto compactado. Checkpoint enviado para nova thread do Kimi.\n\n${summary.slice(0, 2000)}${summary.length > 2000 ? '\n\n[... resumo truncado no contexto local, completo enviado ao Kimi]' : ''}`,
+        response: `[CHECKPOINT] Contexto compactado. Nova thread: ${finalUrl}\n\n${summary.slice(0, 2000)}${summary.length > 2000 ? '\n\n[... resumo truncado no contexto local, completo enviado ao Kimi]' : ''}`,
         timestamp: new Date().toISOString(),
       });
 
       yield { type: 'compact_end', message: '✅ Contexto compactado. Nova thread pronta com checkpoint inteligente.', summary, sessionId };
-      console.log(`[DEBUG-LUNA] _compactContextManual finished (success)`);
-      return { success: true, summary };
+      console.log(`[DEBUG-LUNA] _compactContext finished (success)`);
+      return { success: true, summary, chatUrl: finalUrl };
     } catch (err) {
-      console.error(`[DEBUG-LUNA] _compactContextManual finished (error): ${err.message}`);
+      console.error(`[DEBUG-LUNA] _compactContext finished (error): ${err.message}`);
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
       return { success: false, error: err.message };
     }
