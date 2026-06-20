@@ -56,6 +56,7 @@ try {
 
 const CDP_PORTS = config?.KIMI?.cdpPorts || [9222, 9223, 9224, 9225];
 const DEFAULT_TIMEOUT = 1800000; // 30 minutes — was 120000
+const DEFAULT_NAVIGATION_TIMEOUT_MS = 30000; // v10.0-fix: finite timeout instead of timeout: 0
 const KIMI_MODE_URLS = config?.KIMI?.modeUrls || {
   instant: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
   thinking: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
@@ -75,7 +76,7 @@ const COOKIES_MANUAL_PATH = path.join(__dirname, 'kimi-cookies.manual.json');
 
 function makeCdpUrl(port) { return `http://127.0.0.1:${port}`; }
 function getPortFromUrl(url) {
-  try { return parseInt(new URL(url).port, 10); } catch { return 9222; }
+  try { return parseInt(new URL(url).port, 10); } catch (e) { log.debug(`[getPortFromUrl] ${e.message}`); return 9222; }
 }
 
 if (!fs.existsSync(ARTIFACTS_DIR)) {
@@ -159,7 +160,7 @@ function extractResponseFromCompleteJson(text) {
     if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
       return { type: 'response', text: parsed.message };
     }
-  } catch {}
+  } catch (e) { log.debug(`[extractKimiResponse] JSON parse failed: ${e.message}`); }
   // Fallback regex extraction for malformed but complete JSON
   try {
     const respMatch = cleaned.match(/"response"\s*:\s*"([\s\S]*?)"\s*[,}]/);
@@ -170,7 +171,7 @@ function extractResponseFromCompleteJson(text) {
     if (msgMatch) {
       return { type: 'response', text: msgMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\') };
     }
-  } catch {}
+  } catch (e) { log.debug(`[extractKimiResponse] Regex fallback failed: ${e.message}`); }
   return null;
 }
 
@@ -558,7 +559,7 @@ class KimiNetworkInterceptor {
         const body = await response.body();
         const text = body.toString('utf-8');
         this._parseSse(text);
-      } catch (e) {}
+      } catch (e) { log.debug(`[KimiNetworkInterceptor] Response parse error: ${e.message}`); }
     };
     this.page.on('response', this._listener);
   }
@@ -567,7 +568,7 @@ class KimiNetworkInterceptor {
     if (!this._active) return;
     this._active = false;
     if (this._cdpSession) {
-      this._cdpSession.detach().catch(() => {});
+      this._cdpSession.detach().catch((e) => log.debug(`[KimiNetworkInterceptor] detach error: ${e.message}`));
       this._cdpSession = null;
     }
     if (this._listener) {
@@ -659,6 +660,12 @@ class KimiBridge {
     this.persistentUserIds = new Set(); // userIds that should NEVER be cleaned up
     this.cancelledStreams = new Map(); // userId -> true (cancelled mid-stream)
 
+    // v10.0-fix: Track Chrome PIDs for graceful kill (no pkill -f broad)
+    this.chromePids = new Set();
+
+    // v10.0-fix: Map extension sessionId -> userId to avoid cross-user event leaks
+    this.extensionSessionMap = new Map();
+
     // v7.5: Network Interceptors — one per page, native Playwright response interception
     this.networkInterceptors = new Map(); // userId -> KimiNetworkInterceptor
 
@@ -731,6 +738,68 @@ class KimiBridge {
     this.cdpUrl = null;
   }
 
+  /**
+   * v10.0-fix: Register a Chrome PID for graceful shutdown.
+   */
+  _registerChromePid(pid) {
+    if (pid && pid > 0) {
+      this.chromePids.add(pid);
+      log.info(`[ChromePid] Registered Chrome PID ${pid}`);
+    }
+  }
+
+  /**
+   * v10.0-fix: Extract PID from `ps aux` output line.
+   */
+  _extractPidFromPs(psOutput) {
+    if (!psOutput) return null;
+    const firstLine = psOutput.trim().split('\n')[0];
+    if (!firstLine) return null;
+    const parts = firstLine.trim().split(/\s+/);
+    // ps aux columns: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+    if (parts.length > 1) {
+      const pid = parseInt(parts[1], 10);
+      return Number.isNaN(pid) ? null : pid;
+    }
+    return null;
+  }
+
+  /**
+   * v10.0-fix: Kill a single Chrome PID gracefully (SIGTERM -> wait -> SIGKILL).
+   * Never uses broad pkill -f.
+   */
+  async _killChromePid(pid) {
+    if (!pid || pid <= 0) return;
+    try {
+      process.kill(pid, 'SIGTERM');
+      log.info(`[ChromePid] Sent SIGTERM to Chrome PID ${pid}`);
+    } catch (e) {
+      log.warn(`[ChromePid] SIGTERM failed for PID ${pid}: ${e.message}`);
+      this.chromePids.delete(pid);
+      return;
+    }
+
+    // Wait 3s then SIGKILL survivors
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      process.kill(pid, 'SIGKILL');
+      log.info(`[ChromePid] Sent SIGKILL to Chrome PID ${pid}`);
+    } catch (e) {
+      log.debug(`[ChromePid] SIGKILL skipped for PID ${pid}: ${e.message}`);
+    }
+    this.chromePids.delete(pid);
+  }
+
+  /**
+   * v10.0-fix: Kill all registered Chrome PIDs gracefully.
+   */
+  async _killAllRegisteredChrome() {
+    const pids = Array.from(this.chromePids);
+    for (const pid of pids) {
+      await this._killChromePid(pid);
+    }
+  }
+
   _log(...args) {
     const msg = args.join(' ');
     if (this.debug) log.debug(msg);
@@ -747,6 +816,24 @@ class KimiBridge {
       return;
     }
     this.store.setUser(userId, { chatUrl: url, ...extra });
+  }
+
+  /**
+   * v10.30-fix: Clear stored chat URL to prevent crash-recovery from navigating
+   * back to a stale chat page. Called before newChat() to invalidate old URL.
+   */
+  _clearChatUrl(userId) {
+    const session = this.userSessions.get(userId);
+    if (session) {
+      session.chatUrl = null;
+    }
+    // Also clear from persistent store so _recoverSession doesn't navigate back
+    try {
+      this.store.setUser(userId, { chatUrl: null });
+      log.info(`[v10.30] Cleared chatUrl for user ${hashUserId(userId)}`);
+    } catch (e) {
+      log.warn(`[v10.30] Failed to clear chatUrl from store: ${e.message}`);
+    }
   }
 
   /**
@@ -831,9 +918,9 @@ class KimiBridge {
           for (const page of this.defaultContext.pages()) {
             await page.evaluate((items) => {
               for (const [key, value] of Object.entries(items)) {
-                try { localStorage.setItem(key, value); } catch (e) {}
+                try { localStorage.setItem(key, value); } catch (e) { console.warn(`[localStorage] ${e.message}`); }
               }
-            }, lsData).catch(() => {});
+            }, lsData).catch((e) => { log.debug(`[injectLocalStorage] evaluate error: ${e.message}`); });
           }
           log.info(`Injected ${keys.length} localStorage items into defaultContext pages`);
         }
@@ -1012,8 +1099,8 @@ class KimiBridge {
       const currentUrl = await page.url().catch(() => '');
       if (!currentUrl.includes(chatUrl.split('?')[0].split('/').pop())) {
         log.info(`[CRASH-RECOVERY] Navigating to saved chat URL: ${chatUrl}`);
-        log.info('[DEBUG-LUNA] Crash-recovery goto with no timeout');
-        await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+        log.info('[DEBUG-LUNA] Crash-recovery goto with finite timeout');
+        await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: DEFAULT_NAVIGATION_TIMEOUT_MS });
         await page.waitForTimeout(2000);
       }
 
@@ -1040,7 +1127,7 @@ class KimiBridge {
       // create a new unlogged one. isClosed() is sufficient.
       existing.lastActivity = Date.now();
       // v7.0-fix: Re-inject observer on reused pages (may have been navigated)
-      await this._injectEventQueueObserver(existing.page).catch(() => {});
+      await this._injectEventQueueObserver(existing.page).catch((e) => log.debug(`[_getOrCreateUserPage] observer inject error: ${e.message}`));
       return existing.page;
     }
 
@@ -1106,7 +1193,7 @@ class KimiBridge {
       // server-side via Playwright's native page.on('response'). DOM polling uses
       // page.evaluate() on demand. This is immune to page anti-tampering.
 
-      await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+      await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: DEFAULT_NAVIGATION_TIMEOUT_MS });
       await page.waitForTimeout(2000);
 
       // v3.3-fix: Re-inject via evaluate after navigation to ensure observer is active
@@ -1161,7 +1248,7 @@ class KimiBridge {
     } catch (e) {
       log.warn(`Navigation failed for ${hashUserId(userId)}: ${e.message}`);
       if (page && !page.isClosed()) {
-        try { await page.close(); } catch {}
+        try { await page.close(); } catch (e2) { log.debug(`[_getOrCreateUserPage] page.close error: ${e2.message}`); }
       }
       this.semaphore.release();
       throw e;
@@ -1477,7 +1564,7 @@ class KimiBridge {
               if (masterCookies.length > 0) {
                 await ctx.addCookies(masterCookies);
                 log.info(`Loaded ${masterCookies.length} cookies from MASTER backup for user ${hashUserId(userId)}`);
-                await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+                await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch((e) => log.debug(`[_getOrCreateUserPage] master reload error: ${e.message}`));
                 await page.waitForTimeout(2000);
                 const retry = await page.evaluate(() => {
                   const hasLoginForm = !!(
@@ -1504,7 +1591,7 @@ class KimiBridge {
           if (cookies && cookies.length > 0) {
             await ctx.addCookies(cookies);
             log.info(`Re-synced ${cookies.length} cookies from default context for user ${hashUserId(userId)}`);
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch((e) => log.debug(`[_getOrCreateUserPage] reload error: ${e.message}`));
             await page.waitForTimeout(1500);
             const retry = await page.evaluate(() => {
               const hasLoginForm = !!(
@@ -1525,7 +1612,7 @@ class KimiBridge {
         if (!restored && ctx) {
           const loaded = await this._loadCookiesFromFile(ctx);
           if (loaded) {
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch((e) => log.debug(`[_getOrCreateUserPage] reload error: ${e.message}`));
             await page.waitForTimeout(1500);
             const retry = await page.evaluate(() => {
               const hasLoginForm = !!(
@@ -1953,7 +2040,7 @@ class KimiBridge {
     try {
       await page.waitForSelector('.segment-assistant-actions .icon-button', {
         state: 'visible',
-        timeout: 0, // NO TIMEOUT — wait forever for buttons
+        timeout: DEFAULT_NAVIGATION_TIMEOUT_MS, // v10.0-fix: finite 30s timeout instead of waiting forever
       });
       buttonsVisible = true;
       log.success('Action buttons detected — response likely complete');
@@ -1987,7 +2074,7 @@ class KimiBridge {
           thinkingNotified = false;
           lastText = currentText;
           if (onPartial) {
-            try { onPartial(currentText, 'writing'); } catch {}
+            try { onPartial(currentText, 'writing'); } catch (e) { log.debug(`[onPartial] writing callback error: ${e.message}`); }
           }
           continue; // skip stability check this iteration
         }
@@ -2003,7 +2090,7 @@ class KimiBridge {
             if (buttonsVisible && stableFor >= stabilityWindow) {
               log.success(`Text stable for ${stableFor}ms + buttons visible — response complete`);
               if (onPartial) {
-                try { onPartial(currentText, 'done'); } catch {}
+                try { onPartial(currentText, 'done'); } catch (e) { log.debug(`[onPartial] done callback error: ${e.message}`); }
               }
               log.info('[DEBUG-LUNA] _waitForResponse finished successfully');
               return lastText;
@@ -2014,13 +2101,14 @@ class KimiBridge {
               thinkingNotified = true;
               log.info(`Text stable for ${stableFor}ms — Kimi may be re-reasoning`);
               if (onPartial) {
-                try { onPartial(currentText, 'thinking'); } catch {}
+                try { onPartial(currentText, 'thinking'); } catch (e) { log.debug(`[onPartial] thinking callback error: ${e.message}`); }
               }
             }
           }
         }
       } catch (e) {
         // Element might not exist yet
+        log.debug(`[_waitForResponse] Poll error: ${e.message}`);
       }
 
       await new Promise(r => setTimeout(r, pollInterval));
@@ -2085,7 +2173,7 @@ class KimiBridge {
 
     try {
       // Try to dismiss any overlay first (Escape key or click on body)
-      await page.keyboard.press('Escape').catch(() => {});
+      await page.keyboard.press('Escape').catch((e) => log.debug(`[setMode] Escape key error: ${e.message}`));
       await page.waitForTimeout(200);
 
       // Click mode selector — use JS click to bypass overlay intercept
@@ -2141,23 +2229,43 @@ class KimiBridge {
     const pagesBefore = new Set(context.pages());
     log.info(`Creating new chat for user ${hashUserId(userId)} (current: ${oldUrl}, pages=${pagesBefore.size})`);
 
-    // v10.18-fix: Kimi now opens a NEW TAB on ?chat_enter_method=new_chat.
-    // We detect the new page and migrate the session to it, closing the stale tab.
-    await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded', timeout: 0 });
-    await page.waitForTimeout(2500);
+    // v10.31-fix: CRITICAL — Close current tab BEFORE goto to force Kimi to open a new tab.
+    // If we don't close the current tab, Kimi may reuse it and we get stuck on the old chat.
+    this._clearChatUrl(userId);
+    try {
+      if (!page.isClosed()) {
+        await page.close();
+        log.info(`[v10.31] Closed current tab for user ${hashUserId(userId)}`);
+      }
+    } catch (e) {
+      log.warn(`[v10.31] Failed to close current tab: ${e.message}`);
+    }
 
-    // Find any new page that opened in the same context
+    // v10.18-fix: Kimi now opens a NEW TAB on ?chat_enter_method=new_chat.
+    // Since we closed the current tab, Kimi MUST open a new tab.
+    // We detect the new page and migrate the session to it, closing the stale tab.
+    await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded', timeout: DEFAULT_NAVIGATION_TIMEOUT_MS });
+
+    // v10.25-fix: Wait for new tab to open with exponential backoff (max 8s)
+    // Kimi Web opens a new tab asynchronously; we must wait for it to appear.
     let newPage = null;
-    const pagesAfter = context.pages();
-    for (const p of pagesAfter) {
-      if (!pagesBefore.has(p)) {
-        const url = await p.url().catch(() => '');
-        log.info(`newChat detected new tab: ${url}`);
-        if (url.includes('/chat/') || url.includes('kimi.com')) {
-          newPage = p;
-          break;
+    let waitMs = 500;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const pagesAfter = context.pages();
+      for (const p of pagesAfter) {
+        if (!pagesBefore.has(p)) {
+          const url = await p.url().catch(() => '');
+          log.info(`newChat detected new tab: ${url}`);
+          if (url.includes('/chat/')) {
+            newPage = p;
+            break;
+          }
         }
       }
+      if (newPage) break;
+      await new Promise(r => setTimeout(r, waitMs));
+      waitMs = Math.min(waitMs * 2, 2000); // exponential backoff capped at 2s
     }
 
     if (newPage) {
@@ -2170,37 +2278,85 @@ class KimiBridge {
       }
       session.page = newPage;
       newPage._lunaUserId = userId;
+    } else {
+      // v10.31-fix: If no new tab detected, this is a failure. We closed the old tab,
+      // so there should be a new tab. If not, something went wrong with Kimi Web.
+      log.error(`No new tab detected for user ${hashUserId(userId)} after closing old tab`);
+      throw new Error('NEW_CHAT_FAILED: Kimi Web did not open a new tab after closing the old one');
     }
 
     let newUrl = session.page.url();
 
-    // v5.3-fix: Post-navigation verification — aguardar URL válida com paciência
-    if (!newUrl.includes('/chat/')) {
-      log.warn(`newChat: URL ainda não é chat válido (${newUrl}), aguardando...`);
-      const deadline = Date.now() + 10000;
-      while (Date.now() < deadline) {
-        newUrl = session.page.url();
-        if (newUrl.includes('/chat/')) break;
-        await new Promise(r => setTimeout(r, 1000));
+        // v10.28-fix: Always send summary message to materialize chat, then use CURRENT URL.
+    // Kimi Web only creates a real /chat/ thread AFTER the first message is sent.
+    // We send a summary message and immediately save the current URL as the active chat URL.
+    // The URL will update to /chat/XXXX after Kimi processes the message, but we don't wait.
+    log.info(`newChat: Sending summary message to materialize chat for user ${hashUserId(userId)}...`);
+
+    // Build a brief summary message to create the thread
+    const summaryText = `[Luna] Continuing work for user ${hashUserId(userId)}. Context preserved.`;
+
+    // Send the message using the same logic as sendMessage (fill + dispatch events + Enter)
+    const inputLocator = session.page.locator('textarea, [contenteditable="true"]').first();
+    try {
+      await inputLocator.evaluate((el) => el.focus());
+      await session.page.waitForTimeout(200);
+      await inputLocator.fill('');
+      await session.page.waitForTimeout(300);
+      await inputLocator.fill(summaryText);
+      await session.page.waitForTimeout(200);
+      await inputLocator.evaluate((el) => {
+        const data = el.value || el.innerText || '';
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await session.page.waitForTimeout(500);
+
+      // Press Enter to submit
+      const el = await inputLocator.elementHandle();
+      if (el) {
+        await el.evaluate((node) => {
+          for (const type of ['keydown', 'keypress', 'keyup']) {
+            node.dispatchEvent(new KeyboardEvent(type, {
+              key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+              bubbles: true, cancelable: true, composed: true,
+            }));
+          }
+        });
+      } else {
+        await inputLocator.press('Enter');
       }
+      log.info(`Summary message sent to materialize chat for user ${hashUserId(userId)}`);
+    } catch (sendErr) {
+      log.error(`Failed to send summary message: ${sendErr.message}`);
     }
 
-    // v5.3-fix: Inject stream interceptor na página atual (evaluate) + futuras (addInitScript)
-    // ISSO é a correção crítica: sem _injectStreamInterceptorEvaluate, o agente não captura
-    // as respostas da API na aba atual e fica "dormindo" para sempre.
-    await this._injectStreamInterceptor(session.page);           // addInitScript — para futuras navs
-    await this._injectStreamInterceptorEvaluate(session.page);   // evaluate — para página ATUAL (CRÍTICO!)
-    await this._injectDomObserverEvaluate(session.page);
-    await this._injectEventQueueObserver(session.page);          // v8.5: ultra-light observer para tempo real
-
-    // v3.4: Verify we actually got a new chat URL
-    const chatIdOld = oldUrl.includes('/chat/') ? oldUrl.split('/chat/')[1].split('?')[0] : null;
-    const chatIdNew = newUrl.includes('/chat/') ? newUrl.split('/chat/')[1].split('?')[0] : null;
-    if (chatIdOld && chatIdNew && chatIdOld === chatIdNew) {
-      log.warn(`Still on same chat ID after newChat ( ${chatIdOld} ). URL did not change properly.`);
+    // v10.30-fix: Wait for Kimi to redirect to a REAL /chat/XXXX URL after the summary message.
+    // The summary message triggers Kimi to create a new thread. We poll the URL for up to 10s
+    // until it changes from the landing page to a /chat/ URL. This is the ONLY reliable way
+    // to know the new chat is truly created.
+    log.info(`[v10.30] Waiting for Kimi to create /chat/ URL after summary message...`);
+    const summarySentAt = Date.now();
+    const chatUrlDeadline = summarySentAt + 10000;
+    let lastCheckedUrl = session.page.url();
+    while (Date.now() < chatUrlDeadline) {
+      await session.page.waitForTimeout(800);
+      const currentUrl = session.page.url();
+      if (currentUrl.includes('/chat/') && currentUrl !== lastCheckedUrl) {
+        newUrl = currentUrl;
+        log.info(`[v10.30] Detected new /chat/ URL after summary: ${newUrl}`);
+        break;
+      }
+      lastCheckedUrl = currentUrl;
     }
 
-    // v10.24-fix: Fail-fast if we couldn't get a valid /chat/ URL.
+    if (!newUrl || !newUrl.includes('/chat/')) {
+      // Fallback: use whatever URL we have after the wait
+      newUrl = session.page.url();
+      log.warn(`[v10.30] Timed out waiting for /chat/ URL. Using current URL: ${newUrl}`);
+    }
+
+// v10.24-fix: Fail-fast if we couldn't get a valid /chat/ URL.
     // Do NOT update session.chatUrl with an invalid landing page URL.
     if (!newUrl.includes('/chat/')) {
       log.error(`newChat failed for user ${hashUserId(userId)}: URL is not a valid chat (${newUrl}).`);
@@ -2267,11 +2423,17 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(2000);
-        if (session) {
-          session.chatUrl = page.url();
-          this._saveChatUrl(userId, session.chatUrl);
+        // v10.29-fix: Use newChat() instead of goto to properly create a new tab
+        // and migrate the session. This ensures session.page points to the new tab
+        // and session.chatUrl is updated correctly.
+        log.info(`[sendMessageStream] options.newChat=true — calling newChat() to create fresh tab`);
+        await this.newChat(userId);
+        // After newChat(), session.page is the new tab and session.chatUrl is updated
+        // Re-fetch page from session since newChat() may have migrated to a new tab
+        const refreshedSession = this.userSessions.get(userId);
+        if (refreshedSession && refreshedSession.page) {
+          page = refreshedSession.page;
+          log.info(`[sendMessageStream] Migrated to new tab: ${refreshedSession.chatUrl}`);
         }
       }
 
@@ -2366,7 +2528,7 @@ class KimiBridge {
       log.success(`Response ready for user ${hashUserId(userId)} (len=${response.length})`);
 
       // Cleanup temp file
-      try { fs.unlinkSync(tmpFile); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch (e) { log.debug(`[sendMessage] temp file cleanup error: ${e.message}`); }
 
       return {
         response,
@@ -2376,7 +2538,7 @@ class KimiBridge {
     } catch (err) {
       try {
         await page.locator('textarea, [contenteditable="true"]').first().fill('');
-      } catch {}
+      } catch (e) { log.debug(`[sendMessage] input clear error: ${e.message}`); }
       throw err;
     } finally {
       session.processing = false;
@@ -2434,11 +2596,17 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(2000);
-        if (session) {
-          session.chatUrl = page.url();
-          this._saveChatUrl(userId, session.chatUrl);
+        // v10.29-fix: Use newChat() instead of goto to properly create a new tab
+        // and migrate the session. This ensures session.page points to the new tab
+        // and session.chatUrl is updated correctly.
+        log.info(`[sendMessageStream] options.newChat=true — calling newChat() to create fresh tab`);
+        await this.newChat(userId);
+        // After newChat(), session.page is the new tab and session.chatUrl is updated
+        // Re-fetch page from session since newChat() may have migrated to a new tab
+        const refreshedSession = this.userSessions.get(userId);
+        if (refreshedSession && refreshedSession.page) {
+          page = refreshedSession.page;
+          log.info(`[sendMessageStream] Migrated to new tab: ${refreshedSession.chatUrl}`);
         }
       }
 
@@ -2629,7 +2797,7 @@ class KimiBridge {
       log.success(`Response ready for user ${hashUserId(userId)} (len=${response.length})`);
 
       // Cleanup temp file
-      try { fs.unlinkSync(tmpFile); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch (e) { log.debug(`[sendImageStream] temp file cleanup error: ${e.message}`); }
 
       return {
         response,
@@ -2637,7 +2805,7 @@ class KimiBridge {
         mode: session.mode,
       };
     } catch (err) {
-      try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch {}
+      try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch (e) { log.debug(`[sendImageStream] input clear error: ${e.message}`); }
       throw err;
     } finally {
       session.processing = false;
@@ -2885,7 +3053,7 @@ class KimiBridge {
     }
 
     // Cleanup
-    try { fs.unlinkSync(tmpFile); } catch {}
+    try { fs.unlinkSync(tmpFile); } catch (e) { log.debug(`[sendFileStream] temp file cleanup error: ${e.message}`); }
 
     return {
       success: true,
@@ -3006,7 +3174,7 @@ class KimiBridge {
       const currentUrl = page.url();
       if (!isAgentOrSwarm && session.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
         log.info(`URL mismatch: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
-        await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+        await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: DEFAULT_NAVIGATION_TIMEOUT_MS });
         await page.waitForTimeout(1500);
       }
 
@@ -3033,7 +3201,7 @@ class KimiBridge {
       // Capture current text BEFORE sending — critical to detect new response.
       // If captured after Enter, fast responses will be mistaken for old text.
       // v10.18-fix: Use a finite timeout. On Kimi's landing page there is no
-      // .markdown-container yet; timeout: 0 hangs forever waiting for one.
+      // .markdown-container yet; a previous timeout: 0 would hang forever waiting for one.
       const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
 
       // v10.18-fix: Focus the editor first. Kimi's Lexical contenteditable on the
@@ -3137,7 +3305,7 @@ class KimiBridge {
       // Try to clear input on error so next message doesn't have leftover text
       try {
         await page.locator('textarea, [contenteditable="true"]').first().fill('');
-      } catch {}
+      } catch (e) { log.debug(`[sendMessageStream] input clear error: ${e.message}`); }
       throw err;
     } finally {
       session.processing = false;
@@ -3201,6 +3369,52 @@ class KimiBridge {
       activePages: this.userSessions.size,
       semaphore: { current: this.semaphore.current, max: this.semaphore.max },
       users,
+    };
+  }
+
+  /**
+   * v10.0: Health check for /api/system/health — latency, memory, browser state.
+   * This method is exposed so luna-soul.cjs can wire it to the HTTP route.
+   */
+  async health() {
+    const start = Date.now();
+    let browserState = 'disconnected';
+    let webbridgeState = 'unknown';
+    try {
+      await this._ensureConnected();
+      browserState = this.browser ? 'connected' : 'disconnected';
+    } catch (e) {
+      browserState = `error: ${e.message}`;
+    }
+    try {
+      const wb = new WebBridgeClient('luna-kimi');
+      const wbHealth = await wb.healthCheck();
+      webbridgeState = wbHealth.ok && wbHealth.connected ? 'healthy' : 'unhealthy';
+    } catch (e) {
+      webbridgeState = `error: ${e.message}`;
+    }
+    const mem = process.memoryUsage();
+    return {
+      ok: browserState === 'connected' || webbridgeState === 'healthy',
+      latencyMs: Date.now() - start,
+      memory: {
+        rss: mem.rss,
+        heapTotal: mem.heapTotal,
+        heapUsed: mem.heapUsed,
+        external: mem.external,
+      },
+      browser: {
+        state: browserState,
+        cdpUrl: this.cdpUrl,
+        activePages: this.userSessions.size,
+        registeredChromePids: Array.from(this.chromePids),
+      },
+      webbridge: {
+        state: webbridgeState,
+        enabled: this.webbridgeEnabled,
+      },
+      uptimeMs: process.uptime() * 1000,
+      timestamp: new Date().toISOString(),
     };
   }
 
@@ -3329,7 +3543,12 @@ class KimiBridge {
         if (psOutput.includes('--headless') || psOutput.includes('--ozone-platform=headless')) {
           wasHeadless = true;
           log.warn(`Chrome headless detectado na porta ${port}. Matando...`);
-          execSync(`pkill -f 'chrome.*remote-debugging-port=${port}'`);
+          const headlessPid = this._extractPidFromPs(psOutput);
+          if (headlessPid) {
+            await this._killChromePid(headlessPid);
+          } else {
+            log.warn(`[checkChrome] Could not extract PID for headless Chrome on port ${port}`);
+          }
           await new Promise(r => setTimeout(r, 3000));
           foundPort = 0;
           wasHeadless = false;
@@ -3340,7 +3559,12 @@ class KimiBridge {
         // Kill Chrome if using a temporary /tmp/ profile (loses login data)
         if (existingProfileDir && existingProfileDir.startsWith('/tmp/')) {
           log.warn(`Chrome na porta ${port} está usando perfil temporário ${existingProfileDir}. Matando para usar perfil persistente...`);
-          execSync(`pkill -f 'chrome.*remote-debugging-port=${port}'`);
+          const tmpPid = this._extractPidFromPs(psOutput);
+          if (tmpPid) {
+            await this._killChromePid(tmpPid);
+          } else {
+            log.warn(`[checkChrome] Could not extract PID for temp-profile Chrome on port ${port}`);
+          }
           await new Promise(r => setTimeout(r, 3000));
           foundPort = 0;
           existingProfileDir = null;
@@ -3348,10 +3572,14 @@ class KimiBridge {
         }
 
         // Valid visible Chrome with persistent profile found
+        // v10.0-fix: Register PID for graceful shutdown
+        const existingPid = this._extractPidFromPs(psOutput);
+        if (existingPid) this._registerChromePid(existingPid);
         this.cdpUrl = makeCdpUrl(port);
         return { running: true, started: false, wasHeadless: false, port };
-      } catch {
+      } catch (e) {
         // Could not determine, assume it's ok
+        log.debug(`[checkChrome] Port ${port} probe failed: ${e.message}`);
         this.cdpUrl = makeCdpUrl(port);
         return { running: true, started: false, wasHeadless: false, port };
       }
@@ -3383,7 +3611,7 @@ class KimiBridge {
     ];
     let chromePath = null;
     for (const cmd of chromeCmds) {
-      try { execSync(`which ${cmd}`, { stdio: 'ignore' }); chromePath = cmd; break; } catch {}
+      try { execSync(`which ${cmd}`, { stdio: 'ignore' }); chromePath = cmd; break; } catch (e) { log.debug(`[checkChrome] ${cmd} not found: ${e.message}`); }
     }
     if (!chromePath) {
       return { running: false, started: false, error: 'Chrome não encontrado. Instale google-chrome-stable ou chromium.' };
@@ -3419,6 +3647,9 @@ class KimiBridge {
         'https://www.kimi.com/',
       ], { detached: true, stdio: 'ignore', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
       proc.unref();
+
+      // v10.0-fix: Register PID for graceful shutdown
+      this._registerChromePid(proc.pid);
 
       await new Promise(r => setTimeout(r, 5000));
 
@@ -3469,7 +3700,7 @@ class KimiBridge {
     let page;
     try {
       page = await this._getOrCreateUserPage(userId);
-      await page.bringToFront().catch(() => {});
+      await page.bringToFront().catch((e) => log.debug(`[ensureLogin] bringToFront error: ${e.message}`));
     } catch (e) {
       return { loggedIn: false, error: `Failed to get page: ${e.message}`, action: 'login_required' };
     }
@@ -3483,21 +3714,21 @@ class KimiBridge {
     // Not logged in — navigate to kimi.com and bring to front
     log.info(`User not logged in, navigating to Kimi login page`);
     try {
-      await page.goto('https://www.kimi.com/?lang=en', { waitUntil: 'domcontentloaded', timeout: 0 });
+      await page.goto('https://www.kimi.com/?lang=en', { waitUntil: 'domcontentloaded', timeout: DEFAULT_NAVIGATION_TIMEOUT_MS });
       await page.waitForTimeout(1500);
-      await page.bringToFront().catch(() => {});
+      await page.bringToFront().catch((e) => log.debug(`[ensureLogin] bringToFront error: ${e.message}`));
     } catch (e) {
       log.warn(`Navigation to www.kimi.com failed: ${e.message}`);
       // Try again with a fresh page
       try {
         const session = this.userSessions.get(userId);
         if (session && session.page && !session.page.isClosed()) {
-          await session.page.close().catch(() => {});
+          await session.page.close().catch((e) => log.debug(`[ensureLogin] page.close error: ${e.message}`));
           this.userSessions.delete(userId);
           this.semaphore.current = Math.max(0, this.semaphore.current - 1);
         }
         page = await this._getOrCreateUserPage(userId);
-        await page.bringToFront().catch(() => {});
+        await page.bringToFront().catch((e) => log.debug(`[ensureLogin] bringToFront retry error: ${e.message}`));
       } catch (e2) {
         return { loggedIn: false, error: `Failed to navigate: ${e2.message}`, action: 'login_required' };
       }
@@ -3539,7 +3770,7 @@ class KimiBridge {
           const url = await page.evaluate(() => location.href);
           session.chatUrl = url;
           this._saveChatUrl(userId, url, { mode: session.mode });
-        } catch {}
+        } catch (e) { log.debug(`[waitForLogin] chatUrl save error: ${e.message}`); }
         return { loggedIn: true, message: 'Login detectado! Pronto para usar.', url: state.url };
       }
       await new Promise(r => setTimeout(r, intervalMs));
@@ -3560,7 +3791,7 @@ class KimiBridge {
     const session = this.userSessions.get(userId);
     if (session) {
       if (session.page && !session.page.isClosed()) {
-        try { await session.page.close(); } catch {}
+        try { await session.page.close(); } catch (e) { log.warn(`[logout] page.close error: ${e.message}`); }
       }
       this.userSessions.delete(userId);
       this.semaphore.current = Math.max(0, this.semaphore.current - 1);
@@ -3568,15 +3799,13 @@ class KimiBridge {
 
     if (opts.killChrome) {
       try {
-        const { execSync } = require('child_process');
-        // Kill Chrome on ALL possible CDP ports
-        for (const port of CDP_PORTS) {
-          try { execSync(`pkill -f 'chrome.*remote-debugging-port=${port}'`); } catch {}
-        }
+        // v10.0-fix: Kill registered Chrome PIDs gracefully instead of pkill -f broad
+        await this._killAllRegisteredChrome();
         this._resetCdpUrl();
         log.info('Chrome killed');
         return { success: true, message: 'Logout completo. Chrome fechado.' };
       } catch (e) {
+        log.warn(`[logout] killChrome error: ${e.message}`);
         return { success: true, message: 'Sessão encerrada. Chrome já estava fechado.' };
       }
     }
@@ -3675,10 +3904,10 @@ class KimiBridge {
   _startCookieBackup() {
     if (this.cookieBackupTimer) clearInterval(this.cookieBackupTimer);
     this.cookieBackupTimer = setInterval(() => {
-      this._saveCookiesToFile().catch(() => {});
+      this._saveCookiesToFile().catch((e) => log.debug(`[cookieBackupTimer] save error: ${e.message}`));
     }, 5 * 60 * 1000); // every 5 minutes
     // Also save immediately on start
-    this._saveCookiesToFile().catch(() => {});
+    this._saveCookiesToFile().catch((e) => log.debug(`[startCookieBackup] save error: ${e.message}`));
   }
 
   /**
@@ -3704,9 +3933,9 @@ class KimiBridge {
             el.id = '__luna-keepalive-' + Date.now();
             document.body.appendChild(el);
             setTimeout(() => el.remove(), 100);
-          }).catch(() => {});
+          }).catch((e) => log.debug(`[_startBackgroundPolling] keep-alive evaluate error: ${e.message}`));
         } catch (e) {
-          // Ignore errors — page may be navigating
+          log.debug(`[_startBackgroundPolling] keep-alive error: ${e.message}`);
         }
       }
     }, 10000); // Every 10 seconds
@@ -4046,16 +4275,31 @@ class KimiBridge {
    * The extension runs in the MAIN world of kimi.com and streams DOM events
    * directly via HTTP to luna-extension-handler.cjs, which buffers them in
    * global.__lunaExtensionEventBuffers. This is Layer 0 — highest priority.
+   * v10.0-fix: Accept userId and only consume buffers associated with this user
+   * to prevent cross-user event leakage.
    */
-  _consumeExtensionEvents() {
+  _consumeExtensionEvents(userId = null) {
     try {
       const buffers = global.__lunaExtensionEventBuffers;
       if (!buffers || buffers.size === 0) return [];
 
       const allEvents = [];
-      // Consume from ALL active extension sessions (usually just one)
+      // v10.0-fix: Filter buffers by userId when provided
       for (const [sessionId, buf] of buffers) {
         if (!buf || buf.length === 0) continue;
+
+        if (userId) {
+          const mappedUser = this.extensionSessionMap.get(sessionId);
+          if (mappedUser && mappedUser !== userId) {
+            continue; // Belongs to another user
+          }
+          if (!mappedUser) {
+            // First-come heuristic: associate this unknown session with the requesting user
+            this.extensionSessionMap.set(sessionId, userId);
+            log.debug(`[ChromeExt] Associated session ${sessionId} with user ${hashUserId(userId)}`);
+          }
+        }
+
         // Clear buffer as we read it
         buffers.set(sessionId, []);
         for (const raw of buf) {
@@ -4150,6 +4394,7 @@ class KimiBridge {
       }
       return allEvents;
     } catch (e) {
+      log.debug(`[ChromeExt] Failed to consume extension events: ${e.message}`);
       return [];
     }
   }
@@ -4169,13 +4414,15 @@ class KimiBridge {
     log.info(`[DomPoller] Starting for user ${hashUserId(userId)}`);
 
     const runLoop = async () => {
+      // DOM poller runs continuously while the session/page exists.
+      // It only stops when _stopDomPoller is explicitly called (e.g., tab switch or teardown).
       while (session.domPollerActive && session.page && !session.page.isClosed()) {
         try {
           // v8.6: LAYER 0 — Chrome Extension events (PRIMARY real-time source)
           // These come directly from the extension's injected.js DOM observer,
           // bypassing all Playwright overhead and network interception fallbacks.
           try {
-            const extEvents = this._consumeExtensionEvents();
+            const extEvents = this._consumeExtensionEvents(userId);
             for (const ev of extEvents) {
               switch (ev.type) {
                 case 'state_change': {
@@ -4243,7 +4490,8 @@ class KimiBridge {
               }
             }
           } catch (extErr) {
-            // Extension buffer may not exist yet — ignore
+            // Extension buffer may not exist yet — log and ignore
+            log.debug(`[DomPoller] Extension buffer read failed for user ${hashUserId(userId)}: ${extErr.message}`);
           }
 
           // v7.5: Poll DOM state via _pollThinkingAndResponse (uses Network Interceptor as primary)
@@ -4413,13 +4661,13 @@ class KimiBridge {
               for (const resp of jsonBlocks.responses) {
                 this._enqueueDomEvent(userId, { type: 'response_detected', response: resp.response, source: 'json_block', timestamp: Date.now() });
               }
-            } catch (e2) {}
+            } catch (e2) { log.debug(`[DomPoller] JSON block fallback failed for user ${hashUserId(userId)}: ${e2.message}`); }
             try {
               const toolBlocks = await this._extractToolMirrorFromDOM(session.page);
               for (const block of toolBlocks) {
                 this._enqueueDomEvent(userId, { type: 'action_detected', action: this._convertIpythonToAction(block), code: block.code, kimiResult: block.result, kimiImages: block.images, source: 'dom_mirror', timestamp: Date.now() });
               }
-            } catch (e2) {}
+            } catch (e2) { log.debug(`[DomPoller] Tool mirror fallback failed for user ${hashUserId(userId)}: ${e2.message}`); }
           }
         } catch (e) {
           log.warn(`[DomPoller] Error for user ${hashUserId(userId)}: ${e.message}`);
@@ -4587,7 +4835,7 @@ class KimiBridge {
       }
       await page.evaluate((items) => {
         for (const [key, value] of Object.entries(items)) {
-          try { localStorage.setItem(key, value); } catch (e) {}
+          try { localStorage.setItem(key, value); } catch (e) { console.warn(`[localStorage] ${e.message}`); }
         }
       }, data);
       log.info(`Injected ${keys.length} localStorage items into page`);
@@ -5348,13 +5596,13 @@ class KimiBridge {
             if (!trimmed.endsWith('}')) return null;
 
             // 1. Try standard JSON parse first
-            try { return JSON.parse(str); } catch {}
+            try { return JSON.parse(str); } catch (e) { log.debug(`[tolerantJsonParse] standard parse failed: ${e.message}`); }
             // 2. Try extracting first JSON object
             const firstBrace = str.indexOf('{');
             const lastBrace = str.lastIndexOf('}');
             if (firstBrace >= 0 && lastBrace > firstBrace) {
               const extracted = str.slice(firstBrace, lastBrace + 1);
-              try { return JSON.parse(extracted); } catch {}
+              try { return JSON.parse(extracted); } catch (e) { log.debug(`[tolerantJsonParse] extracted parse failed: ${e.message}`); }
             }
             // 3. Regex-based extraction for tool/action JSON blocks
             // This handles malformed JSON with literal newlines inside strings
@@ -5497,12 +5745,12 @@ class KimiBridge {
           function tolerantJsonParseThinking(str) {
             const trimmed = str.trim();
             if (!trimmed.endsWith('}')) return null;
-            try { return JSON.parse(str); } catch {}
+            try { return JSON.parse(str); } catch (e) { log.debug(`[tolerantJsonParseThinking] standard parse failed: ${e.message}`); }
             const firstBrace = str.indexOf('{');
             const lastBrace = str.lastIndexOf('}');
             if (firstBrace >= 0 && lastBrace > firstBrace) {
               const extracted = str.slice(firstBrace, lastBrace + 1);
-              try { return JSON.parse(extracted); } catch {}
+              try { return JSON.parse(extracted); } catch (e) { log.debug(`[tolerantJsonParseThinking] extracted parse failed: ${e.message}`); }
             }
             const toolMatch = str.match(/"tool"\s*:\s*"([^"]+)"/);
             if (!toolMatch) return null;
@@ -5681,7 +5929,7 @@ class KimiBridge {
       if (parsed.message && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
         return parsed.message.trim();
       }
-    } catch {}
+    } catch (e) { log.debug(`[extractThinkingText] JSON parse failed: ${e.message}`); }
 
     // Try extracting first JSON object
     const firstBrace = cleaned.indexOf('{');
@@ -5698,7 +5946,7 @@ class KimiBridge {
         if (parsed.response && typeof parsed.response === 'string') {
           return parsed.response.trim();
         }
-      } catch {}
+      } catch (e) { log.debug(`[extractThinkingText] extracted JSON parse failed: ${e.message}`); }
     }
 
     // Try regex extraction of "response" field (only if no tool field detected)
@@ -5974,11 +6222,17 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(2000);
-        if (session) {
-          session.chatUrl = page.url();
-          this._saveChatUrl(userId, session.chatUrl);
+        // v10.29-fix: Use newChat() instead of goto to properly create a new tab
+        // and migrate the session. This ensures session.page points to the new tab
+        // and session.chatUrl is updated correctly.
+        log.info(`[sendMessageStream] options.newChat=true — calling newChat() to create fresh tab`);
+        await this.newChat(userId);
+        // After newChat(), session.page is the new tab and session.chatUrl is updated
+        // Re-fetch page from session since newChat() may have migrated to a new tab
+        const refreshedSession = this.userSessions.get(userId);
+        if (refreshedSession && refreshedSession.page) {
+          page = refreshedSession.page;
+          log.info(`[sendMessageStream] Migrated to new tab: ${refreshedSession.chatUrl}`);
         }
       }
 
@@ -6470,7 +6724,7 @@ class KimiBridge {
       if (err.message === 'STREAM_CANCELLED') {
         log.info(`[sendMessageStream] Stream cancelled gracefully for user ${hashUserId(userId)}`);
       } else {
-        try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch {}
+        try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch (e) { log.debug(`[sendMessageStream] input clear error: ${e.message}`); }
         throw err;
       }
     } finally {
@@ -6694,7 +6948,7 @@ class KimiBridge {
 
       // Navigate to Kimi
       log.info('[anonymousConsult] Navigating to www.kimi.com...');
-      await page.goto('https://www.kimi.com', { waitUntil: 'domcontentloaded', timeout: 0 });
+      await page.goto('https://www.kimi.com', { waitUntil: 'domcontentloaded', timeout: DEFAULT_NAVIGATION_TIMEOUT_MS });
       await page.waitForTimeout(2000);
 
       // Dismiss cookie/terms modals if present
@@ -6704,11 +6958,11 @@ class KimiBridge {
           await consentBtn.click();
           await page.waitForTimeout(500);
         }
-      } catch {}
+      } catch (e) { log.debug(`[anonymousConsult] modal dismiss error: ${e.message}`); }
 
       // Find input and send message
       const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await inputLocator.waitFor({ state: 'visible', timeout: 0 });
+      await inputLocator.waitFor({ state: 'visible', timeout: DEFAULT_NAVIGATION_TIMEOUT_MS });
       // v10.18-fix: Focus the editor first for Lexical contenteditable.
       // Playwright's click() can hang on the landing editor, so we use JS focus().
       await inputLocator.evaluate((el) => el.focus());
@@ -6778,7 +7032,7 @@ class KimiBridge {
         try {
           const hasButtons = await page.locator('.segment-assistant-actions .icon-button').count() > 0;
           if (hasButtons) buttonsVisible = true;
-        } catch {}
+        } catch (e) { log.debug(`[anonymousConsult] button check error: ${e.message}`); }
 
         // Robust completion
         if (buttonsVisible && !poll.isGenerating) {
@@ -6841,7 +7095,7 @@ class KimiBridge {
     } finally {
       // Always clean up the incognito context
       if (ctx) {
-        try { await ctx.close(); } catch {}
+        try { await ctx.close(); } catch (e) { log.debug(`[anonymousConsult] context close error: ${e.message}`); }
         log.info('[anonymousConsult] Incognito context closed');
       }
     }

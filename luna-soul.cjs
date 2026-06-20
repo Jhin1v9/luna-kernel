@@ -218,7 +218,9 @@ function loadPersonaRegistry() {
       const desc = descMatch ? descMatch[1].trim() : '';
       personas.push({ name, description: desc });
     }
-  } catch {}
+  } catch (err) {
+    console.error('[luna-soul]', err.message, err.stack);
+  }
   return personas;
 }
 
@@ -236,7 +238,9 @@ function loadSkillRegistry() {
       const desc = descMatch ? descMatch[1].trim() : '';
       skills.push({ name: dir, description: desc });
     }
-  } catch {}
+  } catch (err) {
+    console.error('[luna-soul]', err.message, err.stack);
+  }
   return skills;
 }
 
@@ -417,7 +421,9 @@ function parseKimiResponse(text) {
     () => {
       const lines = cleaned.split('\n');
       for (const line of lines) {
-        try { return JSON.parse(line); } catch {}
+        try { return JSON.parse(line); } catch (parseErr) {
+          console.error('[luna-soul]', parseErr.message, parseErr.stack);
+        }
       }
       throw new Error('No valid JSON line');
     },
@@ -440,7 +446,9 @@ function parseKimiResponse(text) {
         parsed.response = parsed.message;
       }
       return parsed;
-    } catch {}
+    } catch (strategyErr) {
+      console.error('[luna-soul]', strategyErr.message, strategyErr.stack);
+    }
   }
 
   return null;
@@ -675,7 +683,9 @@ function parseTagResponse(text) {
           combinedResponse = parsedResp.response;
           break; // First response block wins
         }
-      } catch {}
+      } catch (respErr) {
+        console.error('[luna-soul]', respErr.message, respErr.stack);
+      }
     }
 
     // ACTION / PLAN mode — code blocks are PRIMARY, [[action]] tags are fallback
@@ -742,7 +752,9 @@ function isJsonResponseComplete(text) {
     if (parsed.response !== undefined || parsed.tool !== undefined || parsed.script !== undefined) {
       return true;
     }
-  } catch {}
+  } catch (jsonErr) {
+    console.error('[luna-soul]', jsonErr.message, jsonErr.stack);
+  }
   return false;
 }
 
@@ -867,7 +879,9 @@ function loadSkillIndex() {
         }
       }
     }
-  } catch {}
+  } catch (err) {
+    console.error('[luna-soul]', err.message, err.stack);
+  }
   return skills;
 }
 
@@ -889,7 +903,9 @@ function loadMemories() {
       const content = fs.readFileSync(path.join(MEMORIES_DIR, file), 'utf8');
       memories.push({ file, content: content.slice(0, 2000) }); // limit size
     }
-  } catch {}
+  } catch (err) {
+    console.error('[luna-soul]', err.message, err.stack);
+  }
   return memories;
 }
 
@@ -1313,7 +1329,9 @@ class ProjectHealthValidator {
           results.push(fullPath);
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error('[luna-soul]', err.message, err.stack);
+    }
     return results;
   }
 
@@ -1385,7 +1403,9 @@ class ProjectHealthValidator {
               this.fixes.push(`📝 Erro detectado na página: ${errorText.slice(0, 200)}...`);
             }
           }
-        } catch {}
+        } catch (pageErr) {
+          console.error('[luna-soul]', pageErr.message, pageErr.stack);
+        }
 
         return { screenshot: screenshotPath, errorText };
       } catch (e) {
@@ -1400,9 +1420,13 @@ class ProjectHealthValidator {
       if (serverProcess) {
         try {
           process.kill(-serverProcess.pid, 'SIGTERM');
-        } catch {}
+        } catch (killErr) {
+          console.error('[luna-soul]', killErr.message, killErr.stack);
+        }
         setTimeout(() => {
-          try { process.kill(-serverProcess.pid, 'SIGKILL'); } catch {}
+          try { process.kill(-serverProcess.pid, 'SIGKILL'); } catch (killErr2) {
+            console.error('[luna-soul]', killErr2.message, killErr2.stack);
+          }
         }, 2000);
       }
     }
@@ -1420,7 +1444,9 @@ class ProjectHealthValidator {
         const tw = JSON.parse(fs.readFileSync(twPkg, 'utf8'));
         if (tw.version && tw.version.startsWith('4.')) return true;
       }
-    } catch {}
+    } catch (err) {
+      console.error('[luna-soul]', err.message, err.stack);
+    }
     return false; // default to v3 style
   }
 }
@@ -1561,6 +1587,31 @@ class LunaSoul extends EventEmitter {
     this._executedActionCache.get(sessionId).set(toolHash, { timestamp: Date.now(), result });
   }
 
+  // MAMIS/1: Remove entradas de sessões mortas ou cujo TTL expirou do cache de ações.
+  _cleanupActionCache() {
+    const SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutos
+    const now = Date.now();
+    const knownSessionIds = new Set(
+      typeof this.sessionManager?.listSessions === 'function'
+        ? this.sessionManager.listSessions().map(s => s.sessionId || s.id)
+        : []
+    );
+    for (const [sessionId, sessionCache] of this._executedActionCache.entries()) {
+      let hasRecent = false;
+      for (const [toolHash, entry] of sessionCache.entries()) {
+        if (!entry || now - entry.timestamp > SESSION_TTL_MS) {
+          sessionCache.delete(toolHash);
+        } else {
+          hasRecent = true;
+        }
+      }
+      // Remove sessão se não tiver entradas recentes ou se a sessão não existir mais
+      if (sessionCache.size === 0 || (!knownSessionIds.has(sessionId) && !hasRecent)) {
+        this._executedActionCache.delete(sessionId);
+      }
+    }
+  }
+
   /** Initialize git for workspace if available */
   async _ensureGit() {
     const ws = workspaceManager.getWorkspace('luna-cli');
@@ -1680,9 +1731,13 @@ class LunaSoul extends EventEmitter {
       const ctxFile = this.sessionManager?._contextFile?.(sessionId);
       if (ctxFile && fs.existsSync(ctxFile)) {
         const stats = fs.statSync(ctxFile);
-        estimatedTokens = Math.floor(stats.size / 4);
+        // TODO-MAMIS/1: Substituir por tokenizer real (tiktoken/gpt-tokenizer) quando disponível.
+        // Fallback conservador: ~3.5 bytes/token para texto em português/JSON.
+        estimatedTokens = Math.floor(stats.size / 3.5);
       }
-    } catch {}
+    } catch (err) {
+      console.error('[luna-soul] Falha ao estimar tokens pelo arquivo de contexto:', err.message, err.stack);
+    }
 
     // Fallback: estima pelo número de eventos
     if (estimatedTokens === 0) {
@@ -1702,8 +1757,8 @@ class LunaSoul extends EventEmitter {
    * so Kimi processes it before any user message. This prevents "starting from scratch"
    * and eliminates the need for manual copy/paste.
    */
-  async *_autoCompact(sessionId, userId = 'luna-default') {
-    console.log(`[DEBUG-LUNA] _autoCompact started for session ${sessionId}`);
+  async *_compactContextManual(sessionId, userId = 'luna-default') {
+    console.log(`[DEBUG-LUNA] _compactContextManual started for session ${sessionId}`);
     yield { type: 'compact_start', message: '📦 Contexto grande demais. Criando checkpoint inteligente...', sessionId };
 
     try {
@@ -1718,12 +1773,20 @@ class LunaSoul extends EventEmitter {
       // 3. Create new thread in Kimi Web
       if (this.kimiBridge) {
         yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
+        // v10.30-fix: Clear old chatUrl BEFORE calling newChat() so crash-recovery
+        // doesn't navigate back to the stale chat page if new tab creation fails.
+        try {
+          this.kimiBridge._clearChatUrl(userId);
+          console.log(`[LUNA-v10.30] Cleared old chatUrl before newChat for user ${userId}`);
+        } catch (e) {
+          console.warn(`[LUNA-v10.30] Failed to clear chatUrl: ${e.message}`);
+        }
         try {
           await this.kimiBridge.newChat(userId);
           console.log(`[LUNA] New chat created for user ${userId}`);
         } catch (err) {
           yield { type: 'compact_error', message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`, sessionId };
-          console.log(`[DEBUG-LUNA] _autoCompact finished (newChat failed)`);
+          console.log(`[DEBUG-LUNA] _compactContextManual finished (newChat failed)`);
           return { success: false, error: err.message };
         }
 
@@ -1764,7 +1827,7 @@ class LunaSoul extends EventEmitter {
         } catch (sendErr) {
           console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
           yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
-          console.log(`[DEBUG-LUNA] _autoCompact finished (checkpoint send failed)`);
+          console.log(`[DEBUG-LUNA] _compactContextManual finished (checkpoint send failed)`);
           return { success: false, error: sendErr.message };
         } finally {
           // v10.16-fix: ALWAYS restore processing state, even on timeout/error
@@ -1784,10 +1847,10 @@ class LunaSoul extends EventEmitter {
       });
 
       yield { type: 'compact_end', message: '✅ Contexto compactado. Nova thread pronta com checkpoint inteligente.', summary, sessionId };
-      console.log(`[DEBUG-LUNA] _autoCompact finished (success)`);
+      console.log(`[DEBUG-LUNA] _compactContextManual finished (success)`);
       return { success: true, summary };
     } catch (err) {
-      console.error(`[DEBUG-LUNA] _autoCompact finished (error): ${err.message}`);
+      console.error(`[DEBUG-LUNA] _compactContextManual finished (error): ${err.message}`);
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
       return { success: false, error: err.message };
     }
@@ -1844,8 +1907,10 @@ class LunaSoul extends EventEmitter {
         }
       } else if (ev.type === 'tool_result' && !ev.success) {
         errorCount++;
-        const err = (ev.error || ev.result?.stderr || ev.result?.error || 'Erro desconhecido').trim();
         const toolName = ev.tool || '?';
+        const actionName = ev.action?.name || ev.action?.tool || ev.params?.action || '?';
+        const originalErr = ev.error || ev.result?.stderr || ev.result?.error || 'não informado';
+        const err = `[${toolName}/${actionName}] ${String(originalErr).trim()}`;
         errorMessages.push(`${toolName}: ${err.slice(0, 200)}`);
       }
     }
@@ -2247,10 +2312,26 @@ class LunaSoul extends EventEmitter {
     let loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage });
     let safety = 0;
     const MAX_LOOPS = Number.MAX_SAFE_INTEGER; // ILIMITADO — o usuário pediu zero limites
+    const MAX_WALL_TIME_MS = 30 * 60 * 1000; // MAMIS/1: wall-time real de 30 minutos
+    let startTime = Date.now();
     let autoContinues = 0;
     const MAX_AUTO_CONTINUES = 3; // v10.16-fix: teto real para evitar loop infinito
 
+    // MAMIS/1: limpar cache de ações de sessões mortas periodicamente
+    this._cleanupActionCache();
+
     while (safety < MAX_LOOPS) {
+      // MAMIS/1: wall-time guard
+      if (Date.now() - startTime > MAX_WALL_TIME_MS) {
+        const elapsedMin = Math.floor((Date.now() - startTime) / 60000);
+        console.error(`[luna-soul] Wall-time excedido em processMessageStream: ${elapsedMin} minutos`);
+        yield {
+          type: 'error',
+          message: `⏱️ Tempo máximo de execução atingido (${elapsedMin} minutos). Encerrando para preservar recursos.`,
+          sessionId,
+        };
+        return;
+      }
       safety++;
       let fullThinking = '';
       let fullResponse = '';
@@ -2371,6 +2452,10 @@ class LunaSoul extends EventEmitter {
                   response: respText,
                   timestamp: new Date().toISOString(),
                 });
+                // Reset wall-time on every detected response so long vibecoding sessions
+                // are not killed while actively producing content.
+                startTime = Date.now();
+                console.log(`[luna-soul] Wall-time reset after response_detected (${respText.length} chars)`);
               }
               break;
             }
@@ -3048,7 +3133,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           const resp = parsed.response.trim();
           if (resp.length > 10) return resp;
         }
-      } catch {}
+      } catch (blockErr) {
+        console.error('[luna-soul]', blockErr.message, blockErr.stack);
+      }
     }
     // 2. Look for a standalone JSON object with response.
     const standalone = text.match(/\{\s*"response"\s*:\s*"[\s\S]*?"\s*\}/);
@@ -3057,7 +3144,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         const parsed = JSON.parse(standalone[0]);
         const resp = parsed.response.trim();
         if (resp.length > 10) return resp;
-      } catch {}
+      } catch (standaloneErr) {
+        console.error('[luna-soul]', standaloneErr.message, standaloneErr.stack);
+      }
     }
     // 3. Accept only an actual markdown plan (must start with a heading).
     const clean = text.trim();
@@ -4692,7 +4781,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
             const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
             state.persona = target;
             fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-          } catch {}
+          } catch (err) {
+            console.error('[luna-soul]', err.message, err.stack);
+          }
           this.emit('progress', {
             type: 'persona_switched',
             message: `🎭 Auto-switch: persona "${target}" ativada (${Math.round(confidence * 100)}% confiança)`,
@@ -4749,7 +4840,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
         state.persona = target;
         fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-      } catch {}
+      } catch (err) {
+        console.error('[luna-soul]', err.message, err.stack);
+      }
       this.emit('progress', {
         type: 'persona_switched',
         message: `🎭 Persona "${target}" ativada`,
