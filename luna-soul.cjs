@@ -265,7 +265,7 @@ function buildSystemPrompt(opts = {}) {
 
   // v10.22-fix: workspace isolation per user/session
   const workspace = workspaceManager.getWorkspace(userId);
-  const workspacePath = workspace ? workspace.path : '/home/jhin';
+  const workspacePath = workspace ? workspace.path : os.homedir();
   const workspaceContext = workspaceManager.getFormattedManifest(userId) || `Workspace padrão: ${workspacePath}`;
 
   const cfg = getPromptConfig();
@@ -326,7 +326,7 @@ NEVER use ipython for file ops — use readFile/writeFile/executeShell.
 ONE tool per message. WAIT for result before next.
 
 [CONTEXT]
-Home: /home/jhin/ | Active Workspace: ${workspacePath} | User: ${userId} | Skills: ${skillIndex ? skillIndex.split('\n').length : 0} | Personas: ${personaRegistry ? personaRegistry.split('\n').length : 0}
+Home: ${os.homedir()}/ | Active Workspace: ${workspacePath} | User: ${userId} | Skills: ${skillIndex ? skillIndex.split('\n').length : 0} | Personas: ${personaRegistry ? personaRegistry.split('\n').length : 0}
 ${workspaceContext ? '\n[WORKSPACE]\n' + workspaceContext : ''}
 ${agentsMd ? '\n[AGENTS.md]\n' + agentsMd.slice(0, 1500) + (agentsMd.length > 1500 ? '\n...[truncated]...' : '') : ''}
 ${memoryContext ? '\n[MEMORIES]\n' + memoryContext.slice(0, 2000) + (memoryContext.length > 2000 ? '\n...[truncated]...' : '') : ''}
@@ -2949,7 +2949,7 @@ REGRAS:
     // Persist plan to file
     const fs = require('fs');
     const path = require('path');
-    const planDir = path.join(process.env.HOME || '/home/jhin', '.luna-kernel', 'plans');
+    const planDir = path.join(os.homedir(), '.luna-kernel', 'plans');
     fs.mkdirSync(planDir, { recursive: true });
     const planPath = path.join(planDir, `${sessionId}.md`);
     fs.writeFileSync(planPath, fullPlan, 'utf-8');
@@ -2966,7 +2966,7 @@ REGRAS:
 
   /** Build the special system prompt for Plan Mode (read-only investigation) */
   _buildPlanModePrompt(userInput) {
-    const homeDir = process.env.HOME || '/home/jhin';
+    const homeDir = os.homedir();
     return `[SYSTEM OVERRIDE — MÁXIMA PRIORIDADE — MODO DETETIVE]
 
 Você é Luna (🌙), agente executiva de Abner Gabriel / NEXO DIGITAL, operando no PC real Linux em ${homeDir}.
@@ -2983,14 +2983,14 @@ MODO ATUAL: DETETIVE — investigação APENAS LEITURA antes de executar qualque
 8. O plano final DEVE ser um bloco JSON no formato {"response": "..."} contendo markdown. NUNCA envie {"tool": ...} como plano final.
 
 FERRAMENTAS DE LEITURA PERMITIDAS:
-- listFiles — lista arquivos. Params: {"pattern": "/home/jhin"}
-- viewDirectory — estrutura de pastas. Params: {"path": "/home/jhin/.luna-kernel"}
-- readFile — lê arquivo. Params: {"path": "/home/jhin/.luna-kernel/package.json"}
-- grep — busca texto em arquivos. Params: {"pattern": "express", "path": "/home/jhin/NEXO_DASHBOARD_PRO/backend"}
-- searchFiles — busca arquivos por nome/conteúdo. Params: {"pattern": "*.js", "path": "/home/jhin/.luna-kernel"}
-- getFileInfo — info do arquivo. Params: {"path": "/home/jhin/.luna-kernel/luna-soul.cjs"}
-- glob — encontra arquivos. Params: {"pattern": "**/*.cjs", "path": "/home/jhin/.luna-kernel"}
-- ipython — executa Python para inspeção de arquivos. Params: {"code": "import os; print(os.listdir('/home/jhin'))"}
+- listFiles — lista arquivos. Params: {"pattern": "${homeDir}"}
+- viewDirectory — estrutura de pastas. Params: {"path": "${homeDir}/.luna-kernel"}
+- readFile — lê arquivo. Params: {"path": "${homeDir}/.luna-kernel/package.json"}
+- grep — busca texto em arquivos. Params: {"pattern": "express", "path": "${homeDir}/NEXO_DASHBOARD_PRO/backend"}
+- searchFiles — busca arquivos por nome/conteúdo. Params: {"pattern": "*.js", "path": "${homeDir}/.luna-kernel"}
+- getFileInfo — info do arquivo. Params: {"path": "${homeDir}/.luna-kernel/luna-soul.cjs"}
+- glob — encontra arquivos. Params: {"pattern": "**/*.cjs", "path": "${homeDir}/.luna-kernel"}
+- ipython — executa Python para inspeção de arquivos. Params: {"code": "import os; print(os.listdir('${homeDir}'))"}
 
 SINTAXE OBRIGATÓRIA (use EXATAMENTE assim, uma por mensagem):
 \`\`\`json
@@ -3605,7 +3605,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const currentUserId = options.userId || session?.userId || 'luna-default';
 
       // v10.23-fix: ensure every web/session user has an isolated workspace
-      const defaultWorkspaceBase = workspaceManager.baseDir || '/home/jhin/.luna-workspace';
+      const defaultWorkspaceBase = workspaceManager.baseDir || path.join(os.homedir(), '.luna-workspace');
       const userWorkspacePath = path.join(defaultWorkspaceBase, currentUserId);
       workspaceManager.ensureWorkspace(currentUserId, userWorkspacePath);
 

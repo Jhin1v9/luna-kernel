@@ -4,8 +4,8 @@
   "description": "Luna Kernel v5.0 — AI Agent with Web Interface, Telegram Bot, and Kimi Bridge",
   "main": ".old/config-server.cjs",
   "scripts": {
-    "start": "node /home/jhin/NEXO_DASHBOARD_PRO/backend/luna-server.js",
-    "server": "node /home/jhin/NEXO_DASHBOARD_PRO/backend/luna-server.js",
+    "start": "node $HOME/NEXO_DASHBOARD_PRO/backend/luna-server.js",
+    "server": "node $HOME/NEXO_DASHBOARD_PRO/backend/luna-server.js",
     "telegram": "node telegram-luna-adapter.cjs",
     "cli": "node luna-cli.cjs"
   },

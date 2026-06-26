@@ -1,13 +1,14 @@
 /**
  * brain-loader.cjs
  * Carrega o conteúdo do .brain-luna como contexto para o system prompt.
- * Path padrão: /home/jhin/Documentos/.brain-luna-v10.16
+ * Path padrão: ${HOME}/Documentos/.brain-luna-v10.16
  * Pode ser sobrescrito via env BRAIN_PATH.
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-const DEFAULT_BRAIN_PATH = '/home/jhin/Documentos/.brain-luna-v10.16';
+const DEFAULT_BRAIN_PATH = path.join(os.homedir(), 'Documentos', '.brain-luna-v10.16');
 
 function exists(p) {
   try { return fs.existsSync(p); } catch { return false; }
