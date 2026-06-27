@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
-  import { isStreaming, currentMode, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
+  import { isStreaming, currentMode, currentProvider, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
   import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { playSound } from '../sound.js';
@@ -1196,7 +1196,7 @@
               // Send a continuation message to the backend
               if (activeSessionId) {
                 try {
-                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode);
+                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode, [], null, $currentProvider);
                   await connectSSE();
                 } catch (e) {
                   console.error('[fullRefresh] Failed to send continuation:', e);
@@ -1333,7 +1333,7 @@
         console.log('[handleSend] calling startPlanMode', { planMsg, activeSessionId });
         await startPlanMode(planMsg, activeSessionId);
       } else {
-        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId);
+        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId, $currentProvider);
         // v7.1-fix: Reconnect SSE after sending a new message in the same session.
         // The previous SSE connection was gracefully closed after 'done'. We need
         // a fresh connection for the new message's streaming response.
@@ -1421,9 +1421,11 @@
   <ChatHeader
     title={$messages.find(m => m.type === 'user')?.content?.slice(0, 50) || 'Nova Conversa'}
     mode={$currentMode}
+    provider={$currentProvider}
     isStreaming={$isStreaming}
     sessionId={sessionId}
     on:modeChange={(e) => currentMode.set(e.detail)}
+    on:providerChange={(e) => currentProvider.set(e.detail)}
     on:clear={handleClear}
     on:export={handleExport}
     on:compactEvent={(e) => handleEvent(e.detail)}

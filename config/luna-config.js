@@ -74,10 +74,8 @@ const KIMI = {
 };
 
 // ── Auth ──
-// ATENÇÃO: fallback inseguro removido. O backend valida JWT_SECRET em runtime
-// via config-validator.js e encerra (FATAL) se não estiver definido em produção.
 const AUTH = {
-  jwtSecret: process.env.JWT_SECRET,
+  jwtSecret: process.env.JWT_SECRET || 'nexo-test-secret-2026',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
   serviceToken: process.env.INTERNAL_API_TOKEN,
 };

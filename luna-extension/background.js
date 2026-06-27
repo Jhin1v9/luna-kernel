@@ -3,11 +3,13 @@
 // Eliminates offscreen document lifecycle issues by using fetch + polling
 
 const LUNA_SERVER_URL = 'http://localhost:3458';
-const KIMI_URL_PATTERNS = [
+const PROVIDER_URL_PATTERNS = [
   'https://www.kimi.com/*',
   'https://kimi.com/*',
   'https://www.kimi.moonshot.cn/*',
-  'https://kimi.moonshot.cn/*'
+  'https://kimi.moonshot.cn/*',
+  'https://chat.deepseek.com/*',
+  'https://deepseek.com/*'
 ];
 
 // ── State ──
@@ -41,13 +43,13 @@ async function injectContentScriptIntoTab(tabId) {
   }
 }
 
-async function reinjectAllKimiTabs() {
+async function reinjectAllProviderTabs() {
   try {
-    const tabs = await chrome.tabs.query({ url: KIMI_URL_PATTERNS });
+    const tabs = await chrome.tabs.query({ url: PROVIDER_URL_PATTERNS });
     for (const tab of tabs) {
       if (tab.id) await injectContentScriptIntoTab(tab.id);
     }
-    console.log(`[Luna BG] Reinjected ${tabs.length} kimi tab(s)`);
+    console.log(`[Luna BG] Reinjected ${tabs.length} provider tab(s)`);
   } catch (e) {
     console.warn('[Luna BG] Failed to query tabs:', e.message);
   }
@@ -186,13 +188,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && isKimiUrl(tab.url)) {
+  if (changeInfo.status === 'complete' && tab.url && isProviderUrl(tab.url)) {
     injectContentScriptIntoTab(tabId).catch(() => {});
   }
 });
 
-function isKimiUrl(url) {
-  return KIMI_URL_PATTERNS.some(pattern => {
+function isProviderUrl(url) {
+  return PROVIDER_URL_PATTERNS.some(pattern => {
     const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
     return regex.test(url);
   });
@@ -201,20 +203,20 @@ function isKimiUrl(url) {
 // ── Startup ──
 chrome.runtime.onStartup.addListener(() => {
   console.log('[Luna BG] onStartup fired');
-  reinjectAllKimiTabs();
+  reinjectAllProviderTabs();
   registerSession();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[Luna BG] onInstalled fired');
-  reinjectAllKimiTabs();
+  reinjectAllProviderTabs();
   registerSession();
 });
 
 // Register on load
 registerSession();
-// v10.7-fix: Also reinject into all existing Kimi tabs on SW load.
+// v10.7-fix: Also reinject into all existing provider tabs on SW load.
 // This handles the case where the extension was loaded after the tab was already open.
-reinjectAllKimiTabs();
+reinjectAllProviderTabs();
 
 console.log('[Luna BG] Service Worker loaded v8.1');

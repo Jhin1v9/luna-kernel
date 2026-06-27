@@ -4,8 +4,8 @@
 
 HEALTH_URL="https://luna-app.duckdns.org:5173/"
 LOCAL_URL="http://localhost:3458/health"
-PM2_BIN="/home/jhin/.npm-global/bin/pm2"
-LOG_FILE="/home/jhin/.luna-kernel/logs/watchdog.log"
+PM2_BIN="${HOME}/.npm-global/bin/pm2"
+LOG_FILE="${HOME}/.luna-kernel/logs/watchdog.log"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 
@@ -23,7 +23,7 @@ if ! curl -s --max-time 10 "$LOCAL_URL" > /dev/null 2>&1; then
   fi
   
   # Restart processes
-  cd /home/jhin/NEXO_DASHBOARD_PRO/backend
+  cd "${HOME}/NEXO_DASHBOARD_PRO/backend"
   $PM2_BIN start luna-server.js --name luna-server 2>/dev/null || $PM2_BIN restart luna-server 2>/dev/null
   $PM2_BIN start server.js --name nexo-dashboard 2>/dev/null || $PM2_BIN restart nexo-dashboard 2>/dev/null
   $PM2_BIN save > /dev/null 2>&1
@@ -33,7 +33,7 @@ else
   # Backend is fine, check if PM2 has the processes registered
   if ! $PM2_BIN status | grep -q "luna-server"; then
     log "⚠️ luna-server running but not in PM2 — registering"
-    cd /home/jhin/NEXO_DASHBOARD_PRO/backend
+    cd "${HOME}/NEXO_DASHBOARD_PRO/backend"
     $PM2_BIN start luna-server.js --name luna-server 2>/dev/null
     $PM2_BIN save > /dev/null 2>&1
   fi
@@ -44,7 +44,7 @@ if ! ss -tlnp 2>/dev/null | grep -q ':5173 '; then
   log "⚠️ Caddy not listening on 5173 — restarting"
   pkill -f "caddy run" 2>/dev/null || true
   sleep 1
-  nohup /usr/bin/caddy run --config /home/jhin/.config/caddy/Caddyfile > /dev/null 2>&1 &
+  nohup /usr/bin/caddy run --config "${HOME}/.config/caddy/Caddyfile" > /dev/null 2>&1 &
   log "✅ Caddy restarted"
 fi
 

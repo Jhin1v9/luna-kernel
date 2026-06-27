@@ -39,11 +39,21 @@ function createPersistentSessionStore() {
 export const currentSessionId = createPersistentSessionStore();
 export const isStreaming = writable(false);
 export const currentMode = writable('instant');
+export const currentProvider = writable(localStorage.getItem('luna_provider') || 'kimi');
 export const messages = writable([]);
 export const lunaConfig = writable({});
 export const connectionStatus = writable('connected');
 export const user = writable(null);
 export const authToken = writable(localStorage.getItem('luna_token') || null);
+
+// Persist provider selection across reloads
+currentProvider.subscribe(provider => {
+  try {
+    if (provider) localStorage.setItem('luna_provider', provider);
+  } catch (e) {
+    console.warn('Provider persist error:', e);
+  }
+});
 
 // v9.1-fix: lunaStore for ChatHeader status indicators
 export const lunaStore = derived(

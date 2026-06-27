@@ -180,7 +180,7 @@ export class SSEManager {
   }
 }
 
-export async function sendMessage(message, sessionId, mode = 'instant', files = [], messageId = null) {
+export async function sendMessage(message, sessionId, mode = 'instant', files = [], messageId = null, provider = 'kimi') {
   let filePayload = [];
   if (files && files.length > 0) {
     filePayload = await Promise.all(
@@ -199,7 +199,7 @@ export async function sendMessage(message, sessionId, mode = 'instant', files = 
       })
     );
   }
-  const body = { message, sessionId, mode, files: filePayload };
+  const body = { message, sessionId, mode, provider, files: filePayload };
   if (messageId) body.messageId = messageId;
 
   // v9.2-fix: Retry with exponential backoff — prevents "Unexpected end of JSON input"
@@ -531,6 +531,24 @@ export async function fetchPersonas() {
   } catch {
     return { ok: false, personas: [] };
   }
+}
+
+export async function fetchProviders() {
+  try {
+    const res = await fetch('/api/providers', { headers: authHeaders(false) });
+    return res.json();
+  } catch {
+    return { ok: false, providers: [] };
+  }
+}
+
+export async function setSessionProvider(sessionId, provider) {
+  const res = await fetch('/api/chat/session', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ action: 'setProvider', sessionId, provider })
+  });
+  return res.json();
 }
 
 export async function setSessionPersona(sessionId, persona) {
