@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { promisify } = require('util');
 const readFileAsync = promisify(fs.readFile);
 const statAsync = promisify(fs.stat);
@@ -484,7 +485,7 @@ class WorkspaceManager {
 
   ensureWorkspace(userId = 'default', workspacePath = null) {
     if (this.workspaces.has(userId)) return this.workspaces.get(userId);
-    const targetPath = workspacePath || path.join(this.baseDir || '/home/jhin/.luna-workspace', userId);
+    const targetPath = workspacePath || path.join(this.baseDir || path.join(os.homedir(), '.luna-workspace'), userId);
     // bootstrap is async but returns a promise that resolves to {success, manifest, formatted}
     // Synchronously create the dir and a minimal manifest so callers can use it immediately.
     if (!fs.existsSync(targetPath)) {

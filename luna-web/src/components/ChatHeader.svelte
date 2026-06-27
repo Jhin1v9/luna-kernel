@@ -1,13 +1,14 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
   import { lunaStore, MODE_COLORS } from '../stores.js';
-  import { fetchPersonas, setSessionPersona, compactSession } from '../api.js';
+  import { fetchPersonas, setSessionPersona, setSessionProvider, fetchProviders, compactSession } from '../api.js';
 
   const dispatch = createEventDispatcher();
 
   // ── Props ──
   export let title = 'Nova Conversa';
   export let mode = 'instant';
+  export let provider = 'kimi';
   export let isStreaming = false;
   export let sessionId = null;
   export let isSidebarOpen = false;
@@ -30,12 +31,18 @@
   let personaLoading = false;
   let personaDropdownOpen = false;
 
+  // ── Provider Selector ──
+  let providers = [];
+  let providerLoading = false;
+  let providerDropdownOpen = false;
+
   onMount(async () => {
     try {
-      const data = await fetchPersonas();
-      if (data.ok && data.personas) personas = data.personas;
+      const [personaData, providerData] = await Promise.all([fetchPersonas(), fetchProviders()]);
+      if (personaData.ok && personaData.personas) personas = personaData.personas;
+      if (providerData.ok && providerData.providers) providers = providerData.providers;
     } catch (e) {
-      console.error('Failed to load personas:', e);
+      console.error('Failed to load header data:', e);
     }
   });
 
@@ -59,13 +66,38 @@
     }
   }
 
+  async function selectProvider(providerId) {
+    if (providerId === provider) {
+      providerDropdownOpen = false;
+      return;
+    }
+    providerLoading = true;
+    try {
+      if (sessionId) {
+        const res = await setSessionProvider(sessionId, providerId);
+        if (!res.ok) throw new Error(res.error || 'Failed to set provider');
+      }
+      provider = providerId;
+      dispatch('providerChange', providerId);
+    } catch (e) {
+      console.error('Failed to set provider:', e);
+    } finally {
+      providerLoading = false;
+      providerDropdownOpen = false;
+    }
+  }
+
   function handleClickOutside(e) {
     if (personaDropdownOpen && !e.target.closest('.persona-wrapper')) {
       personaDropdownOpen = false;
     }
+    if (providerDropdownOpen && !e.target.closest('.provider-wrapper')) {
+      providerDropdownOpen = false;
+    }
   }
 
   $: currentPersonaName = personas.find(p => p.id === currentPersona)?.name || currentPersona;
+  $: currentProviderName = providers.find(p => p.name === provider)?.displayName || provider;
   $: theme = MODE_COLORS[mode] || MODE_COLORS.instant;
 
   // ── Status ──
@@ -184,6 +216,38 @@
 
   <!-- RIGHT: Actions -->
   <div class="header-right">
+    <!-- Provider Selector (integrated) -->
+    <div class="provider-wrapper">
+      <button
+        class="provider-btn"
+        on:click|stopPropagation={() => providerDropdownOpen = !providerDropdownOpen}
+        disabled={providerLoading}
+        title="Provider: {currentProviderName}"
+      >
+        <span class="provider-emoji">🌐</span>
+        <span class="provider-name">{currentProviderName}</span>
+        <svg class="provider-chevron" class:open={providerDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+
+      {#if providerDropdownOpen}
+        <div class="provider-dropdown">
+          {#each providers as p}
+            <button
+              class="provider-option"
+              class:active={provider === p.name}
+              on:click={() => selectProvider(p.name)}
+            >
+              <span class="provider-option-name">{p.displayName || p.name}</span>
+            </button>
+          {:else}
+            <div class="provider-empty">Nenhum provider encontrado</div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
     <!-- Persona Selector (integrated) -->
     <div class="persona-wrapper">
       <button
@@ -721,6 +785,102 @@
     margin-top: 1px;
   }
   .persona-empty {
+    padding: 12px;
+    color: var(--luna-text-secondary, #94a3b8);
+    font-size: 0.8125rem;
+    text-align: center;
+  }
+
+  /* ── Provider Selector (integrated) ── */
+  .provider-wrapper {
+    position: relative;
+  }
+  .provider-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: var(--luna-text-secondary, #94a3b8);
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    max-width: 140px;
+  }
+  .provider-btn:hover:not(:disabled) {
+    background: rgba(255,255,255,0.07);
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+  .provider-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .provider-emoji {
+    font-size: 0.875rem;
+    flex-shrink: 0;
+  }
+  .provider-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 90px;
+  }
+  .provider-chevron {
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+    opacity: 0.6;
+  }
+  .provider-chevron.open {
+    transform: rotate(180deg);
+  }
+  .provider-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 160px;
+    max-width: 260px;
+    background: linear-gradient(145deg, #1a1a2e 0%, #0f0f1a 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    z-index: 100;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03);
+    animation: dropdownIn 0.15s ease-out;
+  }
+  .provider-option {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--luna-text, #e2e8f0);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    transition: all 0.15s ease;
+  }
+  .provider-option:hover {
+    background: rgba(255,255,255,0.05);
+  }
+  .provider-option.active {
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+  .provider-option-name {
+    font-weight: 600;
+  }
+  .provider-empty {
     padding: 12px;
     color: var(--luna-text-secondary, #94a3b8);
     font-size: 0.8125rem;

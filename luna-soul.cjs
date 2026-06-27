@@ -218,9 +218,7 @@ function loadPersonaRegistry() {
       const desc = descMatch ? descMatch[1].trim() : '';
       personas.push({ name, description: desc });
     }
-  } catch (err) {
-    console.error('[luna-soul]', err.message, err.stack);
-  }
+  } catch {}
   return personas;
 }
 
@@ -238,9 +236,7 @@ function loadSkillRegistry() {
       const desc = descMatch ? descMatch[1].trim() : '';
       skills.push({ name: dir, description: desc });
     }
-  } catch (err) {
-    console.error('[luna-soul]', err.message, err.stack);
-  }
+  } catch {}
   return skills;
 }
 
@@ -269,7 +265,7 @@ function buildSystemPrompt(opts = {}) {
 
   // v10.22-fix: workspace isolation per user/session
   const workspace = workspaceManager.getWorkspace(userId);
-  const workspacePath = workspace ? workspace.path : '/home/jhin';
+  const workspacePath = workspace ? workspace.path : os.homedir();
   const workspaceContext = workspaceManager.getFormattedManifest(userId) || `Workspace padrão: ${workspacePath}`;
 
   const cfg = getPromptConfig();
@@ -330,7 +326,7 @@ NEVER use ipython for file ops — use readFile/writeFile/executeShell.
 ONE tool per message. WAIT for result before next.
 
 [CONTEXT]
-Home: /home/jhin/ | Active Workspace: ${workspacePath} | User: ${userId} | Skills: ${skillIndex ? skillIndex.split('\n').length : 0} | Personas: ${personaRegistry ? personaRegistry.split('\n').length : 0}
+Home: ${os.homedir()}/ | Active Workspace: ${workspacePath} | User: ${userId} | Skills: ${skillIndex ? skillIndex.split('\n').length : 0} | Personas: ${personaRegistry ? personaRegistry.split('\n').length : 0}
 ${workspaceContext ? '\n[WORKSPACE]\n' + workspaceContext : ''}
 ${agentsMd ? '\n[AGENTS.md]\n' + agentsMd.slice(0, 1500) + (agentsMd.length > 1500 ? '\n...[truncated]...' : '') : ''}
 ${memoryContext ? '\n[MEMORIES]\n' + memoryContext.slice(0, 2000) + (memoryContext.length > 2000 ? '\n...[truncated]...' : '') : ''}
@@ -421,9 +417,7 @@ function parseKimiResponse(text) {
     () => {
       const lines = cleaned.split('\n');
       for (const line of lines) {
-        try { return JSON.parse(line); } catch (parseErr) {
-          console.error('[luna-soul]', parseErr.message, parseErr.stack);
-        }
+        try { return JSON.parse(line); } catch {}
       }
       throw new Error('No valid JSON line');
     },
@@ -446,9 +440,7 @@ function parseKimiResponse(text) {
         parsed.response = parsed.message;
       }
       return parsed;
-    } catch (strategyErr) {
-      console.error('[luna-soul]', strategyErr.message, strategyErr.stack);
-    }
+    } catch {}
   }
 
   return null;
@@ -683,9 +675,7 @@ function parseTagResponse(text) {
           combinedResponse = parsedResp.response;
           break; // First response block wins
         }
-      } catch (respErr) {
-        console.error('[luna-soul]', respErr.message, respErr.stack);
-      }
+      } catch {}
     }
 
     // ACTION / PLAN mode — code blocks are PRIMARY, [[action]] tags are fallback
@@ -752,9 +742,7 @@ function isJsonResponseComplete(text) {
     if (parsed.response !== undefined || parsed.tool !== undefined || parsed.script !== undefined) {
       return true;
     }
-  } catch (jsonErr) {
-    console.error('[luna-soul]', jsonErr.message, jsonErr.stack);
-  }
+  } catch {}
   return false;
 }
 
@@ -879,9 +867,7 @@ function loadSkillIndex() {
         }
       }
     }
-  } catch (err) {
-    console.error('[luna-soul]', err.message, err.stack);
-  }
+  } catch {}
   return skills;
 }
 
@@ -903,9 +889,7 @@ function loadMemories() {
       const content = fs.readFileSync(path.join(MEMORIES_DIR, file), 'utf8');
       memories.push({ file, content: content.slice(0, 2000) }); // limit size
     }
-  } catch (err) {
-    console.error('[luna-soul]', err.message, err.stack);
-  }
+  } catch {}
   return memories;
 }
 
@@ -925,6 +909,10 @@ class MetaExecutor {
         return this._createTool(params);
       case 'create_skill':
         return this._createSkill(params);
+      case 'switch_provider':
+        return this._switchProvider(params);
+      case 'switch_provider':
+        return this._switchProvider(params);
       case 'create_persona':
         return this._createPersona(params);
       case 'create_script':
@@ -1329,9 +1317,7 @@ class ProjectHealthValidator {
           results.push(fullPath);
         }
       }
-    } catch (err) {
-      console.error('[luna-soul]', err.message, err.stack);
-    }
+    } catch {}
     return results;
   }
 
@@ -1403,9 +1389,7 @@ class ProjectHealthValidator {
               this.fixes.push(`📝 Erro detectado na página: ${errorText.slice(0, 200)}...`);
             }
           }
-        } catch (pageErr) {
-          console.error('[luna-soul]', pageErr.message, pageErr.stack);
-        }
+        } catch {}
 
         return { screenshot: screenshotPath, errorText };
       } catch (e) {
@@ -1420,13 +1404,9 @@ class ProjectHealthValidator {
       if (serverProcess) {
         try {
           process.kill(-serverProcess.pid, 'SIGTERM');
-        } catch (killErr) {
-          console.error('[luna-soul]', killErr.message, killErr.stack);
-        }
+        } catch {}
         setTimeout(() => {
-          try { process.kill(-serverProcess.pid, 'SIGKILL'); } catch (killErr2) {
-            console.error('[luna-soul]', killErr2.message, killErr2.stack);
-          }
+          try { process.kill(-serverProcess.pid, 'SIGKILL'); } catch {}
         }, 2000);
       }
     }
@@ -1444,9 +1424,7 @@ class ProjectHealthValidator {
         const tw = JSON.parse(fs.readFileSync(twPkg, 'utf8'));
         if (tw.version && tw.version.startsWith('4.')) return true;
       }
-    } catch (err) {
-      console.error('[luna-soul]', err.message, err.stack);
-    }
+    } catch {}
     return false; // default to v3 style
   }
 }
@@ -1587,31 +1565,6 @@ class LunaSoul extends EventEmitter {
     this._executedActionCache.get(sessionId).set(toolHash, { timestamp: Date.now(), result });
   }
 
-  // MAMIS/1: Remove entradas de sessões mortas ou cujo TTL expirou do cache de ações.
-  _cleanupActionCache() {
-    const SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutos
-    const now = Date.now();
-    const knownSessionIds = new Set(
-      typeof this.sessionManager?.listSessions === 'function'
-        ? this.sessionManager.listSessions().map(s => s.sessionId || s.id)
-        : []
-    );
-    for (const [sessionId, sessionCache] of this._executedActionCache.entries()) {
-      let hasRecent = false;
-      for (const [toolHash, entry] of sessionCache.entries()) {
-        if (!entry || now - entry.timestamp > SESSION_TTL_MS) {
-          sessionCache.delete(toolHash);
-        } else {
-          hasRecent = true;
-        }
-      }
-      // Remove sessão se não tiver entradas recentes ou se a sessão não existir mais
-      if (sessionCache.size === 0 || (!knownSessionIds.has(sessionId) && !hasRecent)) {
-        this._executedActionCache.delete(sessionId);
-      }
-    }
-  }
-
   /** Initialize git for workspace if available */
   async _ensureGit() {
     const ws = workspaceManager.getWorkspace('luna-cli');
@@ -1731,13 +1684,9 @@ class LunaSoul extends EventEmitter {
       const ctxFile = this.sessionManager?._contextFile?.(sessionId);
       if (ctxFile && fs.existsSync(ctxFile)) {
         const stats = fs.statSync(ctxFile);
-        // TODO-MAMIS/1: Substituir por tokenizer real (tiktoken/gpt-tokenizer) quando disponível.
-        // Fallback conservador: ~3.5 bytes/token para texto em português/JSON.
-        estimatedTokens = Math.floor(stats.size / 3.5);
+        estimatedTokens = Math.floor(stats.size / 4);
       }
-    } catch (err) {
-      console.error('[luna-soul] Falha ao estimar tokens pelo arquivo de contexto:', err.message, err.stack);
-    }
+    } catch {}
 
     // Fallback: estima pelo número de eventos
     if (estimatedTokens === 0) {
@@ -1757,9 +1706,9 @@ class LunaSoul extends EventEmitter {
    * so Kimi processes it before any user message. This prevents "starting from scratch"
    * and eliminates the need for manual copy/paste.
    */
-  async *_compactContext(sessionId, userId = 'luna-default') {
-    console.log(`[DEBUG-LUNA] _compactContext started for session ${sessionId}`);
-    yield { type: 'compact_start', message: '📦 Compactação manual iniciada. Criando checkpoint inteligente...', sessionId };
+  async *_autoCompact(sessionId, userId = 'luna-default') {
+    console.log(`[DEBUG-LUNA] _autoCompact started for session ${sessionId}`);
+    yield { type: 'compact_start', message: '📦 Contexto grande demais. Criando checkpoint inteligente...', sessionId };
 
     try {
       // 1. Read all events
@@ -1771,102 +1720,78 @@ class LunaSoul extends EventEmitter {
       console.log(`[LUNA] Compact summary built: ${summary.length} chars, ${events.length} events`);
 
       // 3. Create new thread in Kimi Web
-      if (!this.kimiBridge) {
-        throw new Error('Kimi bridge not available');
-      }
+      if (this.kimiBridge) {
+        yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
+        try {
+          await this.kimiBridge.newChat(userId);
+          console.log(`[LUNA] New chat created for user ${userId}`);
+        } catch (err) {
+          yield { type: 'compact_error', message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`, sessionId };
+          console.log(`[DEBUG-LUNA] _autoCompact finished (newChat failed)`);
+          return { success: false, error: err.message };
+        }
 
-      yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
+        // 4. SEND CHECKPOINT TO KIMI WEB as first message
+        // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
+        // v10.12-fix-deadlock: The parent sendMessageStream still holds session.processing=true.
+        // We must release it before calling sendMessage, otherwise we deadlock.
+        // v10.24-fix: If checkpoint fails, DO NOT clear local context — preserve conversation.
+        yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
+        let bridgeSession = null;
+        let wasProcessing = false;
+        let checkpointSent = false;
+        try {
+          bridgeSession = this.kimiBridge.userSessions?.get(userId);
+          wasProcessing = bridgeSession?.processing;
+          if (bridgeSession) bridgeSession.processing = false;
 
-      // v10.32-fix: Clear old chatUrl BEFORE calling newChat() so crash-recovery
-      // doesn't navigate back to the stale chat page if new tab creation fails.
-      try {
-        this.kimiBridge._clearChatUrl(userId);
-        console.log(`[LUNA-v10.32] Cleared old chatUrl before newChat for user ${userId}`);
-      } catch (e) {
-        console.warn(`[LUNA-v10.32] Failed to clear chatUrl: ${e.message}`);
-      }
-
-      let newChatResult;
-      try {
-        newChatResult = await this.kimiBridge.newChat(userId);
-        console.log(`[LUNA] New chat created for user ${userId}: ${newChatResult?.chatUrl}`);
-      } catch (err) {
-        yield { type: 'compact_error', message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`, sessionId };
-        console.log(`[DEBUG-LUNA] _compactContext finished (newChat failed)`);
-        return { success: false, error: err.message };
-      }
-
-      // 4. SEND CHECKPOINT TO KIMI WEB as first message
-      // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
-      // v10.32-fix: Use sendMessageNoWait so compaction succeeds even if Kimi is slow.
-      yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
-
-      let bridgeSession = null;
-      let wasProcessing = false;
-      try {
-        bridgeSession = this.kimiBridge.userSessions?.get(userId);
-        wasProcessing = bridgeSession?.processing;
-        if (bridgeSession) bridgeSession.processing = false;
-
-        // Wait for the new page input to be ready
-        const page = bridgeSession?.page;
-        if (page) {
-          try {
-            await page.waitForSelector('textarea, [contenteditable="true"]', { timeout: 10000 });
-            console.log(`[LUNA] New chat input ready for checkpoint`);
-          } catch (e) {
-            console.warn(`[LUNA] New chat input not ready: ${e.message}`);
+          // v10.18-fix: Wait for the new page to be ready before sending checkpoint
+          const page = bridgeSession?.page;
+          if (page) {
+            try {
+              await page.waitForSelector('textarea, [contenteditable="true"]', { timeout: 10000 });
+              console.log(`[LUNA] New chat input ready for checkpoint`);
+            } catch (e) {
+              console.warn(`[LUNA] New chat input not ready: ${e.message}`);
+            }
           }
+
+          const sendResult = await Promise.race([
+            this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (60s)')), 60000))
+          ]);
+
+          const respLen = sendResult?.response?.length || 0;
+          console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
+          yield { type: 'compact_progress', message: `✅ Kimi recebeu o checkpoint (${respLen} chars)`, sessionId };
+          checkpointSent = true;
+        } catch (sendErr) {
+          console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
+          yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
+          console.log(`[DEBUG-LUNA] _autoCompact finished (checkpoint send failed)`);
+          return { success: false, error: sendErr.message };
+        } finally {
+          // v10.16-fix: ALWAYS restore processing state, even on timeout/error
+          if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
         }
-
-        const sendResult = await Promise.race([
-          this.kimiBridge.sendMessageNoWait(userId, summary, { mode: 'thinking' }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (120s)')), 120000))
-        ]);
-
-        console.log(`[LUNA] Checkpoint submitted to new chat. URL: ${sendResult?.url}`);
-        yield { type: 'compact_progress', message: `✅ Checkpoint enviado para nova thread`, sessionId };
-      } catch (sendErr) {
-        console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
-        yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
-        console.log(`[DEBUG-LUNA] _compactContext finished (checkpoint send failed)`);
-        return { success: false, error: sendErr.message };
-      } finally {
-        // ALWAYS restore processing state, even on timeout/error
-        if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
       }
 
-      // 5. Capture and persist the REAL new thread URL
-      let finalUrl;
-      try {
-        finalUrl = await this.kimiBridge._captureCurrentChatUrl(userId);
-        console.log(`[LUNA-v10.32] Captured final chatUrl after checkpoint: ${finalUrl}`);
-      } catch (captureErr) {
-        // Fallback to newChat result if capture fails
-        finalUrl = newChatResult?.chatUrl;
-        if (!finalUrl) {
-          yield { type: 'compact_error', message: `❌ Não foi possível confirmar URL da nova thread: ${captureErr.message}. Contexto preservado.`, sessionId };
-          return { success: false, error: captureErr.message };
-        }
-        console.warn(`[LUNA-v10.32] _captureCurrentChatUrl failed, using newChat URL: ${finalUrl}`);
-      }
-
-      // 6. Clear local context ONLY after newChat + checkpoint send + URL capture succeeded
+      // 5. Clear local context ONLY after newChat + checkpoint send succeeded
       this.sessionManager.clearContext(sessionId);
 
-      // 7. Store summary as first local event (fallback + loop continuity)
+      // 6. Store summary as first local event (fallback + loop continuity)
       this.sessionManager.appendEvent(sessionId, {
         type: 'assistant',
         mode: 'CHAT',
-        response: `[CHECKPOINT] Contexto compactado. Nova thread: ${finalUrl}\n\n${summary.slice(0, 2000)}${summary.length > 2000 ? '\n\n[... resumo truncado no contexto local, completo enviado ao Kimi]' : ''}`,
+        response: `[CHECKPOINT] Contexto compactado. Checkpoint enviado para nova thread do Kimi.\n\n${summary.slice(0, 2000)}${summary.length > 2000 ? '\n\n[... resumo truncado no contexto local, completo enviado ao Kimi]' : ''}`,
         timestamp: new Date().toISOString(),
       });
 
       yield { type: 'compact_end', message: '✅ Contexto compactado. Nova thread pronta com checkpoint inteligente.', summary, sessionId };
-      console.log(`[DEBUG-LUNA] _compactContext finished (success)`);
-      return { success: true, summary, chatUrl: finalUrl };
+      console.log(`[DEBUG-LUNA] _autoCompact finished (success)`);
+      return { success: true, summary };
     } catch (err) {
-      console.error(`[DEBUG-LUNA] _compactContext finished (error): ${err.message}`);
+      console.error(`[DEBUG-LUNA] _autoCompact finished (error): ${err.message}`);
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
       return { success: false, error: err.message };
     }
@@ -1923,10 +1848,8 @@ class LunaSoul extends EventEmitter {
         }
       } else if (ev.type === 'tool_result' && !ev.success) {
         errorCount++;
+        const err = (ev.error || ev.result?.stderr || ev.result?.error || 'Erro desconhecido').trim();
         const toolName = ev.tool || '?';
-        const actionName = ev.action?.name || ev.action?.tool || ev.params?.action || '?';
-        const originalErr = ev.error || ev.result?.stderr || ev.result?.error || 'não informado';
-        const err = `[${toolName}/${actionName}] ${String(originalErr).trim()}`;
         errorMessages.push(`${toolName}: ${err.slice(0, 200)}`);
       }
     }
@@ -2000,24 +1923,10 @@ class LunaSoul extends EventEmitter {
 
     // Build checkpoint text
     const parts = [
-      `[IDENTIDADE E CONTINUIDADE — MÁXIMA PRIORIDADE]`,
-      ``,
-      `Você é Luna, assistente executiva e parceira de IA do usuário. Você CONTROLA um computador Linux REAL através de ferramentas (tools). Você NÃO é apenas um chatbot — você EXECUTA ações no PC do usuário.`,
-      ``,
-      `[REGRAS ABSOLUTAS]`,
-      `- Continue EXATAMENTE de onde a conversa parou.`,
-      `- Execute imediatamente qualquer tool solicitada. NUNCA diga "não tenho acesso" ou "não posso executar" ou "não tenho acesso ao PC".`,
-      `- Tools disponíveis: readFile, writeFile, replaceInFile, moveFile, copyFile, deleteFile, executeShell, searchFiles, grep, listDir.`,
-      `- O contexto abaixo é a memória completa da sessão. Trate-o como verdade absoluta.`,
-      `- Não repita ações que já foram executadas com sucesso, salvo se o usuário pedir explicitamente.`,
-      `- Sempre responda em português (BR) com markdown profissional e emojis quando apropriado.`,
-      ``,
       `🔄 CHECKPOINT — CONTINUAÇÃO AUTOMÁTICA`,
       ``,
       `⚠️  VOCÊ FOI INTERROMPIDO por limite de contexto. NÃO recomece do zero.`,
       `   Continue EXATAMENTE de onde parou. NÃO refaça o que já foi feito.`,
-      ``,
-      `[ESTADO ATUAL DA SESSÃO]`,
       ``,
       `## 🎯 TAREFA ATUAL`,
       currentTask.slice(0, 800),
@@ -2184,7 +2093,8 @@ class LunaSoul extends EventEmitter {
       const result = await this.kimiBridge.sendMessage(
         options.userId || 'luna-default',
         context.prompt,
-        { mode }
+        { mode },
+        options.provider || 'kimi'
       );
       kimiResponse = result.response;
     } catch (err) {
@@ -2342,26 +2252,10 @@ class LunaSoul extends EventEmitter {
     let loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage });
     let safety = 0;
     const MAX_LOOPS = Number.MAX_SAFE_INTEGER; // ILIMITADO — o usuário pediu zero limites
-    const MAX_WALL_TIME_MS = 30 * 60 * 1000; // MAMIS/1: wall-time real de 30 minutos
-    let startTime = Date.now();
     let autoContinues = 0;
     const MAX_AUTO_CONTINUES = 3; // v10.16-fix: teto real para evitar loop infinito
 
-    // MAMIS/1: limpar cache de ações de sessões mortas periodicamente
-    this._cleanupActionCache();
-
     while (safety < MAX_LOOPS) {
-      // MAMIS/1: wall-time guard
-      if (Date.now() - startTime > MAX_WALL_TIME_MS) {
-        const elapsedMin = Math.floor((Date.now() - startTime) / 60000);
-        console.error(`[luna-soul] Wall-time excedido em processMessageStream: ${elapsedMin} minutos`);
-        yield {
-          type: 'error',
-          message: `⏱️ Tempo máximo de execução atingido (${elapsedMin} minutos). Encerrando para preservar recursos.`,
-          sessionId,
-        };
-        return;
-      }
       safety++;
       let fullThinking = '';
       let fullResponse = '';
@@ -2383,14 +2277,26 @@ class LunaSoul extends EventEmitter {
 
       while (!streamSuccess && bridgeRetryCount <= MAX_BRIDGE_RETRIES) {
         try {
-          // v10.32-fix: Compactação é 100% manual via botão "Compactar".
-          // Nenhuma compactação automática deve acontecer aqui.
+          // v10.15-fix: Auto-compact proativo antes de enviar pro Kimi.
+          // Se o contexto estimado ultrapassar 220K tokens, compacta ANTES de enviar.
+          // Limite do Kimi K2.6 é 256K tokens — 220K dá margem de segurança.
+          // compact_start/compact_progress/compact_end já têm animação de fases da lua no frontend.
+          if (bridgeRetryCount === 0 && this._shouldCompact(sessionId)) {
+            const compactResult = yield* this._autoCompact(sessionId, userId);
+            if (compactResult.success) {
+              // Rebuild context after compact
+              loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+            }
+          }
 
           // v6.0-fix: Pass files to sendMessageStream so the bridge can inject
           // text file contents directly into the prompt (bypassing placeholder)
           // v10.23-fix: Start a fresh Kimi chat on the first message of a new web session
           // to prevent context leakage from previous sessions/pages.
-          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: isFirstMessage && bridgeRetryCount === 0 });
+          // v10.27-fix: Only force newChat for Kimi — other providers may lose login state on reload.
+          const provider = options.provider || 'kimi';
+          const shouldForceNewChat = provider === 'kimi' && isFirstMessage && bridgeRetryCount === 0;
+          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: shouldForceNewChat }, provider);
 
           for await (const event of stream) {
             // v10.13: Drain any completed background actions BEFORE processing stream event
@@ -2473,10 +2379,6 @@ class LunaSoul extends EventEmitter {
                   response: respText,
                   timestamp: new Date().toISOString(),
                 });
-                // Reset wall-time on every detected response so long vibecoding sessions
-                // are not killed while actively producing content.
-                startTime = Date.now();
-                console.log(`[luna-soul] Wall-time reset after response_detected (${respText.length} chars)`);
               }
               break;
             }
@@ -2549,14 +2451,25 @@ class LunaSoul extends EventEmitter {
             }
 
             case 'context_limit': {
-              // v10.32-fix: Compactação é manual. Informa o usuário e para o stream.
+              // v5.8-fix: Auto-compact + new thread quando Kimi reporta limite de contexto
               fullResponse = event.response || '';
-              yield {
-                type: 'system',
-                message: '📦 Limite de contexto atingido. Clique em "Compactar" no cabeçalho para continuar.',
-                sessionId
-              };
-              return;
+              yield { type: 'system', message: '📦 Limite de contexto atingido. Compactando e criando nova thread...', sessionId };
+              const compactResult = yield* this._autoCompact(sessionId, userId);
+              if (compactResult.success) {
+                // v10.12-fix-deadlock: The previous sendMessageStream still holds session.processing=true.
+                // If we continue the while-loop immediately, the new sendMessageStream will deadlock.
+                // We MUST release the lock before creating a new stream.
+                const bridgeSession = this.kimiBridge?.userSessions?.get(userId);
+                if (bridgeSession) {
+                  bridgeSession.processing = false;
+                  console.log(`[LUNA] Released session.processing for user ${userId} before continuing after compact`);
+                }
+                loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+                continue;
+              } else {
+                yield { type: 'error', error: '❌ Falha ao compactar contexto: ' + compactResult.error, sessionId };
+                return;
+              }
             }
 
             case 'done':
@@ -2670,6 +2583,7 @@ class LunaSoul extends EventEmitter {
           continue; // Retry the while loop with new context
         }
 
+        console.error(`[LUNA-SOUL] Stream error: ${err.message} (provider=${options.provider || 'kimi'})`);
         if (err.message === 'KIMI_LOGIN_REQUIRED') {
           yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.com e faça login.', sessionId };
         } else {
@@ -2681,8 +2595,26 @@ class LunaSoul extends EventEmitter {
       streamSuccess = true; // Mark success to exit retry loop
       } // end while retry loop
 
-      // v10.32-fix: Regex fallback de context limit removido. Compactação é manual.
-      // Se o Kimi responder com frases de limite, o evento context_limit já foi tratado acima.
+      // v5.8-fix: Context limit detectado pelo texto da resposta. Auto-compact + new thread.
+      if (/getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i.test(fullResponse)) {
+        yield { type: 'system', message: '📦 Limite de contexto atingido. Compactando e criando nova thread...', sessionId };
+        try {
+          const compactResult = yield* this._autoCompact(sessionId, userId);
+          if (compactResult.success) {
+            // v10.12-fix-deadlock: Release processing lock before continuing
+            const bridgeSession = this.kimiBridge?.userSessions?.get(userId);
+            if (bridgeSession) {
+              bridgeSession.processing = false;
+              console.log(`[LUNA] Released session.processing for user ${userId} before continuing after compact (regex fallback)`);
+            }
+            loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+            continue;
+          }
+        } catch (compactErr) {
+          console.error('[LUNA] Auto-compact failed:', compactErr.message);
+          yield { type: 'context_limit', error: 'Falha ao compactar contexto: ' + compactErr.message, sessionId };
+        }
+      }
 
       // Parse the full response (tag-based primary, JSON fallback)
       let parsed = parseTagResponse(fullResponse) || parseKimiResponse(fullResponse);
@@ -2875,7 +2807,7 @@ REGRAS:
 
         console.log(`[PLAN MODE] Turn ${turn + 1}/${MAX_TURNS} starting (toolsSoFar=${totalToolCalls}, promptLen=${turnPrompt.length})`);
 
-        const stream = this.kimiBridge.sendMessageStream(userId, turnPrompt, { mode: 'thinking' });
+        const stream = this.kimiBridge.sendMessageStream(userId, turnPrompt, { mode: 'thinking' }, options.provider || 'kimi');
 
         for await (const event of stream) {
           while (eventBus.queue.length > 0) {
@@ -3026,7 +2958,7 @@ REGRAS:
     // Persist plan to file
     const fs = require('fs');
     const path = require('path');
-    const planDir = path.join(process.env.HOME || '/home/jhin', '.luna-kernel', 'plans');
+    const planDir = path.join(os.homedir(), '.luna-kernel', 'plans');
     fs.mkdirSync(planDir, { recursive: true });
     const planPath = path.join(planDir, `${sessionId}.md`);
     fs.writeFileSync(planPath, fullPlan, 'utf-8');
@@ -3043,7 +2975,7 @@ REGRAS:
 
   /** Build the special system prompt for Plan Mode (read-only investigation) */
   _buildPlanModePrompt(userInput) {
-    const homeDir = process.env.HOME || '/home/jhin';
+    const homeDir = os.homedir();
     return `[SYSTEM OVERRIDE — MÁXIMA PRIORIDADE — MODO DETETIVE]
 
 Você é Luna (🌙), agente executiva de Abner Gabriel / NEXO DIGITAL, operando no PC real Linux em ${homeDir}.
@@ -3060,14 +2992,14 @@ MODO ATUAL: DETETIVE — investigação APENAS LEITURA antes de executar qualque
 8. O plano final DEVE ser um bloco JSON no formato {"response": "..."} contendo markdown. NUNCA envie {"tool": ...} como plano final.
 
 FERRAMENTAS DE LEITURA PERMITIDAS:
-- listFiles — lista arquivos. Params: {"pattern": "/home/jhin"}
-- viewDirectory — estrutura de pastas. Params: {"path": "/home/jhin/.luna-kernel"}
-- readFile — lê arquivo. Params: {"path": "/home/jhin/.luna-kernel/package.json"}
-- grep — busca texto em arquivos. Params: {"pattern": "express", "path": "/home/jhin/NEXO_DASHBOARD_PRO/backend"}
-- searchFiles — busca arquivos por nome/conteúdo. Params: {"pattern": "*.js", "path": "/home/jhin/.luna-kernel"}
-- getFileInfo — info do arquivo. Params: {"path": "/home/jhin/.luna-kernel/luna-soul.cjs"}
-- glob — encontra arquivos. Params: {"pattern": "**/*.cjs", "path": "/home/jhin/.luna-kernel"}
-- ipython — executa Python para inspeção de arquivos. Params: {"code": "import os; print(os.listdir('/home/jhin'))"}
+- listFiles — lista arquivos. Params: {"pattern": "${homeDir}"}
+- viewDirectory — estrutura de pastas. Params: {"path": "${homeDir}/.luna-kernel"}
+- readFile — lê arquivo. Params: {"path": "${homeDir}/.luna-kernel/package.json"}
+- grep — busca texto em arquivos. Params: {"pattern": "express", "path": "${homeDir}/NEXO_DASHBOARD_PRO/backend"}
+- searchFiles — busca arquivos por nome/conteúdo. Params: {"pattern": "*.js", "path": "${homeDir}/.luna-kernel"}
+- getFileInfo — info do arquivo. Params: {"path": "${homeDir}/.luna-kernel/luna-soul.cjs"}
+- glob — encontra arquivos. Params: {"pattern": "**/*.cjs", "path": "${homeDir}/.luna-kernel"}
+- ipython — executa Python para inspeção de arquivos. Params: {"code": "import os; print(os.listdir('${homeDir}'))"}
 
 SINTAXE OBRIGATÓRIA (use EXATAMENTE assim, uma por mensagem):
 \`\`\`json
@@ -3125,9 +3057,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           const resp = parsed.response.trim();
           if (resp.length > 10) return resp;
         }
-      } catch (blockErr) {
-        console.error('[luna-soul]', blockErr.message, blockErr.stack);
-      }
+      } catch {}
     }
     // 2. Look for a standalone JSON object with response.
     const standalone = text.match(/\{\s*"response"\s*:\s*"[\s\S]*?"\s*\}/);
@@ -3136,9 +3066,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         const parsed = JSON.parse(standalone[0]);
         const resp = parsed.response.trim();
         if (resp.length > 10) return resp;
-      } catch (standaloneErr) {
-        console.error('[luna-soul]', standaloneErr.message, standaloneErr.stack);
-      }
+      } catch {}
     }
     // 3. Accept only an actual markdown plan (must start with a heading).
     const clean = text.trim();
@@ -3686,7 +3614,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const currentUserId = options.userId || session?.userId || 'luna-default';
 
       // v10.23-fix: ensure every web/session user has an isolated workspace
-      const defaultWorkspaceBase = workspaceManager.baseDir || '/home/jhin/.luna-workspace';
+      const defaultWorkspaceBase = workspaceManager.baseDir || path.join(os.homedir(), '.luna-workspace');
       const userWorkspacePath = path.join(defaultWorkspaceBase, currentUserId);
       workspaceManager.ensureWorkspace(currentUserId, userWorkspacePath);
 
@@ -4773,9 +4701,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
             const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
             state.persona = target;
             fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-          } catch (err) {
-            console.error('[luna-soul]', err.message, err.stack);
-          }
+          } catch {}
           this.emit('progress', {
             type: 'persona_switched',
             message: `🎭 Auto-switch: persona "${target}" ativada (${Math.round(confidence * 100)}% confiança)`,
@@ -4832,9 +4758,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
         state.persona = target;
         fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-      } catch (err) {
-        console.error('[luna-soul]', err.message, err.stack);
-      }
+      } catch {}
       this.emit('progress', {
         type: 'persona_switched',
         message: `🎭 Persona "${target}" ativada`,
@@ -4868,7 +4792,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const result = await this.kimiBridge.sendMessage(
         options.userId || 'luna-default',
         prompt,
-        { mode: options.mode || this.defaultMode }
+        { mode: options.mode || this.defaultMode },
+        options.provider || 'kimi'
       );
       kimiResponse = result.response;
     } catch (err) {

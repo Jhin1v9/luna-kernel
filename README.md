@@ -97,12 +97,16 @@ JWT_SECRET=minha_chave_secreta_muito_longa_e_segura_123456
 
 ### 🌐 Interface Web (recomendado)
 
+O servidor web da Luna agora faz parte do **NEXO Dashboard**:
+
 ```bash
-cd ~/.luna-kernel
-node config-server.cjs
+cd ~/NEXO_DASHBOARD_PRO/backend
+node luna-server.js
 ```
 
 Abra no navegador: **http://localhost:3458**
+
+> ⚠️ O antigo `config-server.cjs` foi descontinuado. Use sempre `luna-server.js`.
 
 **Fluxo típico:**
 1. Clique em **"Nova Sessão"**
@@ -132,18 +136,20 @@ node luna-cli.cjs
 ## ⌨️ Comandos Úteis
 
 ```bash
-# Iniciar servidor web
-node config-server.cjs
+# Iniciar servidor web (via NEXO Dashboard)
+cd ~/NEXO_DASHBOARD_PRO/backend
+node luna-server.js
 
 # Iniciar bot do Telegram
+cd ~/.luna-kernel
 node telegram-luna-adapter.cjs
 
 # Usar via terminal
 node luna-cli.cjs
 
 # Rodar em background (precisa do PM2 instalado)
-pm2 start config-server.cjs --name luna-web
-pm2 start telegram-luna-adapter.cjs --name luna-telegram
+pm2 start ~/NEXO_DASHBOARD_PRO/backend/luna-server.js --name luna-web
+pm2 start ~/.luna-kernel/telegram-luna-adapter.cjs --name luna-telegram
 pm2 save
 
 # Ver logs
@@ -159,8 +165,8 @@ pm2 stop all
 
 ```
 ┌─────────────┐     HTTP/SSE      ┌─────────────────┐
-│   Navegador │ ◄──────────────► │ config-server   │
-│  (Luna Web) │                   │   (Node.js)     │
+│   Navegador │ ◄──────────────► │  luna-server    │
+│  (Luna Web) │                   │ (NEXO Dashboard)│
 └─────────────┘                   └────────┬────────┘
                                            │
                     ┌──────────────────────┼──────────────────────┐
@@ -184,7 +190,8 @@ pm2 stop all
 
 | Arquivo | Função |
 |---------|--------|
-| `config-server.cjs` | Servidor HTTP + API REST + SSE + serve a interface web |
+| `~/NEXO_DASHBOARD_PRO/backend/luna-server.js` | Servidor web da Luna (HTTP + API REST + SSE + interface) |
+| `config-server.cjs` | ⚠️ Descontinuado — não usar |
 | `luna-soul.cjs` | Cérebro da Luna — modos, compactação, roteamento |
 | `kimi-bridge.cjs` | Bridge Playwright CDP para o Kimi Web AI |
 | `luna-tools.cjs` | Ferramentas: writeFile, readFile, executeShell, etc. |
@@ -233,8 +240,8 @@ npm install
 
 ### ❌ Porta 3458 já em uso
 ```bash
-# Mude a porta no .env
-LUNA_CONFIG_PORT=3459
+# Mude a porta no .env do NEXO Dashboard
+LUNA_PORT=3459
 ```
 
 ### ❌ A interface web não carrega

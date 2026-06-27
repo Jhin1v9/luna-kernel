@@ -4,10 +4,10 @@
 
 set -e
 
-EXT_DIR="/home/jhin/.luna-kernel/luna-extension"
-CHROME_PROFILE="/home/jhin/.luna/chrome-profile"
+EXT_DIR="${HOME}/.luna-kernel/luna-extension"
+CHROME_PROFILE="${HOME}/.luna/chrome-profile"
 MANIFEST="$EXT_DIR/manifest.json"
-BACKEND_DIR="/home/jhin/NEXO_DASHBOARD_PRO/backend"
+BACKEND_DIR="${HOME}/NEXO_DASHBOARD_PRO/backend"
 
 echo "🌙 Luna Extension Deploy v8.1"
 
