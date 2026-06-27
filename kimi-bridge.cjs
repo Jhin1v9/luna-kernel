@@ -2011,7 +2011,8 @@ class KimiBridge {
     try {
       const cfg = this._loadProviderConfig(provider);
       const selectors = getProviderResponseSelectors(cfg);
-      const raw = await page.evaluate(({ containerSel, assistantSel }) => {
+      const codeBlockSelector = getProviderSelector(cfg, 'codeBlock') || 'pre code';
+      const raw = await page.evaluate(({ containerSel, assistantSel, codeBlockSel }) => {
         let response = '';
         if (assistantSel) {
           const assistants = document.querySelectorAll(assistantSel);
@@ -2023,12 +2024,20 @@ class KimiBridge {
           const last = containers[containers.length - 1];
           if (last) response = (last.innerText || last.textContent || '').trim();
         }
-        return response;
-      }, { containerSel: selectors.container, assistantSel: selectors.assistant });
+        // Gather all code-block texts for tool JSON detection.
+        const codeBlocks = [];
+        try {
+          document.querySelectorAll(codeBlockSel).forEach(el => {
+            const text = (el.textContent || el.innerText || '').trim();
+            if (text) codeBlocks.push(text);
+          });
+        } catch {}
+        return { response, codeBlocks };
+      }, { containerSel: selectors.container, assistantSel: selectors.assistant, codeBlockSel: codeBlockSelector });
 
       // v10.27-fix: Clean up DeepSeek code-block artifacts ("json\nCopy\nDownload\n{...}")
       // and unwrap JSON wrappers like {"response": "..."}.
-      let response = raw;
+      let response = raw.response || '';
       response = response.replace(/^json\s*[\r\n]+/i, '').trim();
       response = response.replace(/^(Copy\s+Download\s*[\r\n]+)/i, '').trim();
       response = response.replace(/\n\s*Copy\s*\n\s*Download\s*\n?/i, '\n').trim();
@@ -2047,9 +2056,36 @@ class KimiBridge {
         // Not valid JSON or no response field — keep raw cleaned text.
       }
 
-      return { response: response.trim(), source: 'generic-provider', raw: raw.substring(0, 200) };
+      // v10.32-fix: Detect tool JSON blocks in code blocks and raw response for non-Kimi providers.
+      const detectedTools = [];
+      function tryParseToolJson(text) {
+        if (!text || text.length < 10) return null;
+        if (!text.includes('"tool"')) return null;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed.tool === 'string' && parsed.params && typeof parsed.params === 'object') {
+            return { tool: parsed.tool, params: parsed.params };
+          }
+          if (parsed && typeof parsed.tool === 'string' && (parsed.path || parsed.command || parsed.script || parsed.query)) {
+            return { tool: parsed.tool, params: parsed };
+          }
+        } catch {}
+        return null;
+      }
+      for (const block of raw.codeBlocks || []) {
+        // Strip DeepSeek code-block artifacts before parsing.
+        let cleaned = block.replace(/^json\s*[\r\n]+/i, '').trim();
+        cleaned = cleaned.replace(/^Copy\s+Download\s*[\r\n]+/i, '').trim();
+        const toolAction = tryParseToolJson(cleaned);
+        if (toolAction) detectedTools.push(toolAction);
+      }
+      // Also scan the raw response itself for any JSON tool object.
+      const responseTool = tryParseToolJson(response);
+      if (responseTool) detectedTools.push(responseTool);
+
+      return { response: response.trim(), detectedTools, source: 'generic-provider', raw: (raw.response || '').substring(0, 200) };
     } catch (e) {
-      return { response: '', source: 'generic-provider-error' };
+      return { response: '', detectedTools: [], source: 'generic-provider-error' };
     }
   }
 
@@ -5079,7 +5115,7 @@ class KimiBridge {
       // Generic provider fallback for DeepSeek and future providers
       if (provider !== 'kimi') {
         const generic = await this._genericProviderExtraction(page, provider);
-        if (generic.response) {
+        if (generic.response || (generic.detectedTools && generic.detectedTools.length > 0)) {
           let uiState = await this._detectUiState(page, provider);
           // v10.27-fix: DeepSeek's send button is disabled when the input is empty,
           // so _detectUiState reports canSteer=false/isGenerating=true forever.
@@ -5100,10 +5136,16 @@ class KimiBridge {
           // Avoid log spam when the response is stable and idle.
           const shouldLogGeneric = !session || session._lastLoggedGenericResponse !== generic.response || session._lastLoggedGenericIsGen !== uiState.isGenerating;
           if (shouldLogGeneric) {
-            log.info(`[_poll] generic-provider: response=${generic.response.length} chars isGen=${uiState.isGenerating}`);
+            log.info(`[_poll] generic-provider: response=${generic.response.length} chars tools=${(generic.detectedTools || []).length} isGen=${uiState.isGenerating}`);
             if (session) {
               session._lastLoggedGenericResponse = generic.response;
               session._lastLoggedGenericIsGen = uiState.isGenerating;
+            }
+          }
+          // v10.32-fix: Enqueue detected tool actions so Luna can execute them.
+          if (generic.detectedTools && userId) {
+            for (const toolAction of generic.detectedTools) {
+              this._enqueueDomEvent(userId, { type: 'action_detected', action: toolAction, source: 'generic-provider-tool', timestamp: Date.now() });
             }
           }
           return { thinking: '', response: generic.response, canSteer: uiState.canSteer, isGenerating: uiState.isGenerating, source: generic.source };

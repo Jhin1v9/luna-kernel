@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState, changelogModalOpen, changelogData } from './stores.js';
+  import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState, changelogModalOpen, changelogData, currentProvider } from './stores.js';
 
   // Update CSS theme variables when mode changes
   $: {
@@ -39,8 +39,9 @@
   // Quando não há sessão ativa, Luna vai dormir 💤
   $: if (!$currentSessionId) mascotState.set('sleep');
 
-  async function handleNewSession() {
-    const res = await sessionAction('create', null, 'Nova Sessão');
+  async function handleNewSession(selectedProvider = null) {
+    const provider = selectedProvider || $currentProvider || 'kimi';
+    const res = await sessionAction('create', null, 'Nova Sessão', provider);
     if (res.ok && res.session) {
       const newSession = { ...res.session, updatedAt: new Date().toISOString() };
       sessions.update(s => [newSession, ...s]);
@@ -129,6 +130,12 @@
   }
 
   onMount(async () => {
+    // v10.27-fix: on root URL (/), always start at home and ignore persisted session.
+    // Only restore a session if the URL explicitly requests it via ?session=xxx.
+    if (!getSessionFromURL()) {
+      currentSessionId.set(null);
+    }
+
     // Auto-login: validate existing token
     try {
       const me = await fetchMe();

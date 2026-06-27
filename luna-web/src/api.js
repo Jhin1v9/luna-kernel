@@ -287,9 +287,10 @@ export async function fetchSessions() {
   }
 }
 
-export async function sessionAction(action, sessionId, title) {
+export async function sessionAction(action, sessionId, title, provider) {
   const body = { action, sessionId };
   if (title !== undefined) body.title = title;
+  if (provider !== undefined) body.provider = provider;
   const res = await fetch('/api/chat/session', {
     method: 'POST',
     headers: authHeaders(),

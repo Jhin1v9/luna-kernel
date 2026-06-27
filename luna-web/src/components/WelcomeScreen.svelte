@@ -1,6 +1,7 @@
 <script>
-  import { currentMode, MODE_COLORS } from '../stores.js';
+  import { currentMode, MODE_COLORS, currentProvider } from '../stores.js';
   import { onMount } from 'svelte';
+  import { fetchProviders } from '../api.js';
   import ToolsPanel from './ToolsPanel.svelte';
   import LeadDashboardModal from './LeadDashboardModal.svelte';
   import TaskDashboardModal from './TaskDashboardModal.svelte';
@@ -18,8 +19,40 @@
   let showLeadsModal = false;
   let showTasksModal = false;
 
-  onMount(() => { mounted = true; });
+  // Provider selector state
+  let providers = [];
+  let providerDropdownOpen = false;
+  let providerLoading = false;
+
+  onMount(async () => {
+    mounted = true;
+    try {
+      const res = await fetchProviders();
+      if (res.ok && res.providers) providers = res.providers;
+    } catch (e) {
+      console.error('Failed to load providers on welcome screen:', e);
+    }
+  });
+
+  $: currentProviderName = providers.find(p => p.name === $currentProvider)?.displayName || $currentProvider;
+
+  function selectProvider(providerId) {
+    if (providerId === $currentProvider) {
+      providerDropdownOpen = false;
+      return;
+    }
+    currentProvider.set(providerId);
+    providerDropdownOpen = false;
+  }
+
+  function handleClickOutside(e) {
+    if (providerDropdownOpen && !e.target.closest('.welcome-provider-wrapper')) {
+      providerDropdownOpen = false;
+    }
+  }
 </script>
+
+<svelte:window on:click={handleClickOutside} />
 
 <div class="welcome-screen" style="--accent: {theme.primary}; --glow: {theme.glow}">
   <div class="welcome-content" class:mounted>
@@ -36,8 +69,40 @@
       <p class="welcome-subtitle">Seu assistente autônomo inteligente</p>
     </div>
 
+    <!-- Provider Selector -->
+    <div class="welcome-provider-wrapper">
+      <button
+        class="welcome-provider-btn"
+        on:click|stopPropagation={() => providerDropdownOpen = !providerDropdownOpen}
+        disabled={providerLoading}
+        title="Provider: {currentProviderName}"
+      >
+        <span class="welcome-provider-emoji">🌐</span>
+        <span class="welcome-provider-name">{currentProviderName}</span>
+        <svg class="welcome-provider-chevron" class:open={providerDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+
+      {#if providerDropdownOpen}
+        <div class="welcome-provider-dropdown">
+          {#each providers as p}
+            <button
+              class="welcome-provider-option"
+              class:active={$currentProvider === p.name}
+              on:click={() => selectProvider(p.name)}
+            >
+              <span class="welcome-provider-option-name">{p.displayName || p.name}</span>
+            </button>
+          {:else}
+            <div class="welcome-provider-empty">Nenhum provider encontrado</div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
     <!-- Main CTA -->
-    <button class="new-chat-btn" on:click={onNewSession}>
+    <button class="new-chat-btn" on:click={() => onNewSession($currentProvider)}>
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="12" y1="5" x2="12" y2="19"/>
         <line x1="5" y1="12" x2="19" y2="12"/>
@@ -349,6 +414,101 @@
     0%, 100% { box-shadow: 0 0 6px rgba(16,185,129,0.3); }
     50% { box-shadow: 0 0 12px rgba(16,185,129,0.6); }
   }
+  /* ── Provider Selector on Welcome Screen ── */
+  .welcome-provider-wrapper {
+    position: relative;
+    margin-bottom: 12px;
+  }
+  .welcome-provider-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--luna-text-secondary, #94a3b8);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+  }
+  .welcome-provider-btn:hover:not(:disabled) {
+    background: rgba(255,255,255,0.09);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .welcome-provider-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .welcome-provider-emoji {
+    font-size: 0.95rem;
+  }
+  .welcome-provider-name {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .welcome-provider-chevron {
+    transition: transform 0.2s ease;
+    opacity: 0.6;
+  }
+  .welcome-provider-chevron.open {
+    transform: rotate(180deg);
+  }
+  .welcome-provider-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    min-width: 170px;
+    max-width: 260px;
+    background: linear-gradient(145deg, #1a1a2e 0%, #0f0f1a 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    z-index: 100;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03);
+    animation: dropdownIn 0.15s ease-out;
+  }
+  .welcome-provider-option {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--luna-text, #e2e8f0);
+    font-size: 0.85rem;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease;
+  }
+  .welcome-provider-option:hover {
+    background: rgba(255,255,255,0.06);
+  }
+  .welcome-provider-option.active {
+    background: rgba(255,255,255,0.1);
+    color: var(--accent);
+  }
+  .welcome-provider-empty {
+    padding: 10px;
+    color: var(--luna-text-secondary);
+    font-size: 0.8rem;
+    text-align: center;
+  }
+  @keyframes dropdownIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+
   @media (max-width: 640px) {
     .welcome-title { font-size: 32px; }
     .tips-section { grid-template-columns: 1fr; }

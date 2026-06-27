@@ -4,39 +4,9 @@ export const sessions = writable([]);
 export const selectedSessionIds = writable(new Set());
 export const selectionMode = writable(false);
 
-// Persistent session store — NO timeout, survives until user closes
-function createPersistentSessionStore() {
-  const STORAGE_KEY = 'luna_current_session';
 
-  let initial = null;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const data = JSON.parse(raw);
-      initial = data.id || null;
-    }
-  } catch (e) {
-    console.warn('Session restore error:', e);
-  }
-
-  const store = writable(initial);
-
-  store.subscribe(id => {
-    try {
-      if (id) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ id }));
-      } else {
-        localStorage.removeItem(STORAGE_KEY);
-      }
-    } catch (e) {
-      console.warn('Session persist error:', e);
-    }
-  });
-
-  return store;
-}
-
-export const currentSessionId = createPersistentSessionStore();
+// v10.27-fix: session is NOT persisted. Opening / always lands on the home screen.
+export const currentSessionId = writable(null);
 export const isStreaming = writable(false);
 export const currentMode = writable('instant');
 export const currentProvider = writable(localStorage.getItem('luna_provider') || 'kimi');

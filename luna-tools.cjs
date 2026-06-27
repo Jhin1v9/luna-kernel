@@ -23,6 +23,17 @@ const { execSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
 
+// v10.27-fix: Use a private Luna temp directory instead of system /tmp.
+// Some environments restrict /tmp access, causing ENOENT when creating logs.
+const LUNA_TMP_DIR = path.join(require('os').homedir(), '.luna-kernel', '.luna-tmp');
+try {
+  if (!fs.existsSync(LUNA_TMP_DIR)) {
+    fs.mkdirSync(LUNA_TMP_DIR, { recursive: true, mode: 0o700 });
+  }
+} catch (e) {
+  console.warn('[luna-tools] Could not create LUNA_TMP_DIR:', e.message);
+}
+
 // Load .env from NEXO_DASHBOARD_PRO backend
 const ENV_PATH = path.join(require('os').homedir(), 'NEXO_DASHBOARD_PRO', 'backend', '.env');
 if (fs.existsSync(ENV_PATH)) {
@@ -277,7 +288,7 @@ function executeScript(code, opts = {}) {
   const config = langMap[language.toLowerCase()];
   if (!config) return err(`Linguagem não suportada: ${language}. Use: bash, python, node, powershell`);
 
-  const scriptPath = path.join('/tmp', `luna-script-${Date.now()}.${config.ext}`);
+  const scriptPath = path.join(LUNA_TMP_DIR, `luna-script-${Date.now()}.${config.ext}`);
 
   try {
     fs.writeFileSync(scriptPath, code, 'utf8');
@@ -733,8 +744,8 @@ function fetchURL(url, opts = {}) {
 function executeShellVisible(command, opts = {}, onProgress) {
   return new Promise((resolve) => {
     const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
-    const tmpFile = path.join(os.tmpdir(), `luna-shell-${Date.now()}.log`);
-    const scriptFile = path.join(os.tmpdir(), `luna-script-${Date.now()}.sh`);
+    const tmpFile = path.join(LUNA_TMP_DIR, `luna-shell-${Date.now()}.log`);
+    const scriptFile = path.join(LUNA_TMP_DIR, `luna-script-${Date.now()}.sh`);
 
     // Script that runs the command, streams output to both terminal and tmpFile via tee
     const scriptContent = `#!/bin/bash
@@ -880,7 +891,8 @@ function executeShell(command, opts = {}, onProgress) {
     let stderr = '';
     let killed = false;
 
-    const child = spawn(command, { shell: true, cwd, env: process.env });
+    // v10.27-fix: Always run via /bin/bash for consistent, surgical shell behavior.
+    const child = spawn('/bin/bash', ['-c', command], { cwd, env: process.env });
     const timer = timeoutMs > 0 ? setTimeout(() => {
       killed = true;
       child.kill('SIGTERM');
@@ -1088,7 +1100,7 @@ function gitCommit(message, opts = {}) {
 
 function applyPatch(patchContent, opts = {}) {
   const cwd = resolvePath(opts.cwd || '.');
-  const tmpFile = path.join(require('os').tmpdir(), `luna-patch-${Date.now()}.patch`);
+  const tmpFile = path.join(LUNA_TMP_DIR, `luna-patch-${Date.now()}.patch`);
   try {
     fs.writeFileSync(tmpFile, patchContent, 'utf8');
 
