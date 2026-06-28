@@ -9,7 +9,13 @@ export const selectionMode = writable(false);
 export const currentSessionId = writable(null);
 export const isStreaming = writable(false);
 export const currentMode = writable('instant');
-export const currentProvider = writable(localStorage.getItem('luna_provider') || 'kimi');
+// v10.33-fix: sanitize provider from localStorage in case it was corrupted to [object Object]
+function getStoredProvider() {
+  const raw = localStorage.getItem('luna_provider');
+  if (typeof raw === 'string' && raw && raw !== '[object Object]') return raw;
+  return 'kimi';
+}
+export const currentProvider = writable(getStoredProvider());
 export const messages = writable([]);
 export const lunaConfig = writable({});
 export const connectionStatus = writable('connected');
@@ -19,7 +25,9 @@ export const authToken = writable(localStorage.getItem('luna_token') || null);
 // Persist provider selection across reloads
 currentProvider.subscribe(provider => {
   try {
-    if (provider) localStorage.setItem('luna_provider', provider);
+    if (typeof provider === 'string' && provider && provider !== '[object Object]') {
+      localStorage.setItem('luna_provider', provider);
+    }
   } catch (e) {
     console.warn('Provider persist error:', e);
   }

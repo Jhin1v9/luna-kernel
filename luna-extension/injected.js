@@ -1,22 +1,41 @@
-// Luna Extension — Injected into MAIN world of kimi.com
-// v8.0: Real-time DOM observer that streams events via window.postMessage
+// Luna Extension — Injected into MAIN world of provider pages (kimi.com, chat.deepseek.com, etc.)
+// v8.2: Real-time DOM observer that streams events via window.postMessage
 // to the content script in ISOLATED world.
 
 (function setupLunaDomObserver() {
   if (window.__lunaDomObserver) return;
 
-  const VERSION = '2.0.0-v10.7';
+  const VERSION = '2.1.0-v10.20';
   const DEBOUNCE_MS = 250; // v10.7-fix: Increased from 50ms to reduce CPU load during streaming
   const TOOL_DEDUP_TTL_MS = 60000; // 60s TTL for deduplicating tool calls
-  const SELECTORS = {
-    assistantSegment: '.segment-assistant, [data-testid="segment-assistant"], .assistant-segment, .segment-content',
-    codeBlock: 'pre code, .segment-code, [class*="code"]',
-    toolContainer: '[class*="toolcall"], .toolcall-ipython, .toolcall-web_search, .toolcall-web_open_url, .toolcall-search_image',
-    sendButton: 'button[type="submit"], .send-btn, [data-testid="send-button"]',
-    stopButton: 'button.stop-btn, .stop-generation, [data-testid="stop-button"]',
-    thinking: '.thinking, [class*="thinking"], .segment-thinking, [class*="think-block"], [data-testid*="think"]',
-    textContent: '.segment-text, .message-content, .markdown-container, [class*="segment-text"], [class*="message-content"]'
-  };
+
+  // Provider-specific selectors so we don't over-match generic pages.
+  function getSelectors() {
+    const host = window.location.hostname;
+    if (host.includes('deepseek.com') || host.includes('deepseek.ai')) {
+      return {
+        assistantSegment: '.ds-message, .message, .assistant-message, [data-message-role="assistant"]',
+        codeBlock: 'pre code, .ds-markdown pre code, .ds-message pre code',
+        toolContainer: '',
+        sendButton: 'div[role="button"].ds-button--primary, div[role="button"][aria-label*="send" i], button[type="submit"]',
+        stopButton: 'div[role="button"] svg[class*="stop"], div[role="button"][aria-label*="stop" i]',
+        thinking: '.ds-thinking, [class*="thinking"]',
+        textContent: '.ds-markdown, .message-content'
+      };
+    }
+    // Default: Kimi Web
+    return {
+      assistantSegment: '.segment-assistant, [data-testid="segment-assistant"], .assistant-segment, .segment-content',
+      codeBlock: 'pre code, .segment-code',
+      toolContainer: '[class*="toolcall"], .toolcall-ipython, .toolcall-web_search, .toolcall-web_open_url, .toolcall-search_image',
+      sendButton: 'button[type="submit"], .send-btn, [data-testid="send-button"]',
+      stopButton: 'button.stop-btn, .stop-generation, [data-testid="stop-button"]',
+      thinking: '.thinking, [class*="thinking"], .segment-thinking, [class*="think-block"], [data-testid*="think"]',
+      textContent: '.segment-text, .message-content, .markdown-container, [class*="segment-text"], [class*="message-content"]'
+    };
+  }
+  const SELECTORS = getSelectors();
+
 
   // ── Event Sender ──
   // Sends events to content script via window.postMessage

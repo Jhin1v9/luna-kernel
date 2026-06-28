@@ -40,7 +40,9 @@
   $: if (!$currentSessionId) mascotState.set('sleep');
 
   async function handleNewSession(selectedProvider = null) {
-    const provider = selectedProvider || $currentProvider || 'kimi';
+    const provider = (typeof selectedProvider === 'string' ? selectedProvider : null)
+      || (typeof $currentProvider === 'string' ? $currentProvider : null)
+      || 'kimi';
     const res = await sessionAction('create', null, 'Nova Sessão', provider);
     if (res.ok && res.session) {
       const newSession = { ...res.session, updatedAt: new Date().toISOString() };

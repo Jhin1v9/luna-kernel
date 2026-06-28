@@ -92,20 +92,40 @@ Backend (sibling to luna-web/):
 
 ## Event Flow (Critical)
 
+Luna is a **mirror agent**: it has no brain of its own. The actual reasoning happens inside Kimi Web or DeepSeek Web. Luna only reads the LLM's page and reflects its actions back to the user's PC.
+
 ```
-1. User sends message → POST /api/chat
-2. luna-soul.cjs starts processMessageStream()
-3. Kimi bridge streams events (thinking_delta, response_delta, action_detected, ...)
-4. luna-chat-routes.js stores events in session memory
-5. SSE endpoint (/api/chat/stream) polls session every 100ms
-6. ChatArea.svelte receives events → updates messages store
-7. MessagesList.svelte renders components by message type
+User → Luna Web (Svelte) → luna-server (Node) → luna-soul.cjs → kimi-bridge.cjs
+                                                              ↓
+                                                    Kimi Web / DeepSeek Web (Chrome)
+                                                              ↓
+                                                    LLM emits JSON tool code blocks
+                                                              ↓
+                                          Chrome Extension (MAIN world) OR Playwright DOM mirror
+                                                              ↓
+                                                    luna-soul.cjs parses JSON tool blocks
+                                                              ↓
+                                                    luna-tools.cjs executes on user's PC
+                                                              ↓
+                                                    Result is sent back to the LLM chat
 ```
+
+1. User sends message → `POST /api/chat`
+2. `luna-soul.cjs` starts `processMessageStream()`
+3. `kimi-bridge.cjs` forwards the message to Kimi Web or DeepSeek Web via Chrome
+4. The external LLM streams its response, including JSON code blocks for tool actions
+5. The Chrome extension (primary) or Playwright DOM mirror (fallback) detects those code blocks and emits `action_detected` events
+6. `luna-soul.cjs` parses the JSON, executes the matching tool via `luna-tools.cjs`
+7. The tool result is sent back to the LLM as a follow-up message
+8. `luna-chat-routes.js` stores events in session memory
+9. SSE endpoint (`/api/chat/stream`) polls session every 100ms
+10. `ChatArea.svelte` receives events → updates messages store
+11. `MessagesList.svelte` renders components by message type
 
 **Key events:**
 - `thinking_start/delta` → ThinkingBubble
 - `response_delta` → accumulated in buffer, flushed to AssistantMessage
-- `action_start/end` → ToolCard (source of truth for tool state)
+- `action_detected` / `action_start` / `action_end` → ToolCard (source of truth for tool state)
 - `done` → stream ends
 
 ---
@@ -121,8 +141,21 @@ Backend (sibling to luna-web/):
 - **THINKING/AGENT/SWARM:** Shows ThinkingBubble while processing
 - **INSTANT:** Shows TypingIndicator (dots animation), no thinking text
 
+### Tool Action Format
+Only **JSON code blocks** are used for tool actions. The legacy `[[action]]` / `[[response]]` tags are obsolete and must not be used in prompts or parsers.
+
+Example tool block detected by the extension / DOM mirror:
+```json
+{
+  "tool": "writeFile",
+  "params": { "path": "/home/user/project/readme.md", "content": "# Hello" }
+}
+```
+
+The mirror layer emits `action_detected`, `luna-soul.cjs` parses it, and `luna-tools.cjs` executes it on the user's machine. The output is then mirrored back to the LLM chat.
+
 ### Tool Card State
-ToolCard state is driven SOLELY by `action_start` → `action_end` events from the agent executor. Never rely on DOM mirroring for tool status.
+ToolCard state is driven SOLELY by `action_start` → `action_end` events from the mirror executor. Never rely on DOM mirroring alone for tool status.
 
 ### Deduplication
 Multiple layers prevent duplicate tool execution:

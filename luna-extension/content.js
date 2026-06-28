@@ -72,16 +72,25 @@
   // Observer re-injection is handled by SPA navigation hooks (pushState/replaceState/popstate)
   // and by the content script's own load. If the script is removed, page refresh restores it.
 
-  // ── Kimi Input Injection ──
-  function findKimiInput() {
-    // Strategy 1: contenteditable div (modern Kimi)
+  // ── Provider-aware Input Injection ──
+  function isDeepSeek() {
+    const host = window.location.hostname;
+    return host.includes('deepseek.com') || host.includes('deepseek.ai');
+  }
+
+  function findInput() {
+    if (isDeepSeek()) {
+      // DeepSeek uses a textarea in the bottom composer
+      const textarea = document.querySelector('textarea[placeholder*="Message"], textarea[placeholder*="mensagem" i], textarea');
+      if (textarea) return { element: textarea, type: 'textarea' };
+      return null;
+    }
+
+    // Kimi: modern UI uses a contenteditable div
     const editable = document.querySelector('[contenteditable="true"]');
     if (editable) return { element: editable, type: 'contenteditable' };
-
-    // Strategy 2: textarea (fallback)
     const textarea = document.querySelector('textarea');
     if (textarea) return { element: textarea, type: 'textarea' };
-
     return null;
   }
 
@@ -90,7 +99,6 @@
     el.focus();
 
     if (input.type === 'contenteditable') {
-      // Use execCommand for reliable contenteditable insertion
       document.execCommand('selectAll', false, null);
       document.execCommand('insertText', false, text);
     } else if (input.type === 'textarea') {
@@ -98,7 +106,6 @@
       el.selectionStart = el.selectionEnd = text.length;
     }
 
-    // Dispatch input events to trigger React/Vue reactivity
     const events = ['input', 'change', 'keyup'];
     for (const eventType of events) {
       const evt = new InputEvent(eventType, { bubbles: true, cancelable: true });
@@ -107,24 +114,38 @@
   }
 
   function clickSendButton() {
-    // Strategy 1: Find by aria-label
-    const allButtons = document.querySelectorAll('button');
-    for (const btn of allButtons) {
-      const aria = btn.getAttribute('aria-label') || '';
-      if (/send|enviar|发送|submit/i.test(aria)) {
-        btn.click();
-        return { method: 'aria-button' };
+    if (isDeepSeek()) {
+      // DeepSeek send button is a primary circular div[role="button"]
+      const candidates = document.querySelectorAll('div[role="button"]');
+      for (const btn of candidates) {
+        const cls = btn.className || '';
+        const aria = btn.getAttribute('aria-label') || '';
+        if (/ds-button--primary/.test(cls) || /send|enviar|发送|submit/i.test(aria)) {
+          if (!btn.disabled && btn.getBoundingClientRect().width < 80) {
+            btn.click();
+            return { method: 'deepseek-primary-button' };
+          }
+        }
       }
-      // Check for SVG arrow icon inside button
-      const svg = btn.querySelector('svg');
-      if (svg && !btn.disabled && btn.getBoundingClientRect().width < 60) {
-        btn.click();
-        return { method: 'svg-button' };
+    } else {
+      // Kimi send button
+      const allButtons = document.querySelectorAll('button');
+      for (const btn of allButtons) {
+        const aria = btn.getAttribute('aria-label') || '';
+        if (/send|enviar|发送|submit/i.test(aria)) {
+          btn.click();
+          return { method: 'kimi-aria-button' };
+        }
+        const svg = btn.querySelector('svg');
+        if (svg && !btn.disabled && btn.getBoundingClientRect().width < 60) {
+          btn.click();
+          return { method: 'kimi-svg-button' };
+        }
       }
     }
 
-    // Strategy 2: Press Enter on input
-    const input = findKimiInput();
+    // Fallback: press Enter on input
+    const input = findInput();
     if (input) {
       input.element.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true
@@ -140,7 +161,7 @@
 
   function injectToolResult(text) {
     try {
-      const input = findKimiInput();
+      const input = findInput();
       if (!input) {
         console.warn('[Luna Content] No input found for injection');
         return { ok: false, error: 'No input found' };

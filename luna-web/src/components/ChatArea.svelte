@@ -991,7 +991,10 @@
 
   // v10.32-fix: Sync currentProvider with the selected session's provider so the header
   // and sendMessage use the correct provider (Kimi/DeepSeek/etc).
-  $: sessionProvider = $sessions.find(s => s.id === sessionId)?.provider || $currentProvider || 'kimi';
+  $: rawSessionProvider = $sessions.find(s => s.id === sessionId)?.provider;
+  $: sessionProvider = (typeof rawSessionProvider === 'string' ? rawSessionProvider : null)
+    || (typeof $currentProvider === 'string' ? $currentProvider : null)
+    || 'kimi';
   $: if (sessionId && sessionProvider && sessionProvider !== $currentProvider) {
     currentProvider.set(sessionProvider);
   }

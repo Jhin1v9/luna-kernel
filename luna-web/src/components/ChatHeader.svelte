@@ -9,6 +9,7 @@
   export let title = 'Nova Conversa';
   export let mode = 'instant';
   export let provider = 'kimi';
+  $: safeProvider = typeof provider === 'string' ? provider : 'kimi';
   export let isStreaming = false;
   export let sessionId = null;
   export let isSidebarOpen = false;
@@ -67,18 +68,19 @@
   }
 
   async function selectProvider(providerId) {
-    if (providerId === provider) {
+    const id = typeof providerId === 'string' ? providerId : 'kimi';
+    if (id === safeProvider) {
       providerDropdownOpen = false;
       return;
     }
     providerLoading = true;
     try {
       if (sessionId) {
-        const res = await setSessionProvider(sessionId, providerId);
+        const res = await setSessionProvider(sessionId, id);
         if (!res.ok) throw new Error(res.error || 'Failed to set provider');
       }
-      provider = providerId;
-      dispatch('providerChange', providerId);
+      provider = id;
+      dispatch('providerChange', id);
     } catch (e) {
       console.error('Failed to set provider:', e);
     } finally {
@@ -97,7 +99,7 @@
   }
 
   $: currentPersonaName = personas.find(p => p.id === currentPersona)?.name || currentPersona;
-  $: currentProviderName = providers.find(p => p.name === provider)?.displayName || provider;
+  $: currentProviderName = providers.find(p => p.name === safeProvider)?.displayName || safeProvider;
   $: theme = MODE_COLORS[mode] || MODE_COLORS.instant;
 
   // ── Status ──
@@ -236,7 +238,7 @@
           {#each providers as p}
             <button
               class="provider-option"
-              class:active={provider === p.name}
+              class:active={safeProvider === p.name}
               on:click={() => selectProvider(p.name)}
             >
               <span class="provider-option-name">{p.displayName || p.name}</span>

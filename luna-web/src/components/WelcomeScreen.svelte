@@ -37,11 +37,12 @@
   $: currentProviderName = providers.find(p => p.name === $currentProvider)?.displayName || $currentProvider;
 
   function selectProvider(providerId) {
-    if (providerId === $currentProvider) {
+    const id = typeof providerId === 'string' ? providerId : 'kimi';
+    if (id === $currentProvider) {
       providerDropdownOpen = false;
       return;
     }
-    currentProvider.set(providerId);
+    currentProvider.set(id);
     providerDropdownOpen = false;
   }
 
