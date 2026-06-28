@@ -1,6 +1,29 @@
 {
   "releases": [
     {
+      "version": "10.19",
+      "date": "28 de Junho de 2026",
+      "updates": [
+        {
+          "icon": "🌐",
+          "title": "Providers no Chat",
+          "items": [
+            "<strong>DeepSeek e Kimi</strong> agora aparecem no seletor de provider do header",
+            "<strong>Provider da sessão</strong> é salvo e sincronizado automaticamente ao trocar de conversa",
+            "<strong>Troca de provider em tempo real</strong> via dropdown, sem perder o contexto"
+          ]
+        },
+        {
+          "icon": "🧪",
+          "title": "Testes E2E",
+          "items": [
+            "<strong>Fluxo DeepSeek validado</strong> do login até a resposta do assistente",
+            "<strong>Usuário de teste</strong> adicionado para login automatizado nos testes"
+          ]
+        }
+      ]
+    },
+    {
       "version": "10.18",
       "date": "12 de Junho de 2026",
       "updates": [
