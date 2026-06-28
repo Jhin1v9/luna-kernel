@@ -989,6 +989,13 @@
     startHeartbeat('web-' + sessionId, 30000);
   }
 
+  // v10.32-fix: Sync currentProvider with the selected session's provider so the header
+  // and sendMessage use the correct provider (Kimi/DeepSeek/etc).
+  $: sessionProvider = $sessions.find(s => s.id === sessionId)?.provider || $currentProvider || 'kimi';
+  $: if (sessionId && sessionProvider && sessionProvider !== $currentProvider) {
+    currentProvider.set(sessionProvider);
+  }
+
   $: if (sessionId && sessionId !== lastConnectedSessionId) {
     connectSSE();
   }
@@ -1196,7 +1203,7 @@
               // Send a continuation message to the backend
               if (activeSessionId) {
                 try {
-                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode, [], null, $currentProvider);
+                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode, [], null, sessionProvider);
                   await connectSSE();
                 } catch (e) {
                   console.error('[fullRefresh] Failed to send continuation:', e);
@@ -1333,7 +1340,7 @@
         console.log('[handleSend] calling startPlanMode', { planMsg, activeSessionId });
         await startPlanMode(planMsg, activeSessionId);
       } else {
-        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId, $currentProvider);
+        await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId, sessionProvider);
         // v7.1-fix: Reconnect SSE after sending a new message in the same session.
         // The previous SSE connection was gracefully closed after 'done'. We need
         // a fresh connection for the new message's streaming response.
