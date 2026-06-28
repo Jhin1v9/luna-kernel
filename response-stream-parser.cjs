@@ -18,20 +18,31 @@ const CB_OPEN_GENERIC = "```";
 const CB_CLOSE = "```";
 
 // ─── Helper: safe JSON parse with graceful degradation ───────────────────────
+const { jsonrepair } = require('jsonrepair');
 
 function safeJsonParse(text, fallback = null) {
+  if (!text || typeof text !== 'string') return fallback;
+  const trimmed = text.trim();
+  if (!trimmed) return fallback;
   try {
-    return JSON.parse(text);
-  } catch (err) {
-    // Try to extract first JSON object if wrapped in noise
-    const match = text.match(/\{[\s\S]*?\}(?=\s*$)/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]);
-      } catch {}
+    return JSON.parse(trimmed);
+  } catch {}
+  // v11.0-fix: repair common LLM JSON errors (unescaped quotes, missing escapes,
+  // trailing commas, markdown artifacts like "json\nCopy\nDownload\n{...}").
+  try {
+    const repaired = jsonrepair(trimmed);
+    if (repaired && repaired !== trimmed) {
+      return JSON.parse(repaired);
     }
-    return fallback;
+  } catch {}
+  // Fallback: extract first JSON object if wrapped in noise
+  const match = trimmed.match(/\{[\s\S]*?\}(?=\s*$)/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch {}
   }
+  return fallback;
 }
 
 // ─── Helper: brace balance checker (ignores braces inside strings) ───────────

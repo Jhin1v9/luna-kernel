@@ -39,6 +39,27 @@ const {
   autoFix,
 } = require('./luna-code-validator.cjs');
 const readline = require('readline');
+const { jsonrepair } = require('jsonrepair');
+
+// v11.0-fix: Tolerant JSON parser using jsonrepair to handle LLM output with
+// unescaped quotes inside HTML/code strings (common with DeepSeek writeFile).
+function tolerantJsonParse(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Fast path: already valid JSON.
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+  // Repair path: fix common LLM JSON errors (unescaped quotes, missing escapes,
+  // trailing commas, markdown artifacts like "json\nCopy\nDownload\n{...}").
+  try {
+    const repaired = jsonrepair(trimmed);
+    if (!repaired || repaired === trimmed) return null;
+    return JSON.parse(repaired);
+  } catch {}
+  return null;
+}
 
 // v10.11-fix: Simple logger for environments where log is not globally defined
 const log = {
@@ -425,37 +446,13 @@ function parseKimiResponse(text) {
       }
       throw new Error('No complete JSON object');
     },
-    // Strategy 3c: Recover malformed writeFile JSON tools where the LLM placed raw
-    // HTML/code inside the "content" field without escaping internal quotes.
-    // The result is not valid JSON, but we can still extract path and content
-    // because we know the exact shape: {"tool":"writeFile","params":{"path":"...","content":"..."}}
+    // Strategy 3c: Use jsonrepair to fix malformed LLM JSON (unescaped quotes,
+    // missing escapes, trailing commas, markdown artifacts). This is especially
+    // useful for DeepSeek writeFile tools containing raw HTML/code.
     () => {
-      const trimmed = cleaned.trim();
-      if (!/^\s*\{\s*"tool"\s*:\s*"writeFile"/.test(trimmed)) {
-        throw new Error('Not a writeFile tool');
-      }
-      // If the content contains escaped quotes, JSON.parse should have handled it.
-      const contentArea = trimmed.slice(trimmed.indexOf('"content"'));
-      if (contentArea.includes('\\"')) {
-        throw new Error('Looks like properly escaped JSON');
-      }
-      const pathMatch = trimmed.match(/\{\s*"tool"\s*:\s*"writeFile"\s*,\s*"params"\s*:\s*\{\s*"path"\s*:\s*"([^"]+)"/);
-      if (!pathMatch) throw new Error('No path field');
-      const contentPrefix = '"content":"';
-      const idx = trimmed.indexOf(contentPrefix);
-      if (idx < 0) throw new Error('No content prefix');
-      const contentStart = idx + contentPrefix.length;
-      const lastEnd = trimmed.lastIndexOf('"}}');
-      if (lastEnd <= contentStart) throw new Error('No content end');
-      let content = trimmed.slice(contentStart, lastEnd);
-      // The LLM emitted JSON escape sequences as literal characters; convert them back.
-      content = content
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '\t')
-        .replace(/\\r/g, '\r')
-        .replace(/\\\\/g, '\\')
-        .replace(/\\"/g, '"');
-      return { tool: 'writeFile', params: { path: pathMatch[1], content } };
+      const parsed = tolerantJsonParse(cleaned);
+      if (!parsed) throw new Error('jsonrepair could not fix JSON');
+      return parsed;
     },
     // Strategy 4: Extract field 'response' with regex (handles real newlines)
     () => {

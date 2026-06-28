@@ -10,6 +10,13 @@
   - Isso dá à Luna uma **estrutura forte**: não depende mais do LLM escapar aspas internas de HTML/código.
 - Teste end-to-end via Playwright: pedido "cria um jogo html simples e bonito" gerou arquivo `/home/jhin/.luna-workspace/jogo-teste-parser.html` (6320 bytes) corretamente, modo detectado como `ACTION` e não mais `CHAT`.
 
+### FASE 8 — Parser JSON tolerante com `jsonrepair`
+- Adicionada dependência `jsonrepair` ao `package.json`.
+- `luna-soul.cjs`: substituída a Strategy 3c customizada por `tolerantJsonParse()`, que tenta `JSON.parse()` e, se falhar, usa `jsonrepair()` para corrigir aspas não escapadas, escapes faltantes, trailing commas e artifacts de markdown (`json\nCopy\nDownload\n{...}`).
+- `response-stream-parser.cjs`: `safeJsonParse()` agora também usa `jsonrepair()` como fallback, centralizando a tolerância a JSON malformado.
+- `kimi-bridge.cjs`: `tryParseToolJson()` em `_genericProviderExtraction()` agora usa `jsonrepair()` quando `JSON.parse()` falha, permitindo detectar tools `writeFile` com HTML cru mesmo no streaming.
+- Testes locais: `jsonrepair` reparou com sucesso JSONs do DeepSeek com HTML não escapado e artifacts `Copy`/`Download`.
+
 ### FASE 6 — DeepSeek response cleanup
 - `luna-soul.cjs`: `_stripJsonResponseWrapper()` reescrito com scanner de chaves por contagem, removendo wrappers `{"response":"..."}` / `{"message":"..."}` e convertendo objetos stray `{"status":"processed","id":"..."}` em mensagem amigável.
 - `kimi-bridge.cjs`: extração genérica `_genericProviderExtraction()` usa contagem de chaves para desembrulhar JSON de forma segura; pre-captura de resposta anterior para providers não-Kimi evita completar prematuramente no texto antigo.

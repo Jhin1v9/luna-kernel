@@ -23,6 +23,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { jsonrepair } = require('jsonrepair');
 const { WebBridgeClient } = require('./webbridge-client.cjs');
 const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors, getProviderApiPatterns } = require('./provider-loader.cjs');
 
@@ -2140,25 +2141,34 @@ class KimiBridge {
       function tryParseToolJson(text) {
         if (!text || text.length < 10) return null;
         if (!text.includes('"tool"')) return null;
-        // First try the whole text directly.
-        try {
-          const parsed = JSON.parse(text);
+        // v11.0-fix: Helper that tries strict JSON, then jsonrepair for malformed LLM output.
+        function tolerantParse(raw) {
+          try {
+            return JSON.parse(raw);
+          } catch {}
+          try {
+            const repaired = jsonrepair(raw);
+            if (repaired && repaired !== raw) return JSON.parse(repaired);
+          } catch {}
+          return null;
+        }
+        // First try the whole text directly (strict or repaired).
+        const parsed = tolerantParse(text);
+        if (parsed) {
           if (parsed && typeof parsed.tool === 'string' && parsed.params && typeof parsed.params === 'object') {
             return { tool: parsed.tool, params: parsed.params };
           }
           if (parsed && typeof parsed.tool === 'string' && (parsed.path || parsed.command || parsed.script || parsed.query)) {
             return { tool: parsed.tool, params: parsed };
           }
-        } catch {}
+        }
         // v10.35-fix: If direct parse fails, try extracting the first complete JSON object.
         const completeObj = extractFirstCompleteJsonObject(text);
         if (completeObj && completeObj !== text) {
-          try {
-            const parsed = JSON.parse(completeObj);
-            if (parsed && typeof parsed.tool === 'string' && parsed.params && typeof parsed.params === 'object') {
-              return { tool: parsed.tool, params: parsed.params };
-            }
-          } catch {}
+          const parsed2 = tolerantParse(completeObj);
+          if (parsed2 && typeof parsed2.tool === 'string' && parsed2.params && typeof parsed2.params === 'object') {
+            return { tool: parsed2.tool, params: parsed2.params };
+          }
         }
         return null;
       }
