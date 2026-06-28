@@ -2,6 +2,14 @@
 
 ## 2026-06-28
 
+### FASE 7 — Malformed writeFile JSON recovery
+- `luna-soul.cjs`: adicionada **Strategy 3c** em `parseKimiResponse()` para recuperar JSON tools `writeFile` malformados.
+  - DeepSeek frequentemente emite `{"tool":"writeFile","params":{"path":"...","content":"<HTML com aspas não-escapadas>"}}`;
+  - A nova estratégia detecta essa forma, extrai `path` via regex e `content` entre `"content":"` e o fechamento `"}}`;
+  - Reverte escapes literais (`\n`, `\t`, `\r`, `\\`, `\"`) para produzir o arquivo original.
+  - Isso dá à Luna uma **estrutura forte**: não depende mais do LLM escapar aspas internas de HTML/código.
+- Teste end-to-end via Playwright: pedido "cria um jogo html simples e bonito" gerou arquivo `/home/jhin/.luna-workspace/jogo-teste-parser.html` (6320 bytes) corretamente, modo detectado como `ACTION` e não mais `CHAT`.
+
 ### FASE 6 — DeepSeek response cleanup
 - `luna-soul.cjs`: `_stripJsonResponseWrapper()` reescrito com scanner de chaves por contagem, removendo wrappers `{"response":"..."}` / `{"message":"..."}` e convertendo objetos stray `{"status":"processed","id":"..."}` em mensagem amigável.
 - `kimi-bridge.cjs`: extração genérica `_genericProviderExtraction()` usa contagem de chaves para desembrulhar JSON de forma segura; pre-captura de resposta anterior para providers não-Kimi evita completar prematuramente no texto antigo.

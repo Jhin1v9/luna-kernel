@@ -394,6 +394,69 @@ function parseKimiResponse(text) {
       }
       throw new Error('No JSON object');
     },
+    // Strategy 3b: Robust brace-counting extraction of the first complete JSON object.
+    // This handles LLM output with unescaped quotes inside string values (common in HTML).
+    () => {
+      let i = 0;
+      while (i < cleaned.length) {
+        if (cleaned[i] !== '{') { i++; continue; }
+        const start = i;
+        let depth = 1;
+        let inString = false;
+        let escape = false;
+        i++;
+        while (i < cleaned.length && depth > 0) {
+          const c = cleaned[i];
+          if (escape) {
+            escape = false;
+          } else if (c === '\\') {
+            escape = true;
+          } else if (c === '"') {
+            inString = !inString;
+          } else if (!inString) {
+            if (c === '{') depth++;
+            else if (c === '}') depth--;
+          }
+          i++;
+        }
+        if (depth === 0) {
+          return JSON.parse(cleaned.slice(start, i));
+        }
+      }
+      throw new Error('No complete JSON object');
+    },
+    // Strategy 3c: Recover malformed writeFile JSON tools where the LLM placed raw
+    // HTML/code inside the "content" field without escaping internal quotes.
+    // The result is not valid JSON, but we can still extract path and content
+    // because we know the exact shape: {"tool":"writeFile","params":{"path":"...","content":"..."}}
+    () => {
+      const trimmed = cleaned.trim();
+      if (!/^\s*\{\s*"tool"\s*:\s*"writeFile"/.test(trimmed)) {
+        throw new Error('Not a writeFile tool');
+      }
+      // If the content contains escaped quotes, JSON.parse should have handled it.
+      const contentArea = trimmed.slice(trimmed.indexOf('"content"'));
+      if (contentArea.includes('\\"')) {
+        throw new Error('Looks like properly escaped JSON');
+      }
+      const pathMatch = trimmed.match(/\{\s*"tool"\s*:\s*"writeFile"\s*,\s*"params"\s*:\s*\{\s*"path"\s*:\s*"([^"]+)"/);
+      if (!pathMatch) throw new Error('No path field');
+      const contentPrefix = '"content":"';
+      const idx = trimmed.indexOf(contentPrefix);
+      if (idx < 0) throw new Error('No content prefix');
+      const contentStart = idx + contentPrefix.length;
+      const lastEnd = trimmed.lastIndexOf('"}}');
+      if (lastEnd <= contentStart) throw new Error('No content end');
+      let content = trimmed.slice(contentStart, lastEnd);
+      // The LLM emitted JSON escape sequences as literal characters; convert them back.
+      content = content
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\r/g, '\r')
+        .replace(/\\\\/g, '\\')
+        .replace(/\\"/g, '"');
+      return { tool: 'writeFile', params: { path: pathMatch[1], content } };
+    },
     // Strategy 4: Extract field 'response' with regex (handles real newlines)
     () => {
       const match = cleaned.match(/"response"\s*:\s*"([\s\S]*?)"\s*[,}]/);
@@ -4125,7 +4188,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           const toolFn = () => {
             switch (tool) {
               case 'readFile': return lunaTools.readFile(p.path || p.file, { offset: p.offset || p.line_offset, limit: p.limit || p.n_lines });
-              case 'writeFile': return lunaTools.writeFile(p.path || p.filePath, p.content);
+              case 'writeFile': return lunaTools.writeFile(p.path || p.filePath, p.content, { encoding: p.encoding });
               case 'appendFile': return lunaTools.appendFile(p.path || p.filePath, p.content);
               case 'replaceInFile': return lunaTools.replaceInFile(p.path || p.filePath, p.old || p.oldStr, p.new || p.newStr, { replaceAll: p.replaceAll, edit: p.edit });
               case 'deleteFile': return lunaTools.deleteFile(p.path || p.filePath);

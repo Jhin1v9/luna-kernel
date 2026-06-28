@@ -163,11 +163,17 @@ function writeFile(filePath, content, opts = {}) {
       fs.mkdirSync(dir, { recursive: true });
       createdDir = true;
     }
-    fs.writeFileSync(resolved, content, 'utf8');
+    let finalContent = content;
+    if (opts.encoding === 'base64' && typeof content === 'string') {
+      finalContent = Buffer.from(content, 'base64');
+      fs.writeFileSync(resolved, finalContent);
+    } else {
+      fs.writeFileSync(resolved, content, 'utf8');
+    }
     return ok({
       path: resolved,
       operation: 'write',
-      bytes: Buffer.byteLength(content, 'utf8'),
+      bytes: Buffer.byteLength(finalContent, finalContent instanceof Buffer ? undefined : 'utf8'),
       createdDir: createdDir || undefined,
       message: createdDir ? `PASTA AINDA NAO CRIADA. CRIEI PRIMEIRO: ${dir}` : undefined,
     });

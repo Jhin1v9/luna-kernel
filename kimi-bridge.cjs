@@ -2101,11 +2101,46 @@ class KimiBridge {
         }
       }
 
+      // v10.35-fix: Robustly extract the first complete JSON object using brace counting.
+      // This lets us grab a tool JSON even if the DOM contains surrounding text/fragments,
+      // as long as the outer braces are balanced.
+      function extractFirstCompleteJsonObject(text) {
+        if (!text || text.length < 10) return null;
+        let i = 0;
+        while (i < text.length) {
+          if (text[i] !== '{') { i++; continue; }
+          const start = i;
+          let depth = 1;
+          let inString = false;
+          let escape = false;
+          i++;
+          while (i < text.length && depth > 0) {
+            const c = text[i];
+            if (escape) {
+              escape = false;
+            } else if (c === '\\') {
+              escape = true;
+            } else if (c === '"') {
+              inString = !inString;
+            } else if (!inString) {
+              if (c === '{') depth++;
+              else if (c === '}') depth--;
+            }
+            i++;
+          }
+          if (depth === 0) {
+            return text.slice(start, i);
+          }
+        }
+        return null;
+      }
+
       // v10.32-fix: Detect tool JSON blocks in code blocks and raw response for non-Kimi providers.
       const detectedTools = [];
       function tryParseToolJson(text) {
         if (!text || text.length < 10) return null;
         if (!text.includes('"tool"')) return null;
+        // First try the whole text directly.
         try {
           const parsed = JSON.parse(text);
           if (parsed && typeof parsed.tool === 'string' && parsed.params && typeof parsed.params === 'object') {
@@ -2115,6 +2150,16 @@ class KimiBridge {
             return { tool: parsed.tool, params: parsed };
           }
         } catch {}
+        // v10.35-fix: If direct parse fails, try extracting the first complete JSON object.
+        const completeObj = extractFirstCompleteJsonObject(text);
+        if (completeObj && completeObj !== text) {
+          try {
+            const parsed = JSON.parse(completeObj);
+            if (parsed && typeof parsed.tool === 'string' && parsed.params && typeof parsed.params === 'object') {
+              return { tool: parsed.tool, params: parsed.params };
+            }
+          } catch {}
+        }
         return null;
       }
       for (const block of raw.codeBlocks || []) {
@@ -6792,6 +6837,15 @@ class KimiBridge {
 
             case 'completion_candidate': {
               log.info(`[sendMessageStream] Completion candidate received (signals=${JSON.stringify(ev.signals)})`);
+              // v10.35-fix: For non-Kimi providers, a completion candidate can fire during a
+              // transient pause while a long JSON wrapper (e.g., writeFile with HTML content) is
+              // still being streamed. If the accumulated response looks like an incomplete JSON
+              // object, ignore the candidate and keep waiting for the rest.
+              const looksLikeIncompleteJson = lastResponse && lastResponse.includes('{') && !isJsonComplete(lastResponse);
+              if (resolvedProvider !== 'kimi' && looksLikeIncompleteJson) {
+                log.warn(`[sendMessageStream] Ignoring completion candidate — response looks like incomplete JSON (${lastResponse.length} chars)`);
+                break;
+              }
               isComplete = true;
               break;
             }
@@ -6843,11 +6897,30 @@ class KimiBridge {
       // Smart fallback: if extracted thinking-like but lastResponse has JSON/code
       const hasJsonOrCode = (text) => text && (text.includes('"tool"') || text.includes('"response"') || text.includes('```'));
       const looksLikeThinking = (text) => text && text.length < 100 && !text.includes('{') && !text.includes('```');
-      
+
       if (finalResponse && lastResponse && hasJsonOrCode(lastResponse) && looksLikeThinking(finalResponse)) {
         log.warn(`[sendMessageStream] Extracted thinking-like text (${finalResponse.length} chars) but lastResponse has JSON/code (${lastResponse.length} chars). Using lastResponse.`);
         finalResponse = lastResponse;
         extractionSource = 'lastResponse-swap';
+      }
+
+      // v10.35-fix: For non-Kimi providers, the DOM-based final extraction often returns a
+      // truncated version of a long JSON tool/response, while the streaming poller already
+      // saw the complete text. If lastResponse is longer and contains a valid JSON wrapper
+      // or tool, prefer it so large HTML games / file writes are not cut off.
+      if (lastResponse && lastResponse.length > (finalResponse?.length || 0) && hasJsonOrCode(lastResponse)) {
+        try {
+          const maybeJson = lastResponse.trim();
+          // Accept either a JSON wrapper {"response":"..."} / {"message":"..."} or a tool JSON.
+          const isValidWrapper = maybeJson.startsWith('{') && JSON.parse(maybeJson) && (maybeJson.includes('"response"') || maybeJson.includes('"message"') || maybeJson.includes('"tool"'));
+          if (isValidWrapper) {
+            log.warn(`[sendMessageStream] lastResponse (${lastResponse.length} chars) is longer than extracted (${finalResponse.length} chars) and contains valid JSON. Using lastResponse.`);
+            finalResponse = lastResponse;
+            extractionSource = 'lastResponse-longer-json';
+          }
+        } catch {
+          // lastResponse is not parseable JSON — keep the extracted finalResponse.
+        }
       }
 
       // CRITICAL fallback: only use lastResponse if we actually saw it change during this stream
