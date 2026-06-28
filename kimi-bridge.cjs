@@ -5128,7 +5128,9 @@ class KimiBridge {
               session._responseStableCycles = 0;
             }
             session._lastPollResponse = generic.response;
-            if (session._responseStableCycles >= 3) {
+            // v10.34-fix: Require more stable cycles for DeepSeek to avoid partial responses.
+            // Quality over speed: only declare completion when we are confident.
+            if (session._responseStableCycles >= 5) {
               uiState.isGenerating = false;
               uiState.canSteer = true; // enable buttonSend completion signal
             }
@@ -5142,13 +5144,19 @@ class KimiBridge {
               session._lastLoggedGenericIsGen = uiState.isGenerating;
             }
           }
+          // v10.34-fix: Do NOT stream partial responses for non-Kimi providers.
+          // Wait until generation is complete, then return the full cleaned response
+          // so JSON tool blocks are parsed and executed correctly.
+          if (uiState.isGenerating) {
+            return { thinking: '', response: '', canSteer: uiState.canSteer, isGenerating: true, source: generic.source };
+          }
           // v10.32-fix: Enqueue detected tool actions so Luna can execute them.
           if (generic.detectedTools && userId) {
             for (const toolAction of generic.detectedTools) {
               this._enqueueDomEvent(userId, { type: 'action_detected', action: toolAction, source: 'generic-provider-tool', timestamp: Date.now() });
             }
           }
-          return { thinking: '', response: generic.response, canSteer: uiState.canSteer, isGenerating: uiState.isGenerating, source: generic.source };
+          return { thinking: '', response: generic.response, canSteer: uiState.canSteer, isGenerating: false, source: generic.source };
         }
       }
 
