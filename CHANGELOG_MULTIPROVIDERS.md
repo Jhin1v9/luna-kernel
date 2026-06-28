@@ -1,5 +1,14 @@
 # Changelog — Multi-Provider Support
 
+## 2026-06-28
+
+### FASE 6 — DeepSeek response cleanup
+- `luna-soul.cjs`: `_stripJsonResponseWrapper()` reescrito com scanner de chaves por contagem, removendo wrappers `{"response":"..."}` / `{"message":"..."}` e convertendo objetos stray `{"status":"processed","id":"..."}` em mensagem amigável.
+- `kimi-bridge.cjs`: extração genérica `_genericProviderExtraction()` usa contagem de chaves para desembrulhar JSON de forma segura; pre-captura de resposta anterior para providers não-Kimi evita completar prematuramente no texto antigo.
+- `luna-web/src/components/ChatArea.svelte`: evento `done` substitui a bolha do assistente pelo `finalResponse` limpo quando o streaming vazou fragmentos de JSON wrapper.
+- Build do frontend regerado e deployado no `luna-server`.
+- Teste end-to-end via Playwright: mensagens DeepSeek renderizaram corretamente, sem JSON cru, duplicação ou truncamento.
+
 ## 2026-06-26
 
 ### FASE 1 — Bridge config-driven

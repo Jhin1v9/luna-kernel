@@ -635,13 +635,24 @@
 
         // v10.25-fix: Always finalize streaming, even if we skip creating a duplicate message.
         // A 'done' event must release the input, regardless of whether its text was already rendered.
-        if (alreadyHasDone) {
+        // v10.35-fix: If the existing assistant bubble contains leaked wrapper fragments,
+        // replace it with the clean finalResponse from the backend.
+        const targetMsgId = currentAssistantId || msgs.findLast(m =>
+          m.type === 'assistant' && m.messageId === (event.messageId || currentMessageId)
+        )?.id;
+        const existingMsg = targetMsgId ? msgs.find(m => m.id === targetMsgId) : null;
+        const existingContent = (existingMsg?.content || '').trim();
+        const needsReplace = finalResponse && existingContent && existingContent !== finalResponse.trim();
+
+        if (alreadyHasDone && !needsReplace) {
           console.log('[DEBUG-LUNA] done event text already rendered — skipping duplicate message but releasing input');
         } else {
-          // v9.3-fix: Only flush if we haven't already rendered this response.
-          // response_done already flushes and resets currentAssistantId —
-          // flushing again here would create a DUPLICATE message.
-          if (finalResponse && currentAssistantId) {
+          if (needsReplace && targetMsgId) {
+            messages.update(msgs =>
+              msgs.map(m => m.id === targetMsgId ? { ...m, content: finalResponse } : m)
+            );
+            console.log('[done] Replaced leaked wrapper content with clean finalResponse');
+          } else if (finalResponse && currentAssistantId) {
             responseBuffer = finalResponse;
             flushResponseBuffer(finalResponse);
           } else if (finalResponse && !currentAssistantId) {

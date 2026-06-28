@@ -439,6 +439,13 @@ function parseKimiResponse(text) {
         parsed.mode = 'CHAT';
         parsed.response = parsed.message;
       }
+      // v10.35-fix: DeepSeek sometimes emits a stray {"status":"processed","id":"..."}
+      // status object instead of a real response. Convert it to a harmless CHAT so the
+      // conversation can continue instead of leaking raw JSON.
+      if (parsed && !parsed.mode && parsed.status === 'processed' && parsed.id && !parsed.response && !parsed.tool && !parsed.script) {
+        parsed.mode = 'CHAT';
+        parsed.response = '✅ Processado. Como posso continuar? 🌙';
+      }
       return parsed;
     } catch {}
   }
@@ -2312,28 +2319,10 @@ class LunaSoul extends EventEmitter {
               break;
 
             case 'response_delta': {
-              let cleanText = event.text || '';
-              // v9.3-fix: Strip JSON response wrappers before sending to frontend
-              // v10.24-fix: Also tolerate malformed wrappers with "message" instead of "response".
-              const isResponseDeltaWrapper = (cleanText.includes('"response"') || cleanText.includes('"message"')) && !cleanText.includes('"tool"') && !cleanText.includes('"script"');
-              if (isResponseDeltaWrapper) {
-                try {
-                  const parsed = JSON.parse(cleanText);
-                  if (parsed.response !== undefined && typeof parsed.response === 'string') {
-                    cleanText = parsed.response;
-                  } else if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
-                    cleanText = parsed.message;
-                  }
-                } catch {
-                  const m = cleanText.match(/\{[\s\S]*?"response"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
-                  if (m) {
-                    cleanText = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-                  } else {
-                    const m2 = cleanText.match(/\{[\s\S]*?"message"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
-                    if (m2) cleanText = m2[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-                  }
-                }
-              }
+              // v10.35-fix: Centralize JSON wrapper / status-object stripping.
+              // DeepSeek may stream stray {"status":"processed","id":"..."} objects;
+              // _stripJsonResponseWrapper converts them to friendly text.
+              let cleanText = this._stripJsonResponseWrapper(event.text || '');
               fullResponse += cleanText;
               yield { type: 'response_delta', text: cleanText, fullResponse, sessionId };
               break;
@@ -2350,28 +2339,8 @@ class LunaSoul extends EventEmitter {
 
             // v5.3: REAL-TIME JSON response streaming — show response immediately
             case 'response_detected': {
-              let respText = event.response || '';
-              // v9.3-fix: Strip JSON response wrappers before sending to frontend
-              // v10.24-fix: Also tolerate malformed wrappers with "message" instead of "response".
-              const isResponseWrapper = (respText.includes('"response"') || respText.includes('"message"')) && !respText.includes('"tool"') && !respText.includes('"script"');
-              if (isResponseWrapper) {
-                try {
-                  const parsed = JSON.parse(respText);
-                  if (parsed.response !== undefined && typeof parsed.response === 'string') {
-                    respText = parsed.response;
-                  } else if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
-                    respText = parsed.message;
-                  }
-                } catch {
-                  const m = respText.match(/\{[\s\S]*?"response"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
-                  if (m) {
-                    respText = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-                  } else {
-                    const m2 = respText.match(/\{[\s\S]*?"message"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
-                    if (m2) respText = m2[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-                  }
-                }
-              }
+              // v10.35-fix: Centralize JSON wrapper / status-object stripping.
+              let respText = this._stripJsonResponseWrapper(event.response || '');
               if (respText) {
                 yield { type: 'response_detected', text: respText, sessionId };
                 this.sessionManager.appendEvent(sessionId, {
@@ -3027,18 +2996,76 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
   /** Strip JSON response wrappers so accumulated text is clean markdown. */
   _stripJsonResponseWrapper(text) {
-    if (!text) return '';
+    if (!text) return text;
     const trimmed = text.trim();
-    if (!trimmed.includes('"response"') || trimmed.includes('"tool"')) return text;
+    if (!trimmed.startsWith('{')) return text;
+
+    // v10.35-fix: Robust JSON response wrapper extraction.
+    // DeepSeek/others may stream partial or malformed wrappers, and greedy regex
+    // can grab the wrong closing brace. We scan character-by-character to find
+    // the outermost JSON object, parse it, and decide what to return.
+    // Tool/script objects are intentionally left untouched so the tool parser can run.
+    const findJsonObject = (str) => {
+      let i = 0;
+      while (i < str.length) {
+        if (str[i] !== '{') { i++; continue; }
+        const start = i;
+        let depth = 1;
+        let inString = false;
+        let escape = false;
+        i++;
+        while (i < str.length && depth > 0) {
+          const c = str[i];
+          if (escape) {
+            escape = false;
+          } else if (c === '\\') {
+            escape = true;
+          } else if (c === '"') {
+            inString = !inString;
+          } else if (!inString) {
+            if (c === '{') depth++;
+            else if (c === '}') depth--;
+          }
+          i++;
+        }
+        if (depth === 0) {
+          return str.slice(start, i);
+        }
+      }
+      return null;
+    };
+
+    const block = findJsonObject(trimmed);
+    if (!block) return text;
+
     try {
-      const parsed = JSON.parse(trimmed);
+      const parsed = JSON.parse(block);
+      // Never strip tool/script payloads — those are handled by the action parser.
+      if (parsed.tool || parsed.script) return text;
+
       if (parsed.response !== undefined && typeof parsed.response === 'string') {
         return parsed.response;
       }
+      if (parsed.message !== undefined && typeof parsed.message === 'string') {
+        return parsed.message;
+      }
+      // v10.35-fix: DeepSeek sometimes streams a stray {"status":"processed","id":"..."}
+      // object instead of a response wrapper. Replace it with a friendly message so
+      // the user never sees raw JSON during streaming.
+      if (parsed.status === 'processed' || parsed.id) {
+        return '✅ Processado. Como posso continuar? 🌙';
+      }
+      // Any other non-tool JSON object that isn't a response wrapper: keep original text.
+      // This prevents accidental content loss if a provider sends a different payload.
     } catch {
-      const m = trimmed.match(/\{[\s\S]*?"response"\s*:\s*"((?:\\.|[^"\\])*)"[\s\S]*?\}/);
+      // JSON.parse failed on malformed wrapper — fall back to regex extraction
+      const m = block.match(/"response"\s*:\s*"((?:\\.|[^"\\])*?)"/);
       if (m) {
         return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      }
+      const m2 = block.match(/"message"\s*:\s*"((?:\\.|[^"\\])*?)"/);
+      if (m2) {
+        return m2[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
       }
     }
     return text;

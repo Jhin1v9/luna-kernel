@@ -2042,18 +2042,63 @@ class KimiBridge {
       response = response.replace(/^(Copy\s+Download\s*[\r\n]+)/i, '').trim();
       response = response.replace(/\n\s*Copy\s*\n\s*Download\s*\n?/i, '\n').trim();
 
-      // If the remaining text is a JSON object with a "response" field, use that.
-      let parsed = null;
-      try {
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-          if (parsed && typeof parsed.response === 'string') {
-            response = parsed.response.trim();
+      // v10.35-fix: Robustly extract {"response":"..."} / {"message":"..."} wrappers.
+      // DeepSeek may stream partial JSON or reset the DOM, so we scan character-by-character
+      // to find the outermost complete JSON object and ignore trailing fragments.
+      const findWrapperObject = (str) => {
+        let i = 0;
+        while (i < str.length) {
+          if (str[i] !== '{') { i++; continue; }
+          const start = i;
+          let depth = 1;
+          let inString = false;
+          let escape = false;
+          i++;
+          while (i < str.length && depth > 0) {
+            const c = str[i];
+            if (escape) {
+              escape = false;
+            } else if (c === '\\') {
+              escape = true;
+            } else if (c === '"') {
+              inString = !inString;
+            } else if (!inString) {
+              if (c === '{') depth++;
+              else if (c === '}') depth--;
+            }
+            i++;
+          }
+          if (depth === 0) {
+            const block = str.slice(start, i);
+            if ((/"response"\s*:/.test(block) || /"message"\s*:/.test(block)) && !/"tool"\s*:/.test(block)) {
+              return block;
+            }
           }
         }
-      } catch (e) {
-        // Not valid JSON or no response field — keep raw cleaned text.
+        return null;
+      };
+
+      const wrapperBlock = findWrapperObject(response);
+      if (wrapperBlock) {
+        try {
+          const parsed = JSON.parse(wrapperBlock);
+          if (parsed && typeof parsed.response === 'string') {
+            response = parsed.response.trim();
+          } else if (parsed && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
+            response = parsed.message.trim();
+          }
+        } catch (e) {
+          // Malformed wrapper — fall back to regex extraction instead of keeping raw JSON.
+          const m = wrapperBlock.match(/"response"\s*:\s*"((?:\\.|[^"\\])*?)"/);
+          if (m) {
+            response = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+          } else {
+            const m2 = wrapperBlock.match(/"message"\s*:\s*"((?:\\.|[^"\\])*?)"/);
+            if (m2) {
+              response = m2[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+            }
+          }
+        }
       }
 
       // v10.32-fix: Detect tool JSON blocks in code blocks and raw response for non-Kimi providers.
@@ -4524,6 +4569,7 @@ class KimiBridge {
 
           // v7.0: Only enqueue state events if not skipping non-critical
           if (!session.domPollerSkipNonCritical) {
+            log.info(`[DomPoller] enqueue state_change response=${poll.response.length} isGen=${poll.isGenerating}`);
             this._enqueueDomEvent(userId, {
               type: 'state_change',
               thinking: poll.thinking,
@@ -6385,7 +6431,24 @@ class KimiBridge {
       // v9.6-fix: Use a real timeout (not 0) so innerText throws when no markdown
       // exists on Kimi's home screen, allowing .catch to return '' instead of
       // hanging forever waiting for an element that never appears.
-      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+      let initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+
+      // v10.35-fix: For non-Kimi providers, the generic DOM extraction reads the LAST
+      // assistant bubble. Capture the current response text via the same polling path
+      // so Phase 0 ignores the previous response and only triggers when NEW content
+      // arrives. This prevents immediate false-completion on DeepSeek when the prior
+      // answer is still visible.
+      if (resolvedProvider !== 'kimi') {
+        try {
+          const prePoll = await this._pollThinkingAndResponse(page, userId);
+          if (prePoll && (prePoll.thinking || prePoll.response)) {
+            initialText = (prePoll.thinking || '') + (prePoll.response || '');
+            log.info(`[sendMessageStream] Non-Kimi pre-send response captured: ${initialText.length} chars`);
+          }
+        } catch (prePollErr) {
+          log.warn(`[sendMessageStream] Failed to capture pre-send poll: ${prePollErr.message}`);
+        }
+      }
 
       // v7.7-INFALÍVEL: Capture FULL snapshot before sending (all assistant texts)
       // This replaces fragile assistant counting with snapshot diffing.
@@ -6494,7 +6557,10 @@ class KimiBridge {
               log.info(`[DEBUG-LUNA] Phase 0 textHasChanged=true`);
               break;
             }
-            if (ev.isGenerating && pollCount > 3) {
+            // v10.35-fix: Trigger on generation start immediately, even at pollCount 0.
+            // Non-Kimi providers (DeepSeek) may have the previous answer still visible;
+            // isGenerating is the most reliable signal that a NEW response is beginning.
+            if (ev.isGenerating) {
               textHasChanged = true;
               log.info(`[DEBUG-LUNA] Phase 0 textHasChanged=true via isGenerating`);
               break;
