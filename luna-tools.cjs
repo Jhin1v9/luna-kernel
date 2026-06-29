@@ -78,6 +78,24 @@ function notifyChange(type, data) {
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
+function detectHeadless() {
+  // v10.29-fix: Auto-detect headless/VPS environments where no graphical terminal
+  // is available. This prevents gnome-terminal spawn failures on servers/SSH.
+  if (process.env.LUNA_HEADLESS === '1') return true;
+  if (process.env.LUNA_HEADLESS === '0') return false;
+  // SSH sessions are almost always headless
+  if (process.env.SSH_CLIENT || process.env.SSH_TTY || process.env.SSH_CONNECTION) return true;
+  // No DISPLAY or explicit headless flag from common cloud envs
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return true;
+  // If gnome-terminal is not available, we cannot run visible mode anyway
+  try {
+    execSync('which gnome-terminal', { stdio: 'ignore' });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function resolvePath(p) {
   if (!p) return process.cwd();
   if (p.startsWith('~/')) return path.join(require('os').homedir(), p.slice(2));
@@ -786,12 +804,15 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
       } catch {}
     }, 500);
 
-    child.on('error', (err) => {
+    child.on('error', async (err) => {
       clearInterval(pollInterval);
       try { fs.unlinkSync(scriptFile); } catch {}
       try { fs.unlinkSync(tmpFile); } catch {}
-      const { reason, suggestion } = _classifyShellError(command, err.message, 1, false, opts.timeout || 60);
-      resolve({ success: false, command, stdout: output, stderr: err.message, exitCode: 1, error: err.message, reason, suggestion });
+      // v10.29-fix: If graphical terminal cannot be spawned (headless/VPS),
+      // fallback to invisible shell execution so the command still runs.
+      console.warn(`[executeShellVisible] Terminal spawn failed: ${err.message}. Falling back to invisible shell.`);
+      const fallback = await executeShell(command, { ...opts, visible: false }, onProgress);
+      resolve(fallback);
     });
 
     child.on('close', () => {
@@ -827,7 +848,9 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
 }
 
 // v10.2-fix: Global visible mode — all commands open in terminal by default
-let visibleMode = true;
+// v10.29-fix: Default to invisible on headless/VPS environments so commands
+// still execute instead of failing because gnome-terminal is missing.
+let visibleMode = !detectHeadless();
 
 function setVisibleMode(mode) { visibleMode = mode; }
 function getVisibleMode() { return visibleMode; }
@@ -871,7 +894,7 @@ function executeShell(command, opts = {}, onProgress) {
     const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
     // v10.2-fix: Open visible terminal for ALL commands when visibleMode is on
     const isVisibleCommand = opts.visible !== undefined ? opts.visible : visibleMode;
-    if (isVisibleCommand && process.env.DISPLAY) {
+    if (isVisibleCommand && process.env.DISPLAY && !detectHeadless()) {
       // v10.24-fix: Prevent duplicate visible terminals for the same command/cwd.
       const key = _makeShellKey(command, cwd);
       if (_runningShells.has(key)) {
