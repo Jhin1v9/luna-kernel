@@ -599,6 +599,9 @@
         }
         currentAssistantId = null;
         responseBuffer = '';
+        // v10.28-fix: If a context-limit auto-compact happened mid-stream, the backend
+        // may not emit compact_end. Ensure the compaction UI is released.
+        compactState.set({ active: false, phase: 0, message: '', steps: [] });
         break;
       }
       case 'context_limit': {
@@ -623,6 +626,8 @@
         showTyping = false;
         messages.update(msgs => removeAllThinking(msgs));
         thinkingId = null;
+        // v10.28-fix: Ensure compaction UI is released even if compact_end was missed.
+        compactState.set({ active: false, phase: 0, message: '', steps: [] });
         const finalResponse = event.result?.response || event.response || event.text;
         console.log('[done] finalResponse length:', finalResponse?.length, 'content:', finalResponse?.substring(0, 100));
 
@@ -714,6 +719,8 @@
           timestamp: new Date().toISOString()
         }]);
         isStreaming.set(false);
+        // v10.28-fix: A compaction may have failed and emitted error instead of compact_error.
+        compactState.set({ active: false, phase: 0, message: '', steps: [] });
         break;
       }
       case 'warning':

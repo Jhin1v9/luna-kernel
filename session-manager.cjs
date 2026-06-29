@@ -212,6 +212,21 @@ class SessionManager {
     return all.slice(-n);
   }
 
+  /** Backup context.jsonl before destructive operations (e.g. compaction) */
+  backupContext(sessionId) {
+    const ctxFile = this._contextFile(sessionId);
+    if (!fs.existsSync(ctxFile)) return null;
+
+    const sDir = this._sessionDir(sessionId);
+    const backupsDir = path.join(sDir, 'backups');
+    ensureDir(backupsDir);
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupFile = path.join(backupsDir, `context-${timestamp}.jsonl`);
+    fs.copyFileSync(ctxFile, backupFile);
+    return backupFile;
+  }
+
   /** List all sessions */
   listSessions() {
     const index = this._readIndex();

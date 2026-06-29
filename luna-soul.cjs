@@ -1777,9 +1777,22 @@ class LunaSoul extends EventEmitter {
     console.log(`[DEBUG-LUNA] _autoCompact started for session ${sessionId}`);
     yield { type: 'compact_start', message: '📦 Contexto grande demais. Criando checkpoint inteligente...', sessionId };
 
+    // v10.28-fix: Backup local context before any destructive operation.
+    let backupPath = null;
     try {
-      // 1. Read all events
-      const events = this.sessionManager.readRecentEvents(sessionId, 999);
+      backupPath = this.sessionManager.backupContext(sessionId);
+      console.log(`[LUNA] Context backed up before compaction: ${backupPath}`);
+    } catch (backupErr) {
+      console.warn(`[LUNA] Failed to backup context: ${backupErr.message}`);
+    }
+
+    let bridgeSession = null;
+    let wasProcessing = false;
+    let checkpointSent = false;
+
+    try {
+      // 1. Read all events (avoid hard 999 cap when full history is available)
+      const events = this.sessionManager.readContext ? this.sessionManager.readContext(sessionId) : this.sessionManager.readRecentEvents(sessionId, 999);
 
       // 2. Build a rich checkpoint summary (brain transplant)
       yield { type: 'compact_progress', message: '🧠 Analisando estado da sessão...', sessionId };
@@ -1804,9 +1817,6 @@ class LunaSoul extends EventEmitter {
         // We must release it before calling sendMessage, otherwise we deadlock.
         // v10.24-fix: If checkpoint fails, DO NOT clear local context — preserve conversation.
         yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
-        let bridgeSession = null;
-        let wasProcessing = false;
-        let checkpointSent = false;
         try {
           bridgeSession = this.kimiBridge.userSessions?.get(userId);
           wasProcessing = bridgeSession?.processing;
@@ -1832,14 +1842,26 @@ class LunaSoul extends EventEmitter {
           console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
           yield { type: 'compact_progress', message: `✅ Kimi recebeu o checkpoint (${respLen} chars)`, sessionId };
           checkpointSent = true;
+
+          // v10.28-fix: Capture the REAL new chat URL after Kimi created the thread.
+          // The page may have redirected from the landing page to /chat/<id>.
+          if (bridgeSession?.page && !bridgeSession.page.isClosed()) {
+            try {
+              const finalUrl = bridgeSession.page.url();
+              if (finalUrl && finalUrl !== bridgeSession.chatUrl) {
+                console.log(`[LUNA] Rebinding session chatUrl: ${bridgeSession.chatUrl} -> ${finalUrl}`);
+                bridgeSession.chatUrl = finalUrl;
+                this.kimiBridge._saveChatUrl?.(userId, finalUrl, { provider: bridgeSession.provider, mode: bridgeSession.mode });
+              }
+            } catch (urlErr) {
+              console.warn(`[LUNA] Could not read final chat URL: ${urlErr.message}`);
+            }
+          }
         } catch (sendErr) {
           console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
           yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
           console.log(`[DEBUG-LUNA] _autoCompact finished (checkpoint send failed)`);
           return { success: false, error: sendErr.message };
-        } finally {
-          // v10.16-fix: ALWAYS restore processing state, even on timeout/error
-          if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
         }
       }
 
@@ -1854,13 +1876,29 @@ class LunaSoul extends EventEmitter {
         timestamp: new Date().toISOString(),
       });
 
-      yield { type: 'compact_end', message: '✅ Contexto compactado. Nova thread pronta com checkpoint inteligente.', summary, sessionId };
+      const endEvent = {
+        type: 'compact_end',
+        message: '✅ Contexto compactado. Nova thread pronta com checkpoint inteligente.',
+        summary,
+        sessionId,
+      };
+      if (bridgeSession?.chatUrl) endEvent.chatUrl = bridgeSession.chatUrl;
+      yield endEvent;
       console.log(`[DEBUG-LUNA] _autoCompact finished (success)`);
-      return { success: true, summary };
+      return { success: true, summary, chatUrl: bridgeSession?.chatUrl };
     } catch (err) {
       console.error(`[DEBUG-LUNA] _autoCompact finished (error): ${err.message}`);
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
       return { success: false, error: err.message };
+    } finally {
+      // v10.28-fix: Only restore processing state on success. On failure the parent
+      // sendMessageStream will yield an error and return; leaving processing=true
+      // would deadlock the next user message.
+      if (bridgeSession && wasProcessing && checkpointSent) {
+        bridgeSession.processing = wasProcessing;
+      } else if (bridgeSession && wasProcessing) {
+        bridgeSession.processing = false;
+      }
     }
   }
 
@@ -1950,21 +1988,25 @@ class LunaSoul extends EventEmitter {
       whereStopped = `Continue de onde parou. Não reinicie.`;
     }
 
-    // Build progress list (last successful actions, reversed)
+    // Build progress list (last successful actions, paired by order)
+    // v10.28-fix: Pair tool_call/tool_result using a stack so unmatched calls
+    // don't shift the pairing and produce misleading summaries.
     const successfulActions = [];
-    const seenActions = new Set();
-    for (let i = toolResults.length - 1; i >= 0 && successfulActions.length < 12; i--) {
-      const tr = toolResults[i];
-      if (tr.success) {
-        // Find matching tool_call
-        let tc = null;
-        for (let j = events.length - 1; j >= 0; j--) {
-          if (events[j].type === 'tool_call' && !seenActions.has(j)) {
-            seenActions.add(j);
-            tc = events[j];
-            break;
-          }
-        }
+    const pendingCalls = [];
+    const pairMap = new Map(); // tool_result index -> tool_call
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      if (ev.type === 'tool_call') {
+        pendingCalls.push({ index: i, event: ev });
+      } else if (ev.type === 'tool_result' && pendingCalls.length > 0) {
+        const call = pendingCalls.pop();
+        pairMap.set(i, call.event);
+      }
+    }
+    for (let i = events.length - 1; i >= 0 && successfulActions.length < 12; i--) {
+      const tr = events[i];
+      if (tr.type === 'tool_result' && tr.success) {
+        const tc = pairMap.get(i);
         const tool = tc?.tool || tr.tool || '?';
         const fp = tc?.params?.path || tc?.params?.source || tc?.params?.command?.slice(0, 80) || '';
         successfulActions.push(`${tool}${fp ? ` → ${fp}` : ''}`);
