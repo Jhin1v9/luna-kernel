@@ -1833,10 +1833,22 @@ class LunaSoul extends EventEmitter {
             }
           }
 
-          const sendResult = await Promise.race([
-            this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (60s)')), 60000))
-          ]);
+          let sendResult;
+          try {
+            sendResult = await Promise.race([
+              this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (60s)')), 60000))
+            ]);
+          } catch (sendErr) {
+            // v10.28-fix: We only need the checkpoint to ARRIVE at the new Kimi thread.
+            // Extraction failures (e.g. DOM selectors) do NOT mean the checkpoint failed.
+            if (sendErr.message?.includes('EXTRACTION_FAILED')) {
+              console.log(`[LUNA] Checkpoint reached Kimi, but response extraction failed — treating as success for compaction`);
+              sendResult = { response: '', extractionFailed: true };
+            } else {
+              throw sendErr;
+            }
+          }
 
           const respLen = sendResult?.response?.length || 0;
           console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
