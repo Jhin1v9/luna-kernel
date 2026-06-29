@@ -1,5 +1,18 @@
 # Changelog — Multi-Provider Support
 
+## 2026-06-29
+
+### FASE 9 — DeepSeek tool extraction fixes & provider switch
+- `luna-web/src/components/ChatArea.svelte`: evento `providerChange` agora atualiza o store `sessions` para a sessão ativa, garantindo que o switch de provider (DeepSeek ↔ Kimi) seja persistido e usado nas mensagens seguintes.
+- `kimi-bridge.cjs`: DeepSeek agora ignora eventos de tool vindos do DOM observer/fallback, evitando execução prematura ou múltipla das mesmas ferramentas.
+- `kimi-bridge.cjs`: parser de JSON malformado reforçado para tools `writeFile`/`appendFile`/`replaceInFile`:
+  - `extractFirstCompleteJsonObject()` agora tolera aspas duplas não escapadas dentro de valores string (ex.: `lang="pt-BR"` dentro de `content`).
+  - `extractWriteFileFallback()` extrai manualmente `path` e `content` quando o JSON do DeepSeek quebra por aspas internas de HTML/código.
+  - `isJsonComplete()` e `extractResponseFromCompleteJson()` receberam o mesmo tratamento tolerante, permitindo que o streaming termine corretamente após uma tool call malformada.
+- `config/luna-prompt-config.json`: revertidas instruções de base64; prompt volta ao formato anterior.
+- Build do frontend (`luna-web/dist`) regerado e deployado no `luna-server`.
+- Teste end-to-end via Playwright com provider DeepSeek: pedido "crie uma landing page moderna sobre app FitPulse usando Tailwind CSS" gerou arquivo `/home/jhin/.luna-workspace/web-web-mqyzw0zk-n6cz/index.html` (4.936 bytes, 88 linhas) corretamente, com confirmação final no chat.
+
 ## 2026-06-28
 
 ### FASE 7 — Malformed writeFile JSON recovery

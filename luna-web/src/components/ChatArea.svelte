@@ -1446,7 +1446,13 @@
     isStreaming={$isStreaming}
     sessionId={sessionId}
     on:modeChange={(e) => currentMode.set(e.detail)}
-    on:providerChange={(e) => currentProvider.set(e.detail)}
+    on:providerChange={(e) => {
+      const newProvider = e.detail;
+      currentProvider.set(newProvider);
+      // v11.1-fix: Also update the session in the sessions store so sendMessage
+      // uses the newly selected provider immediately.
+      sessions.update(list => list.map(s => s.id === sessionId ? { ...s, provider: newProvider } : s));
+    }}
     on:clear={handleClear}
     on:export={handleExport}
     on:compactEvent={(e) => handleEvent(e.detail)}

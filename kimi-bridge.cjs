@@ -136,7 +136,18 @@ function isJsonComplete(text) {
       continue;
     }
     if (c === '"') {
-      inString = !inString;
+      // v11.1-fix: Tolerate unescaped internal quotes inside string values.
+      // A closing quote is real only when the next significant char is , : } or ].
+      if (inString) {
+        let j = i + 1;
+        while (j < text.length && /\s/.test(text[j])) j++;
+        if (j >= text.length || text[j] === ',' || text[j] === ':' || text[j] === '}' || text[j] === ']') {
+          inString = false;
+        }
+        // else: unescaped internal quote, stay inside string
+      } else {
+        inString = true;
+      }
       continue;
     }
     if (!inString) {
@@ -145,6 +156,79 @@ function isJsonComplete(text) {
     }
   }
   return foundFirstBrace && depth === 0;
+}
+
+// v11.1-fix: Manual extraction for file-write tool JSONs with unescaped quotes.
+function extractWriteFileFromText(text) {
+  if (!text || text.length < 30) return null;
+  const toolMatch = text.match(/"tool"\s*:\s*"([^"]+)"/);
+  if (!toolMatch) return null;
+  const tool = toolMatch[1];
+  if (!['writeFile', 'appendFile', 'replaceInFile'].includes(tool)) return null;
+
+  function extractStringValue(key) {
+    const pattern = new RegExp(`"${key}"\\s*:\\s*"`);
+    const m = text.match(pattern);
+    if (!m) return null;
+    let i = text.indexOf(m[0]) + m[0].length;
+    let val = '';
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === '\\' && i + 1 < text.length) {
+        const next = text[i + 1];
+        switch (next) {
+          case 'n': val += '\n'; break;
+          case 't': val += '\t'; break;
+          case 'r': val += '\r'; break;
+          case 'b': val += '\b'; break;
+          case 'f': val += '\f'; break;
+          case '\\': val += '\\'; break;
+          case '"': val += '"'; break;
+          case '/': val += '/'; break;
+          case 'u':
+            if (i + 5 < text.length) {
+              const hex = text.slice(i + 2, i + 6);
+              const code = parseInt(hex, 16);
+              if (!isNaN(code)) {
+                val += String.fromCharCode(code);
+                i += 4;
+                break;
+              }
+            }
+            val += next;
+            break;
+          default: val += next; break;
+        }
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < text.length && /\s/.test(text[j])) j++;
+        if (j >= text.length || text[j] === ',' || text[j] === '}' || text[j] === ']') {
+          return val;
+        }
+        val += ch;
+        i++;
+        continue;
+      }
+      val += ch;
+      i++;
+    }
+    return val;
+  }
+
+  const path = extractStringValue('path');
+  const content = extractStringValue('content');
+  if (!path || content === null) return null;
+  const params = { path, content };
+  if (tool === 'replaceInFile') {
+    const oldStr = extractStringValue('oldString') || extractStringValue('old_string') || extractStringValue('old');
+    const newStr = extractStringValue('newString') || extractStringValue('new_string') || extractStringValue('new');
+    if (oldStr !== null) params.oldString = oldStr;
+    if (newStr !== null) params.newString = newStr;
+  }
+  return { type: 'tool', tool, params };
 }
 
 function extractResponseFromCompleteJson(text) {
@@ -183,6 +267,11 @@ function extractResponseFromCompleteJson(text) {
       return { type: 'response', text: msgMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\') };
     }
   } catch {}
+  // v11.1-fix: Last resort for file-write tool JSONs with unescaped quotes inside content.
+  const writeFileTool = extractWriteFileFromText(cleaned);
+  if (writeFileTool) {
+    return writeFileTool;
+  }
   return null;
 }
 
@@ -2105,6 +2194,9 @@ class KimiBridge {
       // v10.35-fix: Robustly extract the first complete JSON object using brace counting.
       // This lets us grab a tool JSON even if the DOM contains surrounding text/fragments,
       // as long as the outer braces are balanced.
+      // v11.1-fix: Tolerate unescaped double quotes inside string values (common when LLMs
+      // embed HTML/JS inside JSON). A closing quote is only real when the next significant
+      // character is , : } or ].
       function extractFirstCompleteJsonObject(text) {
         if (!text || text.length < 10) return null;
         let i = 0;
@@ -2122,7 +2214,16 @@ class KimiBridge {
             } else if (c === '\\') {
               escape = true;
             } else if (c === '"') {
-              inString = !inString;
+              if (inString) {
+                let j = i + 1;
+                while (j < text.length && /\s/.test(text[j])) j++;
+                if (j >= text.length || text[j] === ',' || text[j] === ':' || text[j] === '}' || text[j] === ']') {
+                  inString = false;
+                }
+                // else: unescaped internal quote, stay inside string
+              } else {
+                inString = true;
+              }
             } else if (!inString) {
               if (c === '{') depth++;
               else if (c === '}') depth--;
@@ -2134,6 +2235,81 @@ class KimiBridge {
           }
         }
         return null;
+      }
+
+      // v11.1-fix: Manual extraction for writeFile/appendFile when JSON is malformed with
+      // unescaped quotes inside the content string. We pull path and content directly so
+      // large HTML/JS payloads are not lost.
+      function extractWriteFileFallback(text) {
+        if (!text || text.length < 30) return null;
+        const toolMatch = text.match(/"tool"\s*:\s*"([^"]+)"/);
+        if (!toolMatch) return null;
+        const tool = toolMatch[1];
+        if (!['writeFile', 'appendFile', 'replaceInFile'].includes(tool)) return null;
+
+        function extractStringValue(key) {
+          const pattern = new RegExp(`"${key}"\\s*:\\s*"`);
+          const m = text.match(pattern);
+          if (!m) return null;
+          let i = text.indexOf(m[0]) + m[0].length;
+          let val = '';
+          while (i < text.length) {
+            const ch = text[i];
+            if (ch === '\\' && i + 1 < text.length) {
+              const next = text[i + 1];
+              switch (next) {
+                case 'n': val += '\n'; break;
+                case 't': val += '\t'; break;
+                case 'r': val += '\r'; break;
+                case 'b': val += '\b'; break;
+                case 'f': val += '\f'; break;
+                case '\\': val += '\\'; break;
+                case '"': val += '"'; break;
+                case '/': val += '/'; break;
+                case 'u':
+                  if (i + 5 < text.length) {
+                    const hex = text.slice(i + 2, i + 6);
+                    const code = parseInt(hex, 16);
+                    if (!isNaN(code)) {
+                      val += String.fromCharCode(code);
+                      i += 4;
+                      break;
+                    }
+                  }
+                  val += next;
+                  break;
+                default: val += next; break;
+              }
+              i += 2;
+              continue;
+            }
+            if (ch === '"') {
+              let j = i + 1;
+              while (j < text.length && /\s/.test(text[j])) j++;
+              if (j >= text.length || text[j] === ',' || text[j] === '}' || text[j] === ']') {
+                return val;
+              }
+              val += ch;
+              i++;
+              continue;
+            }
+            val += ch;
+            i++;
+          }
+          return val;
+        }
+
+        const path = extractStringValue('path');
+        const content = extractStringValue('content');
+        if (!path || content === null) return null;
+        const params = { path, content };
+        if (tool === 'replaceInFile') {
+          const oldStr = extractStringValue('oldString') || extractStringValue('old_string') || extractStringValue('old');
+          const newStr = extractStringValue('newString') || extractStringValue('new_string') || extractStringValue('new');
+          if (oldStr !== null) params.oldString = oldStr;
+          if (newStr !== null) params.newString = newStr;
+        }
+        return { tool, params };
       }
 
       // v10.32-fix: Detect tool JSON blocks in code blocks and raw response for non-Kimi providers.
@@ -2169,6 +2345,12 @@ class KimiBridge {
           if (parsed2 && typeof parsed2.tool === 'string' && parsed2.params && typeof parsed2.params === 'object') {
             return { tool: parsed2.tool, params: parsed2.params };
           }
+        }
+        // v11.1-fix: Last resort for file-write tools with raw HTML/JS content.
+        const writeFileFallback = extractWriteFileFallback(text);
+        if (writeFileFallback) {
+          log.warn(`[tryParseToolJson] Used writeFile fallback for malformed JSON (tool=${writeFileFallback.tool}, path=${writeFileFallback.params.path})`);
+          return writeFileFallback;
         }
         return null;
       }
@@ -4531,12 +4713,24 @@ class KimiBridge {
     const runLoop = async () => {
       while (session.domPollerActive && session.page && !session.page.isClosed()) {
         try {
+          const provider = session.provider || 'kimi';
           // v8.6: LAYER 0 — Chrome Extension events (PRIMARY real-time source)
           // These come directly from the extension's injected.js DOM observer,
           // bypassing all Playwright overhead and network interception fallbacks.
           try {
             const extEvents = this._consumeExtensionEvents();
             for (const ev of extEvents) {
+              // v11.1-fix: DeepSeek's DOM observer emits partial tool_call events while
+              // the JSON code block is still streaming. Each mutation yields a different
+              // incomplete command, causing duplicate/mid-stream executions. For DeepSeek,
+              // rely on generic-provider extraction only after generation is complete.
+              if (provider === 'deepseek' && (
+                ev.type === 'tool_call' ||
+                ev.type === 'json_block_added' ||
+                (ev.type === 'action_detected' && ev.source !== 'network_intercept')
+              )) {
+                continue;
+              }
               switch (ev.type) {
                 case 'state_change': {
                   this._enqueueDomEvent(userId, {
@@ -4766,21 +4960,25 @@ class KimiBridge {
             }
           } catch (e) {
             // Observer not available — fallback to direct DOM extraction
-            try {
-              const jsonBlocks = await this._extractJsonBlocksFromDOM(session.page);
-              for (const action of jsonBlocks.actions) {
-                this._enqueueDomEvent(userId, { type: 'action_detected', action, source: 'json_block', timestamp: Date.now() });
-              }
-              for (const resp of jsonBlocks.responses) {
-                this._enqueueDomEvent(userId, { type: 'response_detected', response: resp.response, source: 'json_block', timestamp: Date.now() });
-              }
-            } catch (e2) {}
-            try {
-              const toolBlocks = await this._extractToolMirrorFromDOM(session.page);
-              for (const block of toolBlocks) {
-                this._enqueueDomEvent(userId, { type: 'action_detected', action: this._convertIpythonToAction(block), code: block.code, kimiResult: block.result, kimiImages: block.images, source: 'dom_mirror', timestamp: Date.now() });
-              }
-            } catch (e2) {}
+            // v11.1-fix: For DeepSeek, skip DOM tool extraction fallbacks because the
+            // code blocks are still mutating while streaming and produce partial tools.
+            if (provider !== 'deepseek') {
+              try {
+                const jsonBlocks = await this._extractJsonBlocksFromDOM(session.page);
+                for (const action of jsonBlocks.actions) {
+                  this._enqueueDomEvent(userId, { type: 'action_detected', action, source: 'json_block', timestamp: Date.now() });
+                }
+                for (const resp of jsonBlocks.responses) {
+                  this._enqueueDomEvent(userId, { type: 'response_detected', response: resp.response, source: 'json_block', timestamp: Date.now() });
+                }
+              } catch (e2) {}
+              try {
+                const toolBlocks = await this._extractToolMirrorFromDOM(session.page);
+                for (const block of toolBlocks) {
+                  this._enqueueDomEvent(userId, { type: 'action_detected', action: this._convertIpythonToAction(block), code: block.code, kimiResult: block.result, kimiImages: block.images, source: 'dom_mirror', timestamp: Date.now() });
+                }
+              } catch (e2) {}
+            }
           }
         } catch (e) {
           log.warn(`[DomPoller] Error for user ${hashUserId(userId)}: ${e.message}`);
