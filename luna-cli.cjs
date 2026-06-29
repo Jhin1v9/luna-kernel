@@ -29,9 +29,10 @@ try { chalk = require('chalk'); } catch {
 
 const { LunaSoul } = require('./luna-soul.cjs');
 const { SessionManager } = require('./session-manager.cjs');
+const lunaConfig = require('./config/luna-config');
 
 const VERSION = '3.0.0';
-const LUNA_DIR = path.join(os.homedir(), '.luna');
+const LUNA_DIR = lunaConfig.LUNA_DIR;
 
 // ──── UI RENDERING ────
 

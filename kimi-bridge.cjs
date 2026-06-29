@@ -3759,7 +3759,7 @@ class KimiBridge {
   _ensureChromeProfile() {
     const { execSync } = require('child_process');
     const os = require('os');
-    const userDataDir = path.join(os.homedir(), '.luna', 'chrome-profile');
+    const userDataDir = path.join(config?.LUNA_DIR || path.join(os.homedir(), '.luna'), 'chrome-profile');
     const sourceProfile = path.join(os.homedir(), '.config', 'google-chrome');
 
     // If persistent profile already has Local Storage data, assume it's good

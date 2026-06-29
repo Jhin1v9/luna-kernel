@@ -9,14 +9,33 @@
  */
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 
 // ── Base Paths ──
-// Environment variables allow the same code to run on the dev PC and on the
-// VPS where repositories live under /root/nexo-projects-abner/.
+// Environment variables allow the same code to run on any PC (home, dad's,
+// VPS) without recompiling. Set LUNA_HOME once and every runtime/data dir is
+// derived from it.
 const HOME_DIR = os.homedir();
-const LUNA_KERNEL_DIR = process.env.LUNA_KERNEL_DIR || path.join(HOME_DIR, '.luna-kernel');
-const LUNA_DIR = process.env.LUNA_DIR || path.join(HOME_DIR, '.luna');
-const NEXO_DIR = process.env.NEXO_DIR || path.join(HOME_DIR, 'NEXO_DASHBOARD_PRO');
+const LUNA_HOME = process.env.LUNA_HOME || path.join(HOME_DIR, '.luna');
+const LUNA_KERNEL_DIR = process.env.LUNA_KERNEL_DIR || path.join(LUNA_HOME, 'kernel');
+const LUNA_DIR = process.env.LUNA_DIR || LUNA_HOME;
+const NEXO_DIR = process.env.NEXO_DIR || path.join(LUNA_HOME, 'dashboard');
+
+/**
+ * Ensure a directory exists (admin-style helper). Creates missing parents.
+ * Never throws: returns true on success, false on failure.
+ */
+function ensureDir(dir) {
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    }
+    return true;
+  } catch (err) {
+    console.error(`[LunaPaths] Failed to create directory ${dir}: ${err.message}`);
+    return false;
+  }
+}
 
 // ── Ports ──
 const PORTS = {
@@ -48,6 +67,14 @@ const TIMEOUTS = {
 
 // ── Paths ──
 const PATHS = {
+  lunaHome: LUNA_HOME,
+  lunaKernel: LUNA_KERNEL_DIR,
+  luna: LUNA_DIR,
+  nexo: NEXO_DIR,
+  tmp: path.join(LUNA_HOME, '.luna-tmp'),
+  logs: path.join(LUNA_HOME, 'logs'),
+  plans: path.join(LUNA_KERNEL_DIR, 'plans'),
+  workspaceBase: process.env.LUNA_WORKSPACE_BASE || path.join(LUNA_HOME, 'workspace'),
   lunaDist: path.join(LUNA_KERNEL_DIR, 'luna-web', 'dist'),
   dashboardPublic: path.join(NEXO_DIR, 'backend', 'public'),
   dashboardData: path.join(NEXO_DIR, 'backend', 'data'),
@@ -55,9 +82,11 @@ const PATHS = {
   personas: path.join(LUNA_DIR, 'personas'),
   skills: path.join(LUNA_DIR, 'skills'),
   memories: path.join(LUNA_DIR, 'memories'),
-  artifacts: path.join(LUNA_KERNEL_DIR, '..', 'ARTIFACTS'),
-  env: path.join(LUNA_KERNEL_DIR, '.env'),
-  runtime: path.join(LUNA_KERNEL_DIR, '.luna-runtime.json'),
+  artifacts: path.join(LUNA_HOME, 'ARTIFACTS'),
+  env: path.join(LUNA_HOME, '.env'),
+  runtime: path.join(LUNA_HOME, '.luna-runtime.json'),
+  promptConfig: path.join(LUNA_KERNEL_DIR, 'config', 'luna-prompt-config.json'),
+  masterPrompt: path.join(LUNA_KERNEL_DIR, 'LUNA_MASTER_PROMPT.md'),
 };
 
 // ── Kimi Bridge ──
@@ -106,6 +135,7 @@ const FEATURES = {
 
 module.exports = {
   HOME_DIR,
+  LUNA_HOME,
   LUNA_KERNEL_DIR,
   LUNA_DIR,
   NEXO_DIR,
@@ -117,4 +147,5 @@ module.exports = {
   AUTH,
   DB,
   FEATURES,
+  ensureDir,
 };

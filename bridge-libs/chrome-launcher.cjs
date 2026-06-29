@@ -14,13 +14,14 @@ const os = require('os');
 const http = require('http');
 const net = require('net');
 const { execSync, spawn } = require('child_process');
+const lunaConfig = require('../config/luna-config');
 
 class ChromeLauncher {
   constructor(config, logger) {
     this.config = config || {};
     this.logger = logger || { info: () => {}, warn: () => {}, error: () => {}, success: () => {} };
     this.cdpPorts = this.config.CDP_PORTS || [9222, 9223, 9224, 9225];
-    this.profileDir = this.config.PROFILE_DIR || path.join(os.homedir(), '.luna', 'chrome-profile');
+    this.profileDir = this.config.PROFILE_DIR || path.join(lunaConfig.LUNA_DIR || path.join(os.homedir(), '.luna'), 'chrome-profile');
     this.extensionDir = this.config.EXTENSION_DIR || path.join(__dirname, '..', 'luna-extension');
     this.chromePathPriority = this.config.CHROME_PATH_PRIORITY || [
       '/opt/google/chrome/chrome',

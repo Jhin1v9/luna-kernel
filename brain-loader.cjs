@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const DEFAULT_BRAIN_PATH = path.join(os.homedir(), 'Documentos', '.brain-luna-v10.16');
+const DEFAULT_BRAIN_PATH = process.env.BRAIN_PATH || path.join(os.homedir(), 'Documentos', '.brain-luna-v10.16');
 
 function exists(p) {
   try { return fs.existsSync(p); } catch { return false; }

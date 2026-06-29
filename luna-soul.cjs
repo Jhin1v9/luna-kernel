@@ -27,6 +27,7 @@ const { loadBrainContext } = require('./brain-loader.cjs');
 const { ToolGuard, validatePythonCode, checkDestructivePattern } = require('./luna-tool-guard.cjs');
 const { ResponseStreamParser, safeJsonParse, isBalancedBraces } = require('./response-stream-parser.cjs');
 const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cjs');
+const lunaConfig = require('./config/luna-config');
 const {
   checkJsxBalanced,
   checkFileTruncated,
@@ -70,9 +71,19 @@ const log = {
   success: (...args) => console.log(...args),
 };
 
-const LUNA_DIR = path.join(os.homedir(), '.luna');
-const SKILLS_DIR = path.join(LUNA_DIR, 'skills');
-const PROMPT_CONFIG_PATH = path.join(os.homedir(), '.luna-kernel', 'config', 'luna-prompt-config.json');
+const LUNA_DIR = lunaConfig.LUNA_DIR;
+const LUNA_KERNEL_DIR = lunaConfig.LUNA_KERNEL_DIR;
+const SKILLS_DIR = lunaConfig.PATHS.skills;
+const PROMPT_CONFIG_PATH = lunaConfig.PATHS.promptConfig;
+
+// v10.28-fix: Ensure core runtime directories exist on any machine.
+lunaConfig.ensureDir(LUNA_DIR);
+lunaConfig.ensureDir(SKILLS_DIR);
+lunaConfig.ensureDir(lunaConfig.PATHS.personas);
+lunaConfig.ensureDir(lunaConfig.PATHS.memories);
+lunaConfig.ensureDir(lunaConfig.PATHS.plans);
+lunaConfig.ensureDir(lunaConfig.PATHS.tmp);
+lunaConfig.ensureDir(lunaConfig.PATHS.logs);
 
 // ── PROMPT CONFIG LOADER ──
 // Loads prompt templates from external JSON so they can be edited
@@ -116,9 +127,9 @@ function nextToolEventId() {
   return `tool-${Date.now()}-${++_toolEventCounter}`;
 }
 
-const PERSONAS_DIR = path.join(LUNA_DIR, 'personas');
-const MEMORIES_DIR = path.join(LUNA_DIR, 'memories');
-const MASTER_PROMPT_PATH = path.join(os.homedir(), '.luna-kernel', 'LUNA_MASTER_PROMPT.md');
+const PERSONAS_DIR = lunaConfig.PATHS.personas;
+const MEMORIES_DIR = lunaConfig.PATHS.memories;
+const MASTER_PROMPT_PATH = lunaConfig.PATHS.masterPrompt;
 
 // ============================================================
 // AGENTS.md AUTO-DISCOVERY (inspired by kimi-cli)
@@ -286,7 +297,7 @@ function buildSystemPrompt(opts = {}) {
 
   // v10.22-fix: workspace isolation per user/session
   const workspace = workspaceManager.getWorkspace(userId);
-  const workspacePath = workspace ? workspace.path : os.homedir();
+  const workspacePath = workspace ? workspace.path : lunaConfig.LUNA_HOME;
   const workspaceContext = workspaceManager.getFormattedManifest(userId) || `Workspace padrão: ${workspacePath}`;
 
   const cfg = getPromptConfig();
@@ -3041,8 +3052,8 @@ REGRAS:
     // Persist plan to file
     const fs = require('fs');
     const path = require('path');
-    const planDir = path.join(os.homedir(), '.luna-kernel', 'plans');
-    fs.mkdirSync(planDir, { recursive: true });
+    const planDir = lunaConfig.PATHS.plans;
+    lunaConfig.ensureDir(planDir);
     const planPath = path.join(planDir, `${sessionId}.md`);
     fs.writeFileSync(planPath, fullPlan, 'utf-8');
 
@@ -3755,7 +3766,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const currentUserId = options.userId || session?.userId || 'luna-default';
 
       // v10.23-fix: ensure every web/session user has an isolated workspace
-      const defaultWorkspaceBase = workspaceManager.baseDir || path.join(os.homedir(), '.luna-workspace');
+      const defaultWorkspaceBase = workspaceManager.baseDir || lunaConfig.PATHS.workspaceBase;
       const userWorkspacePath = path.join(defaultWorkspaceBase, currentUserId);
       workspaceManager.ensureWorkspace(currentUserId, userWorkspacePath);
 

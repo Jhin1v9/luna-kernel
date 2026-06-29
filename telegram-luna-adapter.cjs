@@ -19,7 +19,8 @@ if (fs.existsSync(envPath)) {
   });
 }
 
-const getTelegramBot = require('../NEXO_DASHBOARD_PRO/backend/services/telegram-bot-client.cjs');
+const lunaConfig = require('./config/luna-config');
+const getTelegramBot = require(path.join(lunaConfig.NEXO_DIR, 'backend', 'services', 'telegram-bot-client.cjs'));
 const { LunaSoul } = require('./luna-soul.cjs');
 const { SessionManager } = require('./session-manager.cjs');
 
@@ -140,7 +141,7 @@ class TelegramLunaAdapter {
 
   _resolveVoterFromChatId(chatId) {
     try {
-      const usersFile = path.join(__dirname, '..', 'Documentos', 'NEXO_DASHBOARD_PRO', 'backend', 'data', 'users.json');
+      const usersFile = path.join(lunaConfig.NEXO_DIR, 'backend', 'data', 'users.json');
       if (!fs.existsSync(usersFile)) return null;
       const data = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
       for (const [userId, user] of Object.entries(data.users || {})) {

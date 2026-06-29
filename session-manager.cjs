@@ -9,20 +9,17 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const os = require('os');
 
-const LUNA_DIR = path.join(os.homedir(), '.luna');
-const SESSIONS_DIR = path.join(LUNA_DIR, 'sessions');
+const lunaConfig = require('./config/luna-config');
+
+const LUNA_DIR = lunaConfig.LUNA_DIR;
+const SESSIONS_DIR = lunaConfig.PATHS.sessions;
 const SESSION_INDEX = path.join(LUNA_DIR, 'session_index.json');
 const CURRENT_SESSION_LINK = path.join(LUNA_DIR, 'current_session');
 
-// Ensure directories exist
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-ensureDir(SESSIONS_DIR);
+// Ensure directories exist on any machine
+lunaConfig.ensureDir(LUNA_DIR);
+lunaConfig.ensureDir(SESSIONS_DIR);
 
 class SessionManager {
   constructor() {

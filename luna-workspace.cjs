@@ -18,6 +18,7 @@ const statAsync = promisify(fs.stat);
 const readdirAsync = promisify(fs.readdir);
 const existsAsync = promisify(fs.exists);
 const { glob, grep, viewDirectory, executeShell } = require('./luna-tools.cjs');
+const lunaConfig = require('./config/luna-config');
 
 // ── Constants ──
 const MAX_MANIFEST_SIZE = 4096;        // ~4KB soft limit
@@ -485,7 +486,7 @@ class WorkspaceManager {
 
   ensureWorkspace(userId = 'default', workspacePath = null) {
     if (this.workspaces.has(userId)) return this.workspaces.get(userId);
-    const targetPath = workspacePath || path.join(this.baseDir || path.join(os.homedir(), '.luna-workspace'), userId);
+    const targetPath = workspacePath || path.join(this.baseDir || lunaConfig.PATHS.workspaceBase, userId);
     // bootstrap is async but returns a promise that resolves to {success, manifest, formatted}
     // Synchronously create the dir and a minimal manifest so callers can use it immediately.
     if (!fs.existsSync(targetPath)) {

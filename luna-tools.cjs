@@ -22,20 +22,15 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
+const lunaConfig = require('./config/luna-config');
 
-// v10.27-fix: Use a private Luna temp directory instead of system /tmp.
-// Some environments restrict /tmp access, causing ENOENT when creating logs.
-const LUNA_TMP_DIR = path.join(require('os').homedir(), '.luna-kernel', '.luna-tmp');
-try {
-  if (!fs.existsSync(LUNA_TMP_DIR)) {
-    fs.mkdirSync(LUNA_TMP_DIR, { recursive: true, mode: 0o700 });
-  }
-} catch (e) {
-  console.warn('[luna-tools] Could not create LUNA_TMP_DIR:', e.message);
-}
+// v10.28-fix: Centralize runtime paths via LUNA_HOME. Auto-create dirs so the
+// Luna never fails with ENOENT on temp files across different PCs/VPS.
+const LUNA_TMP_DIR = lunaConfig.PATHS.tmp;
+lunaConfig.ensureDir(LUNA_TMP_DIR);
 
-// Load .env from NEXO_DASHBOARD_PRO backend
-const ENV_PATH = path.join(require('os').homedir(), 'NEXO_DASHBOARD_PRO', 'backend', '.env');
+// Load .env from dashboard backend (dynamic path)
+const ENV_PATH = path.join(lunaConfig.NEXO_DIR, 'backend', '.env');
 if (fs.existsSync(ENV_PATH)) {
   fs.readFileSync(ENV_PATH, 'utf8').split('\n').forEach(line => {
     const eq = line.indexOf('=');
@@ -51,7 +46,7 @@ if (fs.existsSync(ENV_PATH)) {
 // TELEGRAM NOTIFICATIONS (v8.5)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const TELEGRAM_SERVICE_PATH = path.join(require('os').homedir(), 'NEXO_DASHBOARD_PRO', 'backend', 'services', 'telegram-notification.service.js');
+const TELEGRAM_SERVICE_PATH = path.join(lunaConfig.NEXO_DIR, 'backend', 'services', 'telegram-notification.service.js');
 let telegramNotify = null;
 try {
   if (fs.existsSync(TELEGRAM_SERVICE_PATH)) {
