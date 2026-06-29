@@ -11,10 +11,12 @@ const path = require('path');
 const os = require('os');
 
 // ── Base Paths ──
+// Environment variables allow the same code to run on the dev PC and on the
+// VPS where repositories live under /root/nexo-projects-abner/.
 const HOME_DIR = os.homedir();
-const LUNA_KERNEL_DIR = path.join(HOME_DIR, '.luna-kernel');
-const LUNA_DIR = path.join(HOME_DIR, '.luna');
-const NEXO_DIR = path.join(HOME_DIR, 'NEXO_DASHBOARD_PRO');
+const LUNA_KERNEL_DIR = process.env.LUNA_KERNEL_DIR || path.join(HOME_DIR, '.luna-kernel');
+const LUNA_DIR = process.env.LUNA_DIR || path.join(HOME_DIR, '.luna');
+const NEXO_DIR = process.env.NEXO_DIR || path.join(HOME_DIR, 'NEXO_DASHBOARD_PRO');
 
 // ── Ports ──
 const PORTS = {
