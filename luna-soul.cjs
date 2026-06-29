@@ -1803,7 +1803,7 @@ class LunaSoul extends EventEmitter {
       if (this.kimiBridge) {
         yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
         try {
-          await this.kimiBridge.newChat(userId);
+          await this.kimiBridge.newChat(userId, null, { requireChatUrl: false });
           console.log(`[LUNA] New chat created for user ${userId}`);
         } catch (err) {
           yield { type: 'compact_error', message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`, sessionId };

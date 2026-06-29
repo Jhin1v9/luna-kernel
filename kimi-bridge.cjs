@@ -2621,8 +2621,13 @@ class KimiBridge {
 
   /**
    * Create a new chat for a user (does NOT use sendMessage)
+   * @param {Object} [opts] - options
+   * @param {boolean} [opts.requireChatUrl=true] - If false, allows returning the
+   *   provider's "new chat" landing page URL. The real chat URL will be captured
+   *   after the first message is sent. Used by context compaction.
    */
-  async newChat(userId, providerArg = null) {
+  async newChat(userId, providerArg = null, opts = {}) {
+    const { requireChatUrl = true } = opts;
     const provider = this._resolveProvider(userId, providerArg);
     const providerDomain = this._providerDomain(provider);
     const newChatUrl = this._modeUrl(provider, 'instant');
@@ -2714,9 +2719,11 @@ class KimiBridge {
       log.warn(`Still on same chat ID after newChat ( ${chatIdOld} ). URL did not change properly.`);
     }
 
-    // v10.24-fix: Fail-fast if we couldn't get a valid chat URL.
-    // Do NOT update session.chatUrl with an invalid landing page URL.
-    if (!isValidChatUrl(newUrl)) {
+    // v10.28-fix: For context compaction we may land on the provider's "new chat"
+    // landing page. The real /chat/<id> URL only appears after the first message
+    // is sent. Allow the caller to opt-in to this intermediate state.
+    const isNewChatLanding = newUrl === newChatUrl || newUrl.split('?')[0] === newChatUrl.split('?')[0];
+    if (!isValidChatUrl(newUrl) && (!isNewChatLanding || requireChatUrl)) {
       log.error(`newChat failed for user ${hashUserId(userId)}: URL is not a valid chat (${newUrl}).`);
       throw new Error(`NEW_CHAT_FAILED: Não foi possível criar uma nova thread válida em ${provider} (URL: ${newUrl})`);
     }
@@ -2737,7 +2744,11 @@ class KimiBridge {
 
     // Update session (session.page was already migrated to the new tab above)
     session.chatUrl = newUrl;
-    this._saveChatUrl(userId, session.chatUrl);
+    if (isValidChatUrl(newUrl)) {
+      this._saveChatUrl(userId, session.chatUrl);
+    } else {
+      log.info(`newChat landed on landing page for user ${hashUserId(userId)}; chatUrl will be updated after first message`);
+    }
 
     log.success(`New chat created for user ${hashUserId(userId)}: ${session.chatUrl}`);
     return { chatUrl: session.chatUrl, mode: session.mode };
