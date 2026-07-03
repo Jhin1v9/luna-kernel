@@ -1742,41 +1742,6 @@ class LunaSoul extends EventEmitter {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Check if the session context exceeds the recommended size for manual compaction.
-   * Returns true when: explicit flag is set OR estimated tokens exceed the threshold.
-   */
-  _shouldCompact(sessionId, explicit = false) {
-    if (explicit === true) {
-      console.log(`[DEBUG-LUNA] _shouldCompact returning true (explicit)`);
-      return true;
-    }
-
-    // v10.15-fix: Threshold baseado em tokens estimados (220K), não contagem de eventos.
-    // Kimi K2.6 suporta 256K tokens. Compactar em 220K dá margem de segurança.
-    // 1 token ≈ 4 bytes em média para texto em português/JSON.
-    const TOKEN_THRESHOLD = 220000;
-
-    let estimatedTokens = 0;
-    try {
-      const ctxFile = this.sessionManager?._contextFile?.(sessionId);
-      if (ctxFile && fs.existsSync(ctxFile)) {
-        const stats = fs.statSync(ctxFile);
-        estimatedTokens = Math.floor(stats.size / 4);
-      }
-    } catch {}
-
-    // Fallback: estima pelo número de eventos
-    if (estimatedTokens === 0) {
-      const eventCount = this.sessionManager?.readContext?.(sessionId)?.length || 0;
-      estimatedTokens = eventCount * 180; // ~180 tokens/evento (média medida)
-    }
-
-    const should = estimatedTokens > TOKEN_THRESHOLD;
-    console.log(`[DEBUG-LUNA] _shouldCompact returning ${should} (estTokens=${estimatedTokens}, threshold=${TOKEN_THRESHOLD})`);
-    return should;
-  }
-
-  /**
    * Compact session context: build a rich checkpoint, create a new thread,
    * send the checkpoint, and reset local context.
    */
