@@ -924,6 +924,19 @@ class KimiBridge {
   }
 
   /**
+   * Clear the persisted chat URL for a user.
+   * Used before creating a new thread to prevent navigation back to the stale URL.
+   */
+  _clearChatUrl(userId) {
+    const session = this.userSessions.get(userId);
+    if (session) {
+      session.chatUrl = null;
+    }
+    this.store.setUser(userId, { chatUrl: null, lastActivity: Date.now() });
+    log.info(`Cleared chatUrl for user ${hashUserId(userId)}`);
+  }
+
+  /**
    * Connect to Chrome via CDP. Uses browser.contexts()[0] ONLY.
    * Never creates newContext() — incognito contexts lose the Kimi login.
    */
