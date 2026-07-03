@@ -3754,6 +3754,107 @@ class KimiBridge {
   }
 
   /**
+   * Send a message to the provider Web UI without waiting for the full response.
+   * Use this for checkpoint messages where we only need delivery confirmation.
+   * Returns once the message is submitted and the input no longer contains the original text.
+   * @throws If delivery cannot be confirmed within 30 seconds.
+   */
+  async sendMessageNoWait(userId, text, options = {}) {
+    if (!text || !text.trim()) {
+      throw new Error('Message text is required');
+    }
+
+    if (options.mode && ['agent', 'swarm'].includes(options.mode)) {
+      throw new Error(`sendMessageNoWait does not support ${options.mode} mode`);
+    }
+
+    const page = await this._getOrCreateUserPage(userId);
+    const session = this.userSessions.get(userId);
+    if (!session) {
+      throw new Error(`No session for user ${hashUserId(userId)}`);
+    }
+
+    this._checkCooldown(userId);
+
+    if (session.processing) {
+      log.warn(`User ${hashUserId(userId)} is already processing — queueing no-wait message`);
+      while (session.processing) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    session.processing = true;
+
+    try {
+      session.lastActivity = Date.now();
+      await this._verifySession(page);
+
+      if (options.mode) {
+        await this.setMode(userId, options.mode);
+      }
+
+      const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+      const inputCount = await inputLocator.count();
+      if (inputCount === 0) {
+        throw new Error('Input field not found on provider page');
+      }
+
+      await page.bringToFront();
+      await inputLocator.evaluate((el) => el.focus());
+      await page.waitForTimeout(200);
+
+      await inputLocator.fill('');
+      await page.waitForTimeout(300);
+      await inputLocator.fill(text);
+      await page.waitForTimeout(200);
+      await inputLocator.evaluate((el) => {
+        const data = el.value || el.innerText || '';
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.waitForTimeout(500);
+
+      await this._pressEnterOnInput(inputLocator);
+      log.info(`[sendMessageNoWait] Submitted message for user ${hashUserId(userId)}`);
+
+      let confirmed = false;
+      const deliveryDeadline = Date.now() + 30000;
+      while (Date.now() < deliveryDeadline) {
+        try {
+          const currentValue = await inputLocator.inputValue().catch(async () => {
+            return await inputLocator.evaluate((el) => el.innerText || el.textContent || '');
+          });
+          if (!currentValue || !currentValue.includes(text.slice(0, 100))) {
+            confirmed = true;
+            log.info(`[sendMessageNoWait] Delivery confirmed for user ${hashUserId(userId)}`);
+            break;
+          }
+        } catch (e) {
+          // ignore transient read errors
+        }
+        await page.waitForTimeout(300);
+      }
+
+      if (!confirmed) {
+        throw new Error('Delivery confirmation timed out');
+      }
+
+      session.chatUrl = page.url();
+      this._saveChatUrl(userId, session.chatUrl);
+
+      return { sent: true, chatUrl: session.chatUrl, mode: session.mode };
+    } catch (err) {
+      try {
+        await page.locator('textarea, [contenteditable="true"]').first().fill('');
+      } catch {}
+      throw err;
+    } finally {
+      session.processing = false;
+      session.lastActivity = Date.now();
+    }
+  }
+
+  /**
    * Get status for a user's session
    */
   async getStatus(userId) {
