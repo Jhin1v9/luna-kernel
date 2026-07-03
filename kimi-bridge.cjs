@@ -2696,6 +2696,9 @@ class KimiBridge {
     const session = this.userSessions.get(userId);
     session.provider = provider;
 
+    // Clear any stale chatUrl before creating a new thread.
+    this._clearChatUrl(userId);
+
     // v3.7-fix: Ensure interceptor is active on reused pages
     await this._injectStreamInterceptorEvaluate(page);
 
@@ -2804,11 +2807,7 @@ class KimiBridge {
 
     // Update session (session.page was already migrated to the new tab above)
     session.chatUrl = newUrl;
-    if (isValidChatUrl(newUrl)) {
-      this._saveChatUrl(userId, session.chatUrl);
-    } else {
-      log.info(`newChat landed on landing page for user ${hashUserId(userId)}; chatUrl will be updated after first message`);
-    }
+    this._saveChatUrl(userId, newUrl, { provider });
 
     log.success(`New chat created for user ${hashUserId(userId)}: ${session.chatUrl}`);
     return { chatUrl: session.chatUrl, mode: session.mode };
