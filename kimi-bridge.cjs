@@ -2604,7 +2604,7 @@ class KimiBridge {
         log.warn(`Mode ${mode} is not supported for provider ${provider}`);
         return session.mode || 'instant';
       }
-      const targetUrl = KIMI_MODE_URLS[mode];
+      const targetUrl = getModeUrls(provider)[mode];
       const currentUrl = page.url();
       if (currentUrl.includes(targetUrl.replace('https://', ''))) {
         this._log(`Already on ${mode} page`);
@@ -3582,7 +3582,7 @@ class KimiBridge {
         if (resolvedProvider !== 'kimi') {
           log.warn(`Mode ${options.mode} is not supported for provider ${resolvedProvider}`);
         } else {
-          const targetUrl = KIMI_MODE_URLS[options.mode];
+          const targetUrl = getModeUrls(resolvedProvider)[options.mode];
           const currentUrl = page.url();
           if (!currentUrl.includes(targetUrl.replace('https://', ''))) {
             log.info(`Navigating to ${options.mode} URL: ${targetUrl}`);
