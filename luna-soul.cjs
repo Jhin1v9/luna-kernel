@@ -1738,13 +1738,12 @@ class LunaSoul extends EventEmitter {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // SMART COMPACTION — auto-compact context when it grows too large
-  // Inspired by kimi-cli's compaction strategy
+  // Context compaction helpers (used only by the manual "Compactar" flow)
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Check if the session context should be compacted.
-   * Triggers when: event count > threshold OR explicit flag.
+   * Check if the session context exceeds the recommended size for manual compaction.
+   * Returns true when: explicit flag is set OR estimated tokens exceed the threshold.
    */
   _shouldCompact(sessionId, explicit = false) {
     if (explicit === true) {
@@ -2359,9 +2358,7 @@ class LunaSoul extends EventEmitter {
       }
     }
 
-    // v5.6-fix: AUTO-COMPACT REATIVADO v10.14.
-    // Compactação proativa ANTES de enviar pro Kimi — evita que o Kimi pare de responder
-    // silenciosamente quando o contexto fica muito grande.
+    // v10.32: Context compaction is manual-only. No proactive compaction before sending.
 
     // Auto-continue loop: Kimi decides → Luna executes → result goes back to Kimi → Kimi responds
     let loopInput = messageInput;
@@ -2401,17 +2398,8 @@ class LunaSoul extends EventEmitter {
 
       while (!streamSuccess && bridgeRetryCount <= MAX_BRIDGE_RETRIES) {
         try {
-          // v10.15-fix: Auto-compact proativo antes de enviar pro Kimi.
-          // Se o contexto estimado ultrapassar 220K tokens, compacta ANTES de enviar.
-          // Limite do Kimi K2.6 é 256K tokens — 220K dá margem de segurança.
-          // compact_start/compact_progress/compact_end já têm animação de fases da lua no frontend.
-          if (bridgeRetryCount === 0 && this._shouldCompact(sessionId)) {
-            const compactResult = yield* this._compactContext(sessionId, userId);
-            if (compactResult.success) {
-              // Rebuild context after compact
-              loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
-            }
-          }
+          // v10.32: Compaction is 100% manual via the "Compactar" button.
+          // No automatic compaction must happen here.
 
           // v6.0-fix: Pass files to sendMessageStream so the bridge can inject
           // text file contents directly into the prompt (bypassing placeholder)
@@ -2537,25 +2525,13 @@ class LunaSoul extends EventEmitter {
             }
 
             case 'context_limit': {
-              // v5.8-fix: Auto-compact + new thread quando Kimi reporta limite de contexto
               fullResponse = event.response || '';
-              yield { type: 'system', message: '📦 Limite de contexto atingido. Compactando e criando nova thread...', sessionId };
-              const compactResult = yield* this._compactContext(sessionId, userId);
-              if (compactResult.success) {
-                // v10.12-fix-deadlock: The previous sendMessageStream still holds session.processing=true.
-                // If we continue the while-loop immediately, the new sendMessageStream will deadlock.
-                // We MUST release the lock before creating a new stream.
-                const bridgeSession = this.kimiBridge?.userSessions?.get(userId);
-                if (bridgeSession) {
-                  bridgeSession.processing = false;
-                  console.log(`[LUNA] Released session.processing for user ${userId} before continuing after compact`);
-                }
-                loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
-                continue;
-              } else {
-                yield { type: 'error', error: '❌ Falha ao compactar contexto: ' + compactResult.error, sessionId };
-                return;
-              }
+              yield {
+                type: 'system',
+                message: '📦 Limite de contexto atingido. Clique em "Compactar" no cabeçalho para continuar.',
+                sessionId,
+              };
+              return;
             }
 
             case 'done':
@@ -2681,26 +2657,8 @@ class LunaSoul extends EventEmitter {
       streamSuccess = true; // Mark success to exit retry loop
       } // end while retry loop
 
-      // v5.8-fix: Context limit detectado pelo texto da resposta. Auto-compact + new thread.
-      if (/getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i.test(fullResponse)) {
-        yield { type: 'system', message: '📦 Limite de contexto atingido. Compactando e criando nova thread...', sessionId };
-        try {
-          const compactResult = yield* this._compactContext(sessionId, userId);
-          if (compactResult.success) {
-            // v10.12-fix-deadlock: Release processing lock before continuing
-            const bridgeSession = this.kimiBridge?.userSessions?.get(userId);
-            if (bridgeSession) {
-              bridgeSession.processing = false;
-              console.log(`[LUNA] Released session.processing for user ${userId} before continuing after compact (regex fallback)`);
-            }
-            loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
-            continue;
-          }
-        } catch (compactErr) {
-          console.error('[LUNA] Auto-compact failed:', compactErr.message);
-          yield { type: 'context_limit', error: 'Falha ao compactar contexto: ' + compactErr.message, sessionId };
-        }
-      }
+      // v10.32: Regex fallback for context limit removed. Compaction is manual.
+      // The LLM's context_limit event is handled above.
 
       // Parse the full response (tag-based primary, JSON fallback)
       let parsed = parseTagResponse(fullResponse) || parseKimiResponse(fullResponse);
