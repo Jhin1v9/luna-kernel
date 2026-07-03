@@ -937,6 +937,26 @@ class KimiBridge {
   }
 
   /**
+   * Capture and persist the current page URL for a user.
+   * Throws if there is no active page or the URL cannot be read.
+   * Invalid chat URLs are not persisted (see _saveChatUrl).
+   */
+  _captureCurrentChatUrl(userId) {
+    const session = this.userSessions.get(userId);
+    if (!session?.page) {
+      throw new Error(`No active page for user ${hashUserId(userId)}`);
+    }
+    const url = session.page.url();
+    if (!url) {
+      throw new Error(`Could not read current URL for user ${hashUserId(userId)}`);
+    }
+    session.chatUrl = url;
+    this._saveChatUrl(userId, url);
+    log.info(`Captured chatUrl for user ${hashUserId(userId)}: ${url}`);
+    return url;
+  }
+
+  /**
    * Connect to Chrome via CDP. Uses browser.contexts()[0] ONLY.
    * Never creates newContext() — incognito contexts lose the Kimi login.
    */
