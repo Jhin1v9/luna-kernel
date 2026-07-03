@@ -1778,150 +1778,142 @@ class LunaSoul extends EventEmitter {
   }
 
   /**
-   * Auto-compact: rich checkpoint + new thread + send checkpoint to Kimi + keep continuity.
-   *
-   * v10.12-fix: The summary is now sent as a REAL message to the new Kimi Web thread,
-   * so Kimi processes it before any user message. This prevents "starting from scratch"
-   * and eliminates the need for manual copy/paste.
+   * Compact session context: build a rich checkpoint, create a new thread,
+   * send the checkpoint, and reset local context.
    */
-  async *_autoCompact(sessionId, userId = 'luna-default') {
-    console.log(`[DEBUG-LUNA] _autoCompact started for session ${sessionId}`);
-    yield { type: 'compact_start', message: '📦 Contexto grande demais. Criando checkpoint inteligente...', sessionId };
-
-    // v10.28-fix: Backup local context before any destructive operation.
-    let backupPath = null;
-    try {
-      backupPath = this.sessionManager.backupContext(sessionId);
-      console.log(`[LUNA] Context backed up before compaction: ${backupPath}`);
-    } catch (backupErr) {
-      console.warn(`[LUNA] Failed to backup context: ${backupErr.message}`);
-    }
-
-    let bridgeSession = null;
-    let wasProcessing = false;
-    let checkpointSent = false;
+  async *_compactContext(sessionId, userId = 'luna-default') {
+    console.log(`[DEBUG-LUNA] _compactContext started for session ${sessionId}`);
+    yield {
+      type: 'compact_start',
+      message: '📦 Compactação manual iniciada. Criando checkpoint inteligente...',
+      sessionId,
+    };
 
     try {
-      // 1. Read all events (avoid hard 999 cap when full history is available)
-      const events = this.sessionManager.readContext ? this.sessionManager.readContext(sessionId) : this.sessionManager.readRecentEvents(sessionId, 999);
+      const events = this.sessionManager.readContext
+        ? this.sessionManager.readContext(sessionId)
+        : this.sessionManager.readRecentEvents(sessionId, 999);
 
-      // 2. Build a rich checkpoint summary (brain transplant)
       yield { type: 'compact_progress', message: '🧠 Analisando estado da sessão...', sessionId };
       const summary = this._buildCompactSummary(events);
       console.log(`[LUNA] Compact summary built: ${summary.length} chars, ${events.length} events`);
 
-      // 3. Create new thread in Kimi Web
-      if (this.kimiBridge) {
-        yield { type: 'compact_progress', message: '🔄 Criando nova thread no Kimi Web...', sessionId };
-        try {
-          await this.kimiBridge.newChat(userId, null, { requireChatUrl: false });
-          console.log(`[LUNA] New chat created for user ${userId}`);
-        } catch (err) {
-          yield { type: 'compact_error', message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`, sessionId };
-          console.log(`[DEBUG-LUNA] _autoCompact finished (newChat failed)`);
-          return { success: false, error: err.message };
-        }
-
-        // 4. SEND CHECKPOINT TO KIMI WEB as first message
-        // CRITICAL: This ensures Kimi has the full context BEFORE the user's next message.
-        // v10.12-fix-deadlock: The parent sendMessageStream still holds session.processing=true.
-        // We must release it before calling sendMessage, otherwise we deadlock.
-        // v10.24-fix: If checkpoint fails, DO NOT clear local context — preserve conversation.
-        yield { type: 'compact_progress', message: '📝 Enviando checkpoint de continuação para o Kimi Web...', sessionId };
-        try {
-          bridgeSession = this.kimiBridge.userSessions?.get(userId);
-          wasProcessing = bridgeSession?.processing;
-          if (bridgeSession) bridgeSession.processing = false;
-
-          // v10.18-fix: Wait for the new page to be ready before sending checkpoint
-          const page = bridgeSession?.page;
-          if (page) {
-            try {
-              await page.waitForSelector('textarea, [contenteditable="true"]', { timeout: 10000 });
-              console.log(`[LUNA] New chat input ready for checkpoint`);
-            } catch (e) {
-              console.warn(`[LUNA] New chat input not ready: ${e.message}`);
-            }
-          }
-
-          let sendResult;
-          try {
-            sendResult = await Promise.race([
-              this.kimiBridge.sendMessage(userId, summary, { mode: 'thinking' }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (60s)')), 60000))
-            ]);
-          } catch (sendErr) {
-            // v10.28-fix: We only need the checkpoint to ARRIVE at the new Kimi thread.
-            // Extraction failures (e.g. DOM selectors) do NOT mean the checkpoint failed.
-            if (sendErr.message?.includes('EXTRACTION_FAILED')) {
-              console.log(`[LUNA] Checkpoint reached Kimi, but response extraction failed — treating as success for compaction`);
-              sendResult = { response: '', extractionFailed: true };
-            } else {
-              throw sendErr;
-            }
-          }
-
-          const respLen = sendResult?.response?.length || 0;
-          console.log(`[LUNA] Checkpoint sent to new chat. Kimi acknowledged (${respLen} chars)`);
-          yield { type: 'compact_progress', message: `✅ Kimi recebeu o checkpoint (${respLen} chars)`, sessionId };
-          checkpointSent = true;
-
-          // v10.28-fix: Capture the REAL new chat URL after Kimi created the thread.
-          // The page may have redirected from the landing page to /chat/<id>.
-          if (bridgeSession?.page && !bridgeSession.page.isClosed()) {
-            try {
-              const finalUrl = bridgeSession.page.url();
-              if (finalUrl && finalUrl !== bridgeSession.chatUrl) {
-                console.log(`[LUNA] Rebinding session chatUrl: ${bridgeSession.chatUrl} -> ${finalUrl}`);
-                bridgeSession.chatUrl = finalUrl;
-                this.kimiBridge._saveChatUrl?.(userId, finalUrl, { provider: bridgeSession.provider, mode: bridgeSession.mode });
-              }
-            } catch (urlErr) {
-              console.warn(`[LUNA] Could not read final chat URL: ${urlErr.message}`);
-            }
-          }
-        } catch (sendErr) {
-          console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
-          yield { type: 'compact_error', message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`, sessionId };
-          console.log(`[DEBUG-LUNA] _autoCompact finished (checkpoint send failed)`);
-          return { success: false, error: sendErr.message };
-        }
+      if (!this.kimiBridge) {
+        throw new Error('Kimi bridge not available');
       }
 
-      // 5. Clear local context ONLY after newChat + checkpoint send succeeded
+      yield { type: 'compact_progress', message: '🔄 Criando nova thread...', sessionId };
+
+      try {
+        this.kimiBridge._clearChatUrl(userId);
+        console.log(`[LUNA] Cleared old chatUrl before newChat for user ${userId}`);
+      } catch (e) {
+        console.warn(`[LUNA] Failed to clear chatUrl: ${e.message}`);
+      }
+
+      let newChatResult;
+      try {
+        newChatResult = await this.kimiBridge.newChat(userId, null, { requireChatUrl: false });
+        console.log(`[LUNA] New chat created for user ${userId}: ${newChatResult?.chatUrl}`);
+      } catch (err) {
+        yield {
+          type: 'compact_error',
+          message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`,
+          sessionId,
+        };
+        console.log(`[DEBUG-LUNA] _compactContext finished (newChat failed)`);
+        return { success: false, error: err.message };
+      }
+
+      yield {
+        type: 'compact_progress',
+        message: '📝 Enviando checkpoint de continuação para a nova thread...',
+        sessionId,
+      };
+
+      let bridgeSession = null;
+      let wasProcessing = false;
+      try {
+        bridgeSession = this.kimiBridge.userSessions?.get(userId);
+        wasProcessing = bridgeSession?.processing;
+        if (bridgeSession) bridgeSession.processing = false;
+
+        const page = bridgeSession?.page;
+        if (page) {
+          try {
+            await page.waitForSelector('textarea, [contenteditable="true"]', { timeout: 10000 });
+            console.log(`[LUNA] New chat input ready for checkpoint`);
+          } catch (e) {
+            console.warn(`[LUNA] New chat input not ready: ${e.message}`);
+          }
+        }
+
+        await Promise.race([
+          this.kimiBridge.sendMessageNoWait(userId, summary, { mode: 'thinking' }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (120s)')), 120000)
+          ),
+        ]);
+
+        console.log(`[LUNA] Checkpoint submitted to new chat`);
+        yield { type: 'compact_progress', message: `✅ Checkpoint enviado para nova thread`, sessionId };
+      } catch (sendErr) {
+        console.error('[LUNA] Failed to send checkpoint to new chat:', sendErr.message);
+        yield {
+          type: 'compact_error',
+          message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`,
+          sessionId,
+        };
+        console.log(`[DEBUG-LUNA] _compactContext finished (checkpoint send failed)`);
+        return { success: false, error: sendErr.message };
+      } finally {
+        if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
+      }
+
+      let finalUrl;
+      try {
+        finalUrl = await this.kimiBridge._captureCurrentChatUrl(userId);
+        console.log(`[LUNA] Captured final chatUrl after checkpoint: ${finalUrl}`);
+      } catch (captureErr) {
+        finalUrl = newChatResult?.chatUrl;
+        if (!finalUrl) {
+          yield {
+            type: 'compact_error',
+            message: `❌ Não foi possível confirmar URL da nova thread: ${captureErr.message}. Contexto preservado.`,
+            sessionId,
+          };
+          return { success: false, error: captureErr.message };
+        }
+        console.warn(`[LUNA] _captureCurrentChatUrl failed, using newChat URL: ${finalUrl}`);
+      }
+
       this.sessionManager.clearContext(sessionId);
 
-      // 6. Store summary as first local event (fallback + loop continuity)
-      this.sessionManager.appendEvent(sessionId, {
-        type: 'assistant',
-        mode: 'CHAT',
-        response: `[CHECKPOINT] Contexto compactado. Checkpoint enviado para nova thread do Kimi.\n\n${summary.slice(0, 2000)}${summary.length > 2000 ? '\n\n[... resumo truncado no contexto local, completo enviado ao Kimi]' : ''}`,
-        timestamp: new Date().toISOString(),
-      });
+      try {
+        this.sessionManager.appendEvent(sessionId, {
+          type: 'assistant',
+          mode: 'CHAT',
+          response: `[CHECKPOINT] Contexto compactado. Nova thread: ${finalUrl}\n\n${summary.slice(0, 2000)}${summary.length > 2000 ? '\n\n[... resumo truncado no contexto local, completo enviado ao LLM]' : ''}`,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (appendErr) {
+        console.error(`[LUNA] Failed to append checkpoint event: ${appendErr.message}`);
+        // Continue: the bridge already has the full checkpoint.
+      }
 
-      const endEvent = {
+      yield {
         type: 'compact_end',
         message: '✅ Contexto compactado. Nova thread pronta com checkpoint inteligente.',
         summary,
+        chatUrl: finalUrl,
         sessionId,
       };
-      if (bridgeSession?.chatUrl) endEvent.chatUrl = bridgeSession.chatUrl;
-      yield endEvent;
-      console.log(`[DEBUG-LUNA] _autoCompact finished (success)`);
-      return { success: true, summary, chatUrl: bridgeSession?.chatUrl };
+      console.log(`[DEBUG-LUNA] _compactContext finished (success)`);
+      return { success: true, summary, chatUrl: finalUrl };
     } catch (err) {
-      console.error(`[DEBUG-LUNA] _autoCompact finished (error): ${err.message}`);
+      console.error(`[DEBUG-LUNA] _compactContext finished (error): ${err.message}`);
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
       return { success: false, error: err.message };
-    } finally {
-      // v10.28-fix: Only restore processing state on success. On failure the parent
-      // sendMessageStream will yield an error and return; leaving processing=true
-      // would deadlock the next user message.
-      if (bridgeSession && wasProcessing && checkpointSent) {
-        bridgeSession.processing = wasProcessing;
-      } else if (bridgeSession && wasProcessing) {
-        bridgeSession.processing = false;
-      }
     }
   }
 
@@ -2414,7 +2406,7 @@ class LunaSoul extends EventEmitter {
           // Limite do Kimi K2.6 é 256K tokens — 220K dá margem de segurança.
           // compact_start/compact_progress/compact_end já têm animação de fases da lua no frontend.
           if (bridgeRetryCount === 0 && this._shouldCompact(sessionId)) {
-            const compactResult = yield* this._autoCompact(sessionId, userId);
+            const compactResult = yield* this._compactContext(sessionId, userId);
             if (compactResult.success) {
               // Rebuild context after compact
               loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
@@ -2548,7 +2540,7 @@ class LunaSoul extends EventEmitter {
               // v5.8-fix: Auto-compact + new thread quando Kimi reporta limite de contexto
               fullResponse = event.response || '';
               yield { type: 'system', message: '📦 Limite de contexto atingido. Compactando e criando nova thread...', sessionId };
-              const compactResult = yield* this._autoCompact(sessionId, userId);
+              const compactResult = yield* this._compactContext(sessionId, userId);
               if (compactResult.success) {
                 // v10.12-fix-deadlock: The previous sendMessageStream still holds session.processing=true.
                 // If we continue the while-loop immediately, the new sendMessageStream will deadlock.
@@ -2693,7 +2685,7 @@ class LunaSoul extends EventEmitter {
       if (/getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i.test(fullResponse)) {
         yield { type: 'system', message: '📦 Limite de contexto atingido. Compactando e criando nova thread...', sessionId };
         try {
-          const compactResult = yield* this._autoCompact(sessionId, userId);
+          const compactResult = yield* this._compactContext(sessionId, userId);
           if (compactResult.success) {
             // v10.12-fix-deadlock: Release processing lock before continuing
             const bridgeSession = this.kimiBridge?.userSessions?.get(userId);
