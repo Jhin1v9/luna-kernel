@@ -911,13 +911,40 @@ class KimiBridge {
   }
 
   /**
-   * Save chat URL to store only if it's a valid chat URL.
-   * Prevents saving empty URLs like '?chat_enter_method=new_chat'.
+   * Determine whether a URL represents a valid thread URL for a provider.
+   */
+  _isProviderThreadUrl(provider, url) {
+    if (!url || !provider) return false;
+    switch (provider) {
+      case 'kimi':
+        return url.includes('/chat/');
+      case 'deepseek':
+        return url.includes('/c/');
+      default:
+        // For unknown providers, accept any URL under the provider domain.
+        return true;
+    }
+  }
+
+  /**
+   * Save chat URL to store only if it's a valid thread URL for the active provider.
+   * Prevents saving URLs outside the provider domain or without a valid thread path.
    */
   _saveChatUrl(userId, url, extra = {}) {
-    const isValid = url && url.includes('/chat/');
+    if (!url) return;
+
+    const provider = this._resolveProvider(userId);
+    const providerDomain = this._providerDomain(provider);
+
+    let isValid;
+    try {
+      isValid = new URL(url).hostname === providerDomain && this._isProviderThreadUrl(provider, url);
+    } catch {
+      isValid = false;
+    }
+
     if (!isValid) {
-      log.warn(`Refusing to save invalid chatUrl: ${url} — keeping previous valid URL`);
+      log.warn(`Refusing to save invalid chatUrl for ${provider}: ${url}`);
       return;
     }
     this.store.setUser(userId, { chatUrl: url, ...extra });
