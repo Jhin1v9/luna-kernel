@@ -33,6 +33,13 @@ kimi-cookies.json
 
 # Installer-generated files
 pm2-ecosystem.config.js
+apply-fix.js
+
+# Runtime data
+chrome-profile/
+sessions/
+ARTIFACTS/
+*.bak.*
 
 # Local audit/docs
 AUDITORIA_*.md
