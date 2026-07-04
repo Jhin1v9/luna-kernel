@@ -4413,6 +4413,10 @@ class KimiBridge {
     const chromeCmds = [
       '/opt/google/chrome/google-chrome',
       '/opt/google/chrome/chrome',
+      '/usr/local/bin/google-chrome-stable',
+      '/usr/local/bin/google-chrome',
+      '/usr/local/bin/chromium',
+      '/usr/local/bin/chromium-browser',
       'google-chrome-stable',
       'google-chrome',
       '/usr/bin/google-chrome-stable',
