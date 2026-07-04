@@ -43,3 +43,4 @@ ARTIFACTS/
 
 # Local audit/docs
 AUDITORIA_*.md
+.worktrees/
