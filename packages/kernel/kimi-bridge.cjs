@@ -4447,6 +4447,7 @@ class KimiBridge {
         extensionArgs.push('--load-extension=' + extensionPath);
       }
 
+      const isRoot = process.getuid && process.getuid() === 0;
       const proc = spawn(chromePath, [
         `--remote-debugging-port=${startPort}`,
         '--no-first-run',
@@ -4455,6 +4456,7 @@ class KimiBridge {
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
+        ...(isRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
         ...extensionArgs,
         this._modeUrl(this.defaultProvider || 'kimi', 'instant'),
       ], { detached: true, stdio: 'ignore', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
