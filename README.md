@@ -39,14 +39,42 @@ Antes, o projeto era dividido entre `luna-kernel` e `NexoDashboard`. Agora tudo 
 
 ---
 
-## 🚀 Instalação
+## 🚀 Instalação Automática (recomendada)
+
+Copie e cole no terminal:
 
 ```bash
-cd /home/jhin/.luna-kernel
-corepack pnpm install
+bash <(curl -fsSL https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/install.sh)
 ```
 
-Isso instala todas as dependências do root e de cada workspace, criando os links simbólicos internos (`@luna/kernel`, `@luna/dashboard`).
+O instalador vai:
+1. Verificar Node.js, pnpm, PM2 e Chrome.
+2. Perguntar se quer instalar o que estiver faltando.
+3. Clonar o repo em `~/.luna-kernel`.
+4. Gerar tokens e `.env` automaticamente.
+5. Instalar dependências, buildar e subir tudo no PM2.
+6. Abrir uma página guiando o login manual no Kimi.
+
+Depois é só usar os atalhos:
+
+```bash
+luna      # abre Luna Web + Vite Dev
+dashboard # abre Nexo Dashboard
+```
+
+Para instruções detalhadas, veja [`docs/HUMAN-GUIDE.md`](docs/HUMAN-GUIDE.md).
+
+## 🚀 Instalação Manual
+
+Se preferir fazer passo a passo:
+
+```bash
+cd ~/.luna-kernel
+corepack pnpm install
+corepack pnpm build
+pm2 start pm2-ecosystem.config.js
+pm2 save
+```
 
 ---
 
