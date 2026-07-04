@@ -138,6 +138,7 @@ NEXO_DIR=/home/jhin/.luna-kernel/apps/dashboard
 
 ## 📚 Documentação
 
+- **Guia humano (liga/desliga/atalhos):** [`docs/HUMAN-GUIDE.md`](docs/HUMAN-GUIDE.md)
 - Manual de compactação: [`packages/kernel/docs/LUNA-MANUAL-COMPACTACAO-MANUAL.md`](packages/kernel/docs/LUNA-MANUAL-COMPACTACAO-MANUAL.md)
 - README do kernel: [`packages/kernel/README.md`](packages/kernel/README.md)
 
