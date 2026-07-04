@@ -203,12 +203,21 @@ async function main() {
   const dashboardPort = await ask('Porta do Dashboard', '3456');
   const includeVite = (await ask('Iniciar Vite dev server? [s/n]', 's')).toLowerCase() === 's';
 
+  // v10.39: Ask for the two variables the dashboard really needs to avoid
+  // hardcoded paths and a dead PostgreSQL dependency.
+  const defaultNexoBase = process.platform === 'win32'
+    ? path.join(HOME, 'Documents', 'NEXO DIGITAL')
+    : path.join(HOME, 'Documents', 'NEXO DIGITAL');
+  const nexoBasePath = await ask('Caminho base da pasta NEXO DIGITAL', defaultNexoBase);
+  const databaseUrl = await ask('DATABASE_URL do PostgreSQL (ex: postgres://user:pass@localhost:5432/nexodb)', '');
+
   const env = {
     NODE_ENV: 'production',
     LUNA_HOME,
     LUNA_KERNEL_DIR: path.join(LUNA_DIR, 'packages', 'kernel'),
     LUNA_DIR: path.join(LUNA_DIR, 'packages', 'kernel'),
     NEXO_DIR: path.join(LUNA_DIR, 'apps', 'dashboard'),
+    NEXO_BASE_PATH: nexoBasePath,
     LUNA_PORT: lunaPort,
     DASHBOARD_PORT: dashboardPort,
     JWT_SECRET: generateToken(),
@@ -222,10 +231,12 @@ async function main() {
     `LUNA_KERNEL_DIR=${env.LUNA_KERNEL_DIR}`,
     `LUNA_DIR=${env.LUNA_DIR}`,
     `NEXO_DIR=${env.NEXO_DIR}`,
+    `NEXO_BASE_PATH=${env.NEXO_BASE_PATH}`,
     `LUNA_PORT=${env.LUNA_PORT}`,
     `DASHBOARD_PORT=${env.DASHBOARD_PORT}`,
     `JWT_SECRET=${env.JWT_SECRET}`,
     `INTERNAL_API_TOKEN=${env.INTERNAL_API_TOKEN}`,
+    databaseUrl ? `DATABASE_URL=${databaseUrl}` : '# DATABASE_URL=',
     '',
     '# Optional: uncomment and fill to enable features',
     '# TELEGRAM_BOT_TOKEN=',
@@ -235,7 +246,6 @@ async function main() {
     '# SMTP_PASS=',
     '# GMAIL_CLIENT_ID=',
     '# GMAIL_CLIENT_SECRET=',
-    '# DATABASE_URL=',
     '',
   ].join('\n');
 
