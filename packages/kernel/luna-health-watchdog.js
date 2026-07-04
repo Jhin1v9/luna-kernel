@@ -18,11 +18,11 @@ const http = require('http');
 const { execSync } = require('child_process');
 
 const SERVICES = [
-  { name: 'luna-server', port: 3458, protocol: 'http' },
-  { name: 'luna-vite', port: 5173, protocol: 'https', rejectUnauthorized: false },
-  { name: 'nexo-dashboard', port: 3456, protocol: 'http' },
-  { name: 'nexo-lp-server', port: 3460, protocol: 'http' },
-  { name: 'nexo-lp-web', port: 5174, protocol: 'http' },
+  { name: 'luna-server', port: parseInt(process.env.LUNA_PORT, 10) || 3458, protocol: 'http' },
+  { name: 'luna-vite', port: parseInt(process.env.LUNA_VITE_PORT, 10) || 5173, protocol: 'https', rejectUnauthorized: false },
+  { name: 'nexo-dashboard', port: parseInt(process.env.DASHBOARD_PORT, 10) || 3456, protocol: 'http' },
+  { name: 'nexo-lp-server', port: parseInt(process.env.NEXO_LP_PORT, 10) || 3460, protocol: 'http' },
+  { name: 'nexo-lp-web', port: parseInt(process.env.NEXO_LP_WEB_PORT, 10) || 5174, protocol: 'http' },
 ];
 
 const CHECK_INTERVAL_MS = 30000;
