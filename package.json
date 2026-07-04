@@ -1,42 +1,29 @@
 {
-  "name": "luna-kernel",
-  "version": "5.0.0",
-  "description": "Luna Kernel v5.0 — AI Agent with Web Interface, Telegram Bot, and Kimi Bridge",
-  "main": "$HOME/NEXO_DASHBOARD_PRO/backend/luna-server.js",
-  "scripts": {
-    "start": "node $HOME/NEXO_DASHBOARD_PRO/backend/luna-server.js",
-    "server": "node $HOME/NEXO_DASHBOARD_PRO/backend/luna-server.js",
-    "telegram": "node telegram-luna-adapter.cjs",
-    "cli": "node luna-cli.cjs"
-  },
-  "keywords": [
-    "ai-agent",
-    "automation",
-    "telegram-bot",
-    "kimi-ai",
-    "playwright"
-  ],
-  "author": "NEXO DIGITAL S.L.",
+  "name": "luna-monorepo",
+  "version": "1.0.0",
   "private": true,
-  "dependencies": {
-    "axios": "^1.16.0",
-    "bcryptjs": "^3.0.3",
-    "dotenv": "^17.4.2",
-    "glob": "^13.0.6",
-    "jsonrepair": "^3.14.1",
-    "jsonwebtoken": "^9.0.3",
-    "node-telegram-bot-api": "^0.67.0",
-    "playwright": "^1.59.1",
-    "shell-quote": "^1.8.4",
-    "turndown": "^7.2.4",
-    "ws": "^8.21.0"
+  "description": "Luna autonomous agent monorepo — kernel + dashboard",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "install:all": "corepack pnpm install",
+    "dev:kernel": "corepack pnpm --filter @luna/kernel dev",
+    "dev:dashboard": "corepack pnpm --filter @luna/dashboard dev",
+    "build": "corepack pnpm -r build",
+    "start": "corepack pnpm --filter @luna/dashboard start",
+    "test": "corepack pnpm -r test"
   },
-  "engines": {
-    "node": ">=20.0.0"
+  "dependencies": {
+    "playwright": "^1.60.0"
   },
   "devDependencies": {
-    "autoprefixer": "^10.5.0",
-    "postcss": "^8.5.15",
-    "tailwindcss": "^4.3.0"
+    "@luna/dashboard": "workspace:*",
+    "@luna/kernel": "workspace:*"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22"
   }
 }

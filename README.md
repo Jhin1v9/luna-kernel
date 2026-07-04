@@ -1,283 +1,172 @@
-# 🌙 Luna Kernel v5.0
+# 🌙 Luna Monorepo
 
-<p align="center">
-  <strong>Autonomous AI Agent — Web Interface + Telegram Bot + Kimi Bridge</strong><br>
-  <sub>Private Software — NEXO DIGITAL S.L. — Built by Abner Gabriel</sub>
-</p>
+Repositório unificado que contém o **Luna Kernel** (agente autônomo, bridge Kimi, Telegram) e o **Luna Dashboard** (backend web, APIs REST/SSE, interface).
 
-<p align="center">
-  <a href="#-instalação">🚀 Instalar</a> •
-  <a href="#-como-usar">💡 Como Usar</a> •
-  <a href="#-comandos-úteis">⌨️ Comandos</a> •
-  <a href="#-solução-de-problemas">🔧 Problemas</a>
-</p>
+Antes, o projeto era dividido entre `luna-kernel` e `NexoDashboard`. Agora tudo vive aqui, usando **pnpm workspaces**.
 
 ---
 
-## 📸 Preview
+## 📁 Layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  🌙 Luna Web    v5.0              ⭐ thinking    [Nova Sessão]│
-├─────────────────────────────────────────────────────────────┤
-│  📋 SESSÕES                    │                            │
-│  💬 Crie um app React...       │   🌙                       │
-│  2 min atrás                   │   Bem-vindo a Luna Web     │
-│                                │                            │
-│  [+ Nova Sessão]               │   💻 Crie um app React     │
-│                                │   🔍 Pesquise notícias IA  │
-│  ⚙️ Configurações              │   🐍 Execute Python        │
-│  🟢 Conectado      v5.0        │                            │
-├─────────────────────────────────────────────────────────────┤
-│  📎  │  Mensagem Luna...                │  ➤               │
-└─────────────────────────────────────────────────────────────┘
+.
+├── package.json                  # root do monorepo + workspaces
+├── pnpm-workspace.yaml
+├── pm2-ecosystem.config.js       # processos de produção (PM2)
+├── packages/
+│   └── kernel/                   # @luna/kernel
+│       ├── luna-soul.cjs         # cérebro da Luna
+│       ├── kimi-bridge.cjs       # Playwright/CDP para Kimi Web
+│       ├── telegram-luna-adapter.cjs
+│       ├── luna-web/             # workspace luna-web (Vite + Svelte)
+│       └── ...
+└── apps/
+    └── dashboard/                # @luna/dashboard
+        ├── luna-server.js        # servidor web principal (porta 3458)
+        ├── server.js             # API/dashboard legado (porta 3456)
+        └── ...
 ```
 
 ---
 
-## ✨ O que há de novo na v5.0
+## ⚙️ Pré-requisitos
 
-| Feature | Descrição |
-|---------|-----------|
-| 🌐 **Interface Web** | Chat visual bonito com Svelte 4 + Tailwind CSS |
-| ⚡ **Streaming em tempo real** | Veja a Luna "pensando" e executando ferramentas ao vivo |
-| 🧠 **Thinking Bubbles** | Acompanhe o raciocínio da IA em tempo real |
-| 🛠️ **Tool Cards** | Cards visuais mostrando cada ferramenta executada |
-| 🎨 **Dark Mode** | Tema escuro elegante com cores #0f0f1a e #e94560 |
-| 📱 **Mobile** | Funciona no celular, tablet e desktop |
-| 🔄 **Reconexão automática** | SSE reconecta sozinho se cair a conexão |
-| 🛡️ **Code Validator** | Validação automática de código após cada escrita |
+- Node.js **v22+**
+- pnpm **v11.9+** (gerenciado pelo corepack)
+- Git
+- Google Chrome/Chromium
+- PM2 (para produção)
 
 ---
 
-## 🚀 Instalação (1 comando)
-
-Abra o terminal e cole:
+## 🚀 Instalação
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Jhin1v9/luna-kernel/main/install.sh)
+cd /home/jhin/.luna-kernel
+corepack pnpm install
 ```
 
-Isso vai:
-1. ✅ Verificar Node.js v20+
-2. ✅ Clonar/atualizar o repositório
-3. ✅ Instalar dependências (`npm install`)
-4. ✅ Verificar Chrome/Chromium
-5. ✅ Criar arquivo `.env` template
+Isso instala todas as dependências do root e de cada workspace, criando os links simbólicos internos (`@luna/kernel`, `@luna/dashboard`).
 
 ---
 
-## ⚙️ Configuração
+## 🔨 Build
 
-Depois de instalar, configure os tokens:
+Para compilar a interface web (`packages/kernel/luna-web/dist`):
 
 ```bash
-cd ~/.luna-kernel
-nano .env
+cd /home/jhin/.luna-kernel
+corepack pnpm build
 ```
 
-**Obrigatório preencher:**
+Equivalente a:
+
+```bash
+corepack pnpm --filter luna-web build
+```
+
+---
+
+## ▶️ Como rodar
+
+### Desenvolvimento
+
+```bash
+# Interface web (Vite dev server na porta 5173)
+corepack pnpm dev:kernel
+
+# Backend Luna (porta 3458)
+corepack pnpm dev:dashboard
+```
+
+### Produção (PM2)
+
+```bash
+cd /home/jhin/.luna-kernel
+pm2 start pm2-ecosystem.config.js
+pm2 save
+```
+
+Processos gerenciados:
+
+| Nome | Descrição | Porta padrão |
+|---|---|---|
+| `luna-server` | Servidor web Luna (chat + API) | 3458 |
+| `nexo-dashboard` | API/dashboard legado | 3456 |
+| `telegram-bot` | Bot do Telegram | — |
+| `luna-vite` | Vite dev server do frontend | 5173 |
+| `luna-health-watchdog` | Monitor de saúde | — |
+
+---
+
+## 🧪 Testes rápidos
+
+```bash
+# Sessões
+curl -s http://localhost:3458/api/chat/sessions | head -c 200
+
+# Compactação manual (SSE)
+curl -s -N -H 'Accept: text/event-stream' \
+  -H 'Content-Type: application/json' \
+  -X POST http://localhost:3458/api/luna/compact \
+  -d '{"sessionId":"test-session","userId":"luna-default"}' | head -20
+```
+
+---
+
+## 🔑 Variáveis de ambiente
+
+Crie/edit `apps/dashboard/.env` (e/ou `packages/kernel/.env`):
 
 ```env
-# Token do bot do Telegram (pegue em @BotFather)
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+# Obrigatórias
+TELEGRAM_BOT_TOKEN=...
+INTERNAL_API_TOKEN=...
+JWT_SECRET=...
 
-# Token da API interna do NEXO
-INTERNAL_API_TOKEN=seu_token_aqui
-
-# Segredo JWT (qualquer texto longo, mínimo 32 caracteres)
-JWT_SECRET=minha_chave_secreta_muito_longa_e_segura_123456
+# Opcionais
+LUNA_PORT=3458
+DASHBOARD_PORT=3456
+LUNA_HOME=/home/jhin/.luna-kernel
+LUNA_KERNEL_DIR=/home/jhin/.luna-kernel/packages/kernel
+NEXO_DIR=/home/jhin/.luna-kernel/apps/dashboard
 ```
 
-> 💡 **Dica:** Use `openssl rand -hex 32` para gerar um JWT_SECRET seguro.
+> O PM2 já define `LUNA_KERNEL_DIR`, `LUNA_DIR` e `NEXO_DIR` apontando para o monorepo. Defina `LUNA_HOME` para controlar onde dados persistentes (sessions, cookies, personas) ficam.
 
 ---
 
-## 💡 Como Usar
+## 📚 Documentação
 
-### 🌐 Interface Web (recomendado)
-
-O servidor web da Luna agora faz parte do **NEXO Dashboard**:
-
-```bash
-cd ~/NEXO_DASHBOARD_PRO/backend
-node luna-server.js
-```
-
-Abra no navegador: **http://localhost:3458**
-
-> ⚠️ O antigo `config-server.cjs` foi descontinuado. Use sempre `luna-server.js`.
-
-**Fluxo típico:**
-1. Clique em **"Nova Sessão"**
-2. Digite sua mensagem (ex: "Crie um site em React")
-3. Aperte **Enter**
-4. Veja a Luna pensando 🧠 → executando ferramentas 🛠️ → respondendo 💬
-
-### 💬 Bot do Telegram
-
-```bash
-cd ~/.luna-kernel
-node telegram-luna-adapter.cjs
-```
-
-- Adicione **@lunanexobot** ao seu grupo
-- Envie mensagens para interagir
-
-### 💻 Terminal (CLI)
-
-```bash
-cd ~/.luna-kernel
-node luna-cli.cjs
-```
+- Manual de compactação: [`packages/kernel/docs/LUNA-MANUAL-COMPACTACAO-MANUAL.md`](packages/kernel/docs/LUNA-MANUAL-COMPACTACAO-MANUAL.md)
+- README do kernel: [`packages/kernel/README.md`](packages/kernel/README.md)
 
 ---
 
-## ⌨️ Comandos Úteis
+## 🛠️ Comandos úteis
 
 ```bash
-# Iniciar servidor web (via NEXO Dashboard)
-cd ~/NEXO_DASHBOARD_PRO/backend
-node luna-server.js
+# Logs
+corepack pnpm --filter @luna/dashboard logs   # ou: pm2 logs luna-server
 
-# Iniciar bot do Telegram
-cd ~/.luna-kernel
-node telegram-luna-adapter.cjs
-
-# Usar via terminal
-node luna-cli.cjs
-
-# Rodar em background (precisa do PM2 instalado)
-pm2 start ~/NEXO_DASHBOARD_PRO/backend/luna-server.js --name luna-web
-pm2 start ~/.luna-kernel/telegram-luna-adapter.cjs --name luna-telegram
-pm2 save
-
-# Ver logs
-pm2 logs luna-web
-
-# Parar tudo
+# Parar/limpar PM2
 pm2 stop all
+pm2 delete all
+
+# Reinstalar dependências do zero
+rm -rf node_modules apps/dashboard/node_modules packages/kernel/node_modules packages/kernel/luna-web/node_modules
+corepack pnpm install
 ```
 
 ---
 
-## 🏗️ Arquitetura
+## 📝 Notas
 
-```
-┌─────────────┐     HTTP/SSE      ┌─────────────────┐
-│   Navegador │ ◄──────────────► │  luna-server    │
-│  (Luna Web) │                   │ (NEXO Dashboard)│
-└─────────────┘                   └────────┬────────┘
-                                           │
-                    ┌──────────────────────┼──────────────────────┐
-                    │                      │                      │
-                    ▼                      ▼                      ▼
-            ┌───────────┐        ┌─────────────┐       ┌──────────────┐
-            │ Luna Soul │        │ Kimi Bridge │       │   Telegram   │
-            │(orquestra)│        │(Playwright) │       │   Adapter    │
-            └─────┬─────┘        └──────┬──────┘       └──────────────┘
-                  │                     │
-                  ▼                     ▼
-            ┌───────────┐        ┌─────────────┐
-            │  Tools    │        │ Kimi Web AI │
-            │writeFile  │        │  (via CDP)  │
-            │executeSh  │        └─────────────┘
-            │searchWeb  │
-            └───────────┘
-```
-
-### Arquivos principais:
-
-| Arquivo | Função |
-|---------|--------|
-| `~/NEXO_DASHBOARD_PRO/backend/luna-server.js` | Servidor web da Luna (HTTP + API REST + SSE + interface) |
-| `config-server.cjs` | ⚠️ Descontinuado — não usar |
-| `luna-soul.cjs` | Cérebro da Luna — modos, compactação, roteamento |
-| `kimi-bridge.cjs` | Bridge Playwright CDP para o Kimi Web AI |
-| `luna-tools.cjs` | Ferramentas: writeFile, readFile, executeShell, etc. |
-| `luna-code-validator.cjs` | Valida código automaticamente após escrita |
-| `luna-tool-guard.cjs` | Sandbox de segurança para execução de tools |
-| `telegram-luna-adapter.cjs` | Adapter do Bot do Telegram |
-| `luna-web/dist/` | Interface web compilada (Svelte + Tailwind) |
-
----
-
-## 🖥️ Requisitos
-
-| Requisito | Versão |
-|-----------|--------|
-| Node.js | v20+ |
-| Chrome/Chromium | Qualquer versão recente |
-| Git | Qualquer |
-| RAM | 4GB+ recomendado |
-| Espaço em disco | ~500MB |
-
----
-
-## 🔧 Solução de Problemas
-
-### ❌ "Node.js não encontrado"
-```bash
-# Instale o Node.js v20+
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
-
-### ❌ "Chrome não encontrado"
-```bash
-# Instale o Google Chrome
-wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
-sudo apt-get update
-sudo apt-get install -y google-chrome-stable
-```
-
-### ❌ Erro "MODULE_NOT_FOUND"
-```bash
-cd ~/.luna-kernel
-npm install
-```
-
-### ❌ Porta 3458 já em uso
-```bash
-# Mude a porta no .env do NEXO Dashboard
-LUNA_PORT=3459
-```
-
-### ❌ A interface web não carrega
-```bash
-# Verifique se o servidor está rodando
-curl http://localhost:3458/api/chat/sessions
-# Deve retornar: {"ok":true,"sessions":[]}
-```
-
----
-
-## 🛠️ Desenvolvimento
-
-Se quiser modificar a interface web:
-
-```bash
-# O código fonte Svelte está em outro repositório
-# O dist/ já está compilado e pronto para uso
-
-# Para rebuild (se tiver o código fonte):
-cd luna-web
-npm install
-npm run build
-```
-
----
-
-## 📞 Suporte
-
-- **Autor:** Abner Gabriel
-- **Empresa:** NEXO DIGITAL S.L.
-- **Bot:** @lunanexobot
-- **Repo:** https://github.com/Jhin1v9/luna-kernel
+- O repositório legado `NexoDashboard` foi incorporado em `apps/dashboard` e não deve mais receber alterações paralelas.
+- O `dist/` do `luna-web` é versionado de propósito (produção usa o build estático).
 
 ---
 
 <p align="center">
-  <sub>🌙 Luna Kernel v5.0 — Built with love by NEXO DIGITAL S.L.</sub>
+  <sub>🌙 Luna Monorepo — NEXO DIGITAL S.L.</sub>
 </p>

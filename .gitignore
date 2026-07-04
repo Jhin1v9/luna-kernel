@@ -1,46 +1,47 @@
-# Dependencies
+# dependencies
 node_modules/
+.pnpm-store/
 package-lock.json
 
-# Environment
-.env
+# runtime data
+cookies/
+kimi-cookies.json
+.luna-runtime.json
+*.runtime.json
+apps/dashboard/data/
 
-# Logs
+# logs
 *.log
 logs/
 
-# OS files
-.DS_Store
-Thumbs.db
+# environment
+.env
+.env.local
 
 # IDE
-.vscode/
 .idea/
+.vscode/
+.DS_Store
 
-# Testing
-/test-screenshots
-*.test.ts
-*.test.js
+# build outputs
+dist/
+build/
+!packages/kernel/luna-web/dist/
 
-# Playwright MCP
-.playwright-mcp/
+# temporary files
+*.pid
+*.tmp
+/tmp/
+*.bak
+*.bak.*
+archive/
 
-# Build artifacts (keep dist for deployment)
-# dist/ is INCLUDED for web deployment
-backup-merge-inteligente-*/
-backup-src-*/
-kimi-cookies.json
-
-# Installer-generated files
-pm2-ecosystem.config.js
-apply-fix.js
-
-# Runtime data
+# runtime / generated directories
 chrome-profile/
 sessions/
 ARTIFACTS/
-*.bak.*
-
-# Local audit/docs
-AUDITORIA_*.md
+.playwright-mcp/
 .worktrees/
+
+# generated models
+*.nlp
