@@ -1441,25 +1441,53 @@ class KimiBridge {
       }
     }
 
+    const stored = this.store.getUser(userId);
+    const storedChatUrl = stored?.chatUrl || null;
+
     if (candidatePages.length > 0) {
-      // Prefer real chat threads over landing pages
-      candidatePages.sort((a, b) => b.score - a.score);
-      const best = candidatePages[0];
+      // v10.39-fix: Honor the persisted chat URL for this Luna session.
+      // Each Luna Web session is linked to a specific Kimi chat URL; if the user
+      // (or browser) closed the tab, we must return to that exact conversation,
+      // not reuse whatever other Kimi tab happens to be open.
+      const targetChatId = storedChatUrl?.includes('/chat/')
+        ? storedChatUrl.split('/chat/')[1].split('?')[0]
+        : null;
+
+      let best = null;
+      if (targetChatId) {
+        best = candidatePages.find((c) => c.url.includes(`/chat/${targetChatId}`)) || null;
+      }
+      if (!best) {
+        candidatePages.sort((a, b) => b.score - a.score);
+        best = candidatePages[0];
+      }
+
       const p = best.p;
       const url = best.url;
-      log.info(`Reusing existing ${providerDomain} page for user ${hashUserId(userId)}: ${url}`);
       p._lunaUserId = userId;
       p._lunaProvider = provider;
+
       const session = {
         page: p,
         context: this.defaultContext,
-        chatUrl: url,
+        chatUrl: storedChatUrl || url,
         provider,
         lastActivity: Date.now(),
         processing: false,
-        mode: this.store.getUser(userId)?.mode || 'instant',
+        mode: stored?.mode || 'instant',
       };
       this.userSessions.set(userId, session);
+
+      // If we reused a page that is not on the saved thread, navigate to it.
+      if (storedChatUrl && !url.includes(storedChatUrl.split('?')[0].split('/').pop())) {
+        log.info(`Session ${hashUserId(userId)} has saved chat ${storedChatUrl}; current tab is ${url} — navigating to saved chat`);
+        await p.goto(storedChatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+        await p.waitForTimeout(1500);
+        session.chatUrl = p.url();
+      } else {
+        log.info(`Reusing existing ${providerDomain} page for user ${hashUserId(userId)}: ${url}`);
+      }
+
       this._saveChatUrl(userId, session.chatUrl, { mode: session.mode, provider });
       // v10.27-fix: Do NOT inject master localStorage into an already-open,
       // already-logged-in page — it can overwrite valid tokens and log the user out.
@@ -1475,8 +1503,7 @@ class KimiBridge {
     const userCtx = await this._getOrCreateUserContext(userId);
 
     // Restore previous chat URL from store if available
-    const stored = this.store.getUser(userId);
-    const chatUrl = stored?.chatUrl || this._modeUrl(provider, 'instant');
+    const chatUrl = storedChatUrl || this._modeUrl(provider, 'instant');
 
     let page = null;
     try {
@@ -3042,6 +3069,17 @@ class KimiBridge {
         }
       }
 
+      // v10.39-fix: Keep image uploads in the correct Luna-linked chat thread.
+      if (!options.newChat && session?.chatUrl) {
+        const currentUrl = page.url();
+        const expectedId = session.chatUrl.split('?')[0].split('/').pop();
+        if (expectedId && !currentUrl.includes(expectedId)) {
+          log.info(`[sendImage] URL mismatch for ${hashUserId(userId)}: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
+          await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+          await page.waitForTimeout(1500);
+        }
+      }
+
       if (options.mode) {
         await this.setMode(userId, options.mode, resolvedProvider);
       }
@@ -3208,6 +3246,17 @@ class KimiBridge {
         if (session) {
           session.chatUrl = openedUrl;
           this._saveChatUrl(userId, session.chatUrl, { provider: resolvedProvider });
+        }
+      }
+
+      // v10.39-fix: Keep file uploads in the correct Luna-linked chat thread.
+      if (!options.newChat && session?.chatUrl) {
+        const currentUrl = page.url();
+        const expectedId = session.chatUrl.split('?')[0].split('/').pop();
+        if (expectedId && !currentUrl.includes(expectedId)) {
+          log.info(`[sendFile] URL mismatch for ${hashUserId(userId)}: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
+          await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+          await page.waitForTimeout(1500);
         }
       }
 
@@ -7158,6 +7207,19 @@ class KimiBridge {
         // v10.36-fix: Close leftover landing-page tabs so the user does not see
         // a deslogada page after the new chat opens in a new tab.
         await this._closeStaleProviderTabs(pageContext, page, resolvedProvider);
+      }
+
+      // v10.39-fix: Defensive URL check — ensure this Luna session always talks
+      // in its own Kimi chat thread. If the tab got reassigned or navigated
+      // elsewhere, go back to the persisted chat URL before sending.
+      if (!options.newChat && session?.chatUrl) {
+        const currentUrl = page.url();
+        const expectedId = session.chatUrl.split('?')[0].split('/').pop();
+        if (expectedId && !currentUrl.includes(expectedId)) {
+          log.info(`[sendMessageStream] URL mismatch for ${hashUserId(userId)}: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
+          await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+          await page.waitForTimeout(1500);
+        }
       }
 
       if (options.mode) {

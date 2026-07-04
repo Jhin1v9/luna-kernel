@@ -8,6 +8,7 @@ allowBuilds:
   esbuild: true
   keytar: true
   protobufjs: true
+  sharp: true
   sqlite3: true
   tldjs: true
   unrs-resolver: true
