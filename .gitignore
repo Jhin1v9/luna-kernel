@@ -42,6 +42,10 @@ sessions/
 ARTIFACTS/
 .playwright-mcp/
 .worktrees/
+apps/dashboard/cache/
 
 # generated models
 *.nlp
+
+# vite transient configs
+vite.config.js.timestamp-*.mjs
