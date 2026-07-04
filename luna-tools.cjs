@@ -287,7 +287,8 @@ function executeScript(code, opts = {}) {
   if (!code || typeof code !== 'string') return err('Código do script é obrigatório');
 
   const language = opts.language || opts.lang || 'bash';
-  const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
+  // v10.36-fix: Default to the user's workspace, not the luna-server directory.
+  const cwd = opts.cwd ? resolvePath(opts.cwd) : (lunaConfig.PATHS.workspaceBase || process.cwd());
   const timeout = opts.timeout || 120000;
 
   // Mapeia linguagem para extensão e executor
@@ -891,7 +892,10 @@ function _classifyShellError(command, stderr, exitCode, killed, timeout) {
 
 function executeShell(command, opts = {}, onProgress) {
   return new Promise((resolve) => {
-    const cwd = opts.cwd ? resolvePath(opts.cwd) : process.cwd();
+    // v10.36-fix: Use the user's workspace as default cwd instead of the
+    // luna-server process directory. Paths in commands remain absolute/relative
+    // as written by the model.
+    const cwd = opts.cwd ? resolvePath(opts.cwd) : (lunaConfig.PATHS.workspaceBase || process.cwd());
     // v10.2-fix: Open visible terminal for ALL commands when visibleMode is on
     const isVisibleCommand = opts.visible !== undefined ? opts.visible : visibleMode;
     if (isVisibleCommand && process.env.DISPLAY && !detectHeadless()) {

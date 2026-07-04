@@ -3,19 +3,19 @@
   "displayName": "Kimi Web",
   "baseUrl": "https://www.kimi.com",
   "modeUrls": {
-    "instant": "https://www.kimi.com/?chat_enter_method=new_chat&lang=en",
-    "thinking": "https://www.kimi.com/?chat_enter_method=new_chat&lang=en",
+    "instant": "https://www.kimi.com/en?chat_enter_method=shortcut",
+    "thinking": "https://www.kimi.com/en?chat_enter_method=shortcut",
     "agent": "https://www.kimi.com/agent?lang=en",
     "swarm": "https://www.kimi.com/agent-swarm?lang=en"
   },
   "selectors": {
-    "input": ".chat-editor, textarea, [contenteditable='true']",
-    "sendButton": ".chat-editor-action, button[type='submit']",
+    "input": ".chat-input-editor, textarea, [contenteditable='true']",
+    "sendButton": ".send-button-container, .chat-editor-action, button[type='submit']",
     "responseContainer": ".markdown-container",
     "assistantMessage": ".segment-assistant",
     "messageList": ".segment-list",
-    "loginIndicator": "form[action*='login']",
-    "appContent": ".chat-editor, .markdown-container, .segment-assistant-actions",
+    "loginIndicator": "form[action*='login'], form[action*='auth'], input[type='password'], .phone-login-action, .login-modal, .login-modal-mask",
+    "appContent": ".chat-input-editor, .chat-editor, .markdown-container, .segment-assistant-actions, .chat-input, .user-avatar-container",
     "thinking": ".thinking, [class*='thinking'], .segment-thinking",
     "actionButtons": ".segment-assistant-actions .icon-button"
   },
@@ -28,7 +28,7 @@
     "/kimi.chat.v1.ChatService"
   ],
   "features": {
-    "autoLogin": true,
+    "autoLogin": false,
     "supportsStreaming": true,
     "supportsThinking": true,
     "loginMethod": "google_oauth",

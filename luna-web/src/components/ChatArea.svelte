@@ -686,6 +686,18 @@
           isStreaming.set(false);
           mascotState.set('idle');
           mascotMessage.set('O que mais posso fazer?');
+        } else {
+          // v10.36-fix: Some backends never emit action_end for the final tool.
+          // Release the input after a short grace period so the user isn't stuck.
+          setTimeout(() => {
+            if (get(isStreaming)) {
+              console.warn('[done] Releasing input after grace period — pendingToolCount still', pendingToolCount);
+              isStreaming.set(false);
+              mascotState.set('idle');
+              mascotMessage.set('O que mais posso fazer?');
+              pendingToolCount = 0;
+            }
+          }, 3000);
         }
         currentAssistantId = null;
         responseBuffer = '';

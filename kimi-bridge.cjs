@@ -85,6 +85,23 @@ const SESSION_STORE_PATH = path.join(ARTIFACTS_DIR, 'kimi-sessions.json');
 const COOKIES_BACKUP_PATH = path.join(__dirname, 'kimi-cookies.json');
 const COOKIES_MANUAL_PATH = path.join(__dirname, 'kimi-cookies.manual.json');
 
+// v11.0: paths for connecting to the user's real Chrome instead of a cloned profile
+const USER_CHROME_DIR = path.join(require('os').homedir(), '.config', 'google-chrome');
+const USER_CHROME_DEVTOOLS_PORT_FILE = path.join(USER_CHROME_DIR, 'DevToolsActivePort');
+const USER_CHROME_DESKTOP_FILES = [
+  path.join(require('os').homedir(), '.local', 'share', 'applications', 'google-chrome.desktop'),
+  path.join(require('os').homedir(), '.local', 'share', 'applications', 'com.google.Chrome.desktop'),
+  '/usr/share/applications/google-chrome.desktop',
+  '/usr/share/applications/com.google.Chrome.desktop',
+];
+const USER_CHROME_CMD_CANDIDATES = [
+  '/usr/bin/google-chrome-stable',
+  '/opt/google/chrome/google-chrome',
+  '/opt/google/chrome/chrome',
+  'google-chrome-stable',
+  'google-chrome',
+];
+
 function makeCdpUrl(port) { return `http://127.0.0.1:${port}`; }
 function getPortFromUrl(url) {
   try { return parseInt(new URL(url).port, 10); } catch { return 9222; }
@@ -99,6 +116,27 @@ if (!fs.existsSync(ARTIFACTS_DIR)) {
 // ============================================================
 function hashUserId(userId) {
   return crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 8);
+}
+
+// v10.38-fix: Normalize URLs for landing-page comparison.
+// Browsers may add trailing slashes or reorder query params, so we compare
+// only origin + pathname (with trailing slash removed) and ignore query/hash.
+function normalizeBaseUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
+      u.pathname = u.pathname.slice(0, -1);
+    }
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch (e) {
+    return url;
+  }
+}
+
+function isSameLandingPage(currentUrl, expectedUrl) {
+  return normalizeBaseUrl(currentUrl) === normalizeBaseUrl(expectedUrl);
 }
 
 // v9.4-fix: JSON Accumulation Buffer — prevents code leak from multi-line JSON wrappers.
@@ -866,6 +904,49 @@ class KimiBridge {
     return cfg.modeUrls?.[mode] || cfg.baseUrl;
   }
 
+  /**
+   * Open a fresh chat on the current page WITHOUT losing login state.
+   * Strategy:
+   *   1. Try clicking the provider's "New Chat" UI button (.new-chat-btn on Kimi).
+   *      This reuses the same tab/context/cookies and is the most reliable way to
+   *      start a new thread while staying logged in.
+   *   2. Fallback to the configured new-chat landing URL via goto() if the button
+   *      is not available.
+   * Returns the page URL after opening the new chat.
+   */
+  async _openNewChat(page, provider = 'kimi') {
+    const newChatUrl = this._modeUrl(provider, 'instant');
+    if (!page || page.isClosed()) return newChatUrl;
+
+    try {
+      // v10.36-fix: Click the native "New Chat" button when available.
+      // This preserves login state because it does not reload the origin.
+      const newChatBtn = page.locator('.new-chat-btn').first();
+      if (await newChatBtn.count() > 0) {
+        const isVisible = await newChatBtn.evaluate(el => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        }).catch(() => false);
+        if (isVisible) {
+          await newChatBtn.click({ timeout: 10000 });
+          log.info(`[_openNewChat] Clicked .new-chat-btn for provider=${provider}`);
+          await page.waitForTimeout(1500);
+          const urlAfterClick = page.url();
+          log.info(`[_openNewChat] URL after click: ${urlAfterClick}`);
+          return urlAfterClick;
+        }
+      }
+    } catch (e) {
+      log.warn(`[_openNewChat] Button click failed: ${e.message} — falling back to goto`);
+    }
+
+    // Fallback: navigate to the provider's new-chat landing URL.
+    log.info(`[_openNewChat] Falling back to goto ${newChatUrl}`);
+    await page.goto(newChatUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    return page.url();
+  }
+
   _loadProviderConfig(provider) {
     try {
       return loadProviderConfig(provider);
@@ -902,6 +983,32 @@ class KimiBridge {
       return new URL(cfg.baseUrl).hostname;
     } catch {
       return cfg.name;
+    }
+  }
+
+  /**
+   * v10.36-fix: Close stale provider landing-page tabs after migrating to a
+   * new chat tab. Keeps only the active logged-in tab open so the user does not
+   * see a deslogada page left behind.
+   */
+  async _closeStaleProviderTabs(context, keepPage, provider = 'kimi') {
+    if (!context) return;
+    const providerDomain = this._providerDomain(provider);
+    const pages = context.pages();
+    for (const p of pages) {
+      if (p === keepPage || p.isClosed()) continue;
+      try {
+        const url = p.url();
+        if (!url.includes(providerDomain)) continue;
+        // Close landing/new-chat pages that are not real chat threads.
+        // Real threads contain /chat/<id>.
+        if (url.includes('chat_enter_method=new_chat') && !url.includes('/chat/')) {
+          await p.close();
+          log.info(`[_closeStaleProviderTabs] Closed stale landing tab: ${url}`);
+        }
+      } catch (e) {
+        // ignore
+      }
     }
   }
 
@@ -1038,8 +1145,20 @@ class KimiBridge {
     this.defaultContext = contexts[0];
     log.success(`Connected! Using default context with ${this.defaultContext.pages().length} existing page(s)`);
 
+    // v10.36-fix: First, pull the latest cookies FROM the Chrome persistent profile
+    // and write them to the master cookies file. This guarantees we always use the
+    // cookies Chrome already has, instead of stale backups that log the user out.
+    try {
+      for (const providerName of listProviders()) {
+        await this._syncMasterCookiesFromContext(providerName);
+      }
+    } catch (e) {
+      log.warn(`Failed to sync master cookies from Chrome profile: ${e.message}`);
+    }
+
     // v3.9-fix: Inject MASTER cookies into defaultContext so all new user contexts
     // inherit login state, even when Chrome was just started with an empty profile.
+    // After v10.36 these cookies come from the persistent Chrome profile first.
     try {
       for (const providerName of listProviders()) {
         const providerCfg = loadProviderConfig(providerName);
@@ -1252,7 +1371,8 @@ class KimiBridge {
       }
 
       // Navigate back to the saved chat URL
-      const currentUrl = await page.url().catch(() => '');
+      let currentUrl = '';
+      try { currentUrl = page.url(); } catch (e) { currentUrl = ''; }
       if (!currentUrl.includes(chatUrl.split('?')[0].split('/').pop())) {
         log.info(`[CRASH-RECOVERY] Navigating to saved chat URL: ${chatUrl}`);
         log.info('[DEBUG-LUNA] Crash-recovery goto with no timeout');
@@ -1301,42 +1421,50 @@ class KimiBridge {
       }
     }
 
-    // v7.4-fix: If no existing session, try to reuse an existing page from defaultContext
-    // that is already on the provider's domain. This avoids creating a duplicate tab when Chrome
-    // was started with --load-extension and already has a provider tab open.
-    if (!existing || !existing.page || existing.page.isClosed()) {
-      const existingPages = this.defaultContext?.pages() || [];
-      for (const p of existingPages) {
-        if (p.isClosed()) continue;
-        // v8.7-fix: Skip pages already assigned to another user
-        if (p._lunaUserId && p._lunaUserId !== userId) continue;
-        try {
-          const url = p.url();
-          if (url && url.includes(providerDomain)) {
-            log.info(`Reusing existing ${providerDomain} page for user ${hashUserId(userId)}: ${url}`);
-            p._lunaUserId = userId;
-            p._lunaProvider = provider;
-            const session = {
-              page: p,
-              context: this.defaultContext,
-              chatUrl: url,
-              provider,
-              lastActivity: Date.now(),
-              processing: false,
-              mode: this.store.getUser(userId)?.mode || 'instant',
-            };
-            this.userSessions.set(userId, session);
-            this._saveChatUrl(userId, session.chatUrl, { mode: session.mode, provider });
-            // v7.5: Network Interceptor is managed per-user, not injected into page
-            // v10.27-fix: Do NOT inject master localStorage into an already-open,
-            // already-logged-in page — it can overwrite valid tokens and log the user out.
-            // Only inject when we create a fresh page/context.
-            return p;
-          }
-        } catch (e) {
-          // Page may be closing, skip
+    // v10.36-fix: ALWAYS try to reuse an existing logged-in provider page first.
+    // Each Luna Web session gets a different userId ('web-<sessionId>'), but the
+    // user expects every Kimi/DeepSeek session to share the same Chrome tab that
+    // is already logged in. We pick the best candidate (real /chat/ thread beats
+    // landing page) and reassign it to the current userId.
+    const candidatePages = [];
+    const existingPages = this.defaultContext?.pages() || [];
+    for (const p of existingPages) {
+      if (p.isClosed()) continue;
+      try {
+        const url = p.url();
+        if (url && url.includes(providerDomain)) {
+          const isChatThread = url.includes('/chat/');
+          candidatePages.push({ p, url, isChatThread, score: isChatThread ? 2 : 1 });
         }
+      } catch (e) {
+        // Page may be closing, skip
       }
+    }
+
+    if (candidatePages.length > 0) {
+      // Prefer real chat threads over landing pages
+      candidatePages.sort((a, b) => b.score - a.score);
+      const best = candidatePages[0];
+      const p = best.p;
+      const url = best.url;
+      log.info(`Reusing existing ${providerDomain} page for user ${hashUserId(userId)}: ${url}`);
+      p._lunaUserId = userId;
+      p._lunaProvider = provider;
+      const session = {
+        page: p,
+        context: this.defaultContext,
+        chatUrl: url,
+        provider,
+        lastActivity: Date.now(),
+        processing: false,
+        mode: this.store.getUser(userId)?.mode || 'instant',
+      };
+      this.userSessions.set(userId, session);
+      this._saveChatUrl(userId, session.chatUrl, { mode: session.mode, provider });
+      // v10.27-fix: Do NOT inject master localStorage into an already-open,
+      // already-logged-in page — it can overwrite valid tokens and log the user out.
+      // Only inject when we create a fresh page/context.
+      return p;
     }
 
     // Acquire semaphore slot (now effectively unlimited)
@@ -1748,6 +1876,53 @@ class KimiBridge {
       try {
         const userId = page._lunaUserId;
         const ctx = userId ? this.userContexts.get(userId) : null;
+
+        // Step 0: Kimi may show a login modal or sidebar "Log In" button even when
+        // a valid auth cookie is present. Trigger the OAuth flow so the modal closes
+        // and the existing cookie session is activated.
+        if (!restored && provider === 'kimi') {
+          try {
+            const modal = page.locator('.login-modal-mask, .login-modal').first();
+            const hasModal = await modal.count() > 0 && await modal.isVisible();
+            if (hasModal) {
+              // Prefer Google OAuth inside the modal — it uses the browser's saved
+              // Google session and dismisses the modal automatically.
+              const googleBtn = modal.locator('.google-login-btn, button:has-text("Continue with Google"), button:has-text("Google")').first();
+              if (await googleBtn.count() > 0 && await googleBtn.isVisible()) {
+                log.info(`[_verifySession] Clicking Kimi Google login button in modal for ${hashUserId(userId)}`);
+                await googleBtn.click();
+                await page.waitForTimeout(4000);
+                if (await evalLoggedIn()) {
+                  log.success(`Google login modal click restored session for user ${hashUserId(userId)}`);
+                  // The modal may still be open even though the cookie session is active.
+                  // Reload to dismiss the overlay so subsequent clicks (new chat, send) work.
+                  try {
+                    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+                    await page.waitForTimeout(2000);
+                    log.info(`[_verifySession] Reloaded page to dismiss login modal`);
+                  } catch (e) {
+                    log.warn(`[_verifySession] Post-login reload failed: ${e.message}`);
+                  }
+                  restored = true;
+                }
+              }
+            }
+            if (!restored) {
+              const loginBtn = page.locator('button:has-text("Log In"), button:has-text("Log in")').first();
+              if (await loginBtn.count() > 0 && await loginBtn.isVisible()) {
+                log.info(`[_verifySession] Clicking Kimi Log In button to activate cookie session for ${hashUserId(userId)}`);
+                await loginBtn.click();
+                await page.waitForTimeout(3000);
+                if (await evalLoggedIn()) {
+                  log.success(`Log In button click restored session for user ${hashUserId(userId)}`);
+                  restored = true;
+                }
+              }
+            }
+          } catch (e) {
+            log.warn(`[_verifySession] Login button click failed: ${e.message}`);
+          }
+        }
 
         // Step 1: Try loading from MASTER cookies file (permanent save after manual login)
         if (!restored && ctx) {
@@ -2721,17 +2896,19 @@ class KimiBridge {
     const pagesBefore = new Set(context.pages());
     log.info(`Creating new chat for user ${hashUserId(userId)} provider=${provider} (current: ${oldUrl}, pages=${pagesBefore.size})`);
 
-    // v10.18-fix: Some providers open a NEW TAB on new chat.
-    // We detect the new page and migrate the session to it, closing the stale tab.
-    await page.goto(newChatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
-    await page.waitForTimeout(2500);
+    // v10.36-fix: Open a new chat via the provider UI button when possible.
+    // This keeps the same tab/context/cookies and avoids landing-page reloads
+    // that can drop login state.
+    const openedUrl = await this._openNewChat(page, provider);
+    await page.waitForTimeout(1000);
 
-    // Find any new page that opened in the same context
+    // Find any new page that opened in the same context (some providers open a tab)
     let newPage = null;
     const pagesAfter = context.pages();
     for (const p of pagesAfter) {
       if (!pagesBefore.has(p)) {
-        const url = await p.url().catch(() => '');
+        let url = '';
+        try { url = p.url(); } catch (e) { url = ''; }
         log.info(`newChat detected new tab: ${url}`);
         if (url.includes('/chat/') || url.includes(providerDomain)) {
           newPage = p;
@@ -2751,9 +2928,12 @@ class KimiBridge {
       session.page = newPage;
       newPage._lunaUserId = userId;
       newPage._lunaProvider = provider;
+
+      // v10.36-fix: Close any other leftover landing-page tabs.
+      await this._closeStaleProviderTabs(context, newPage, provider);
     }
 
-    let newUrl = session.page.url();
+    let newUrl = newPage ? newPage.url() : openedUrl;
 
     // v5.3-fix: Post-navigation verification — aguardar URL válida com paciência
     const isValidChatUrl = (url) => (provider === 'kimi' ? url.includes('/chat/') : url.includes(providerDomain));
@@ -2785,7 +2965,9 @@ class KimiBridge {
     // v10.28-fix: For context compaction we may land on the provider's "new chat"
     // landing page. The real /chat/<id> URL only appears after the first message
     // is sent. Allow the caller to opt-in to this intermediate state.
-    const isNewChatLanding = newUrl === newChatUrl || newUrl.split('?')[0] === newChatUrl.split('?')[0];
+    // v10.38-fix: Normalize URLs before comparison so trailing slashes or
+    // reordered query params do not reject a valid landing page.
+    const isNewChatLanding = isSameLandingPage(newUrl, newChatUrl);
     if (!isValidChatUrl(newUrl) && (!isNewChatLanding || requireChatUrl)) {
       log.error(`newChat failed for user ${hashUserId(userId)}: URL is not a valid chat (${newUrl}).`);
       throw new Error(`NEW_CHAT_FAILED: Não foi possível criar uma nova thread válida em ${provider} (URL: ${newUrl})`);
@@ -2853,11 +3035,9 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        const newChatUrl = this._modeUrl(resolvedProvider, 'instant');
-        await page.goto(newChatUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(2000);
+        const openedUrl = await this._openNewChat(page, resolvedProvider);
         if (session) {
-          session.chatUrl = page.url();
+          session.chatUrl = openedUrl;
           this._saveChatUrl(userId, session.chatUrl, { provider: resolvedProvider });
         }
       }
@@ -3024,11 +3204,9 @@ class KimiBridge {
       await this._verifySession(page);
 
       if (options.newChat) {
-        const newChatUrl = this._modeUrl(resolvedProvider, 'instant');
-        await page.goto(newChatUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(2000);
+        const openedUrl = await this._openNewChat(page, resolvedProvider);
         if (session) {
-          session.chatUrl = page.url();
+          session.chatUrl = openedUrl;
           this._saveChatUrl(userId, session.chatUrl, { provider: resolvedProvider });
         }
       }
@@ -3524,6 +3702,27 @@ class KimiBridge {
     await inputLocator.press('Enter');
   }
 
+  /**
+   * v10.35-fix: Fill a contenteditable/Lexical editor reliably.
+   * Playwright's fill() does not register in React/Lexical contenteditable
+   * on Kimi's landing/agent page. We use document.execCommand('insertText')
+   * inside the focused editor, which Lexical observes correctly.
+   */
+  async _fillContentEditable(inputLocator, text) {
+    await inputLocator.evaluate((el) => el.focus());
+    await inputLocator.evaluate((el) => {
+      // Select all and delete first
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+    });
+    await inputLocator.evaluate((el, txt) => {
+      document.execCommand('insertText', false, txt);
+      // Dispatch input events so React/Lexical state updates and send button enables
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, text);
+  }
+
   async sendMessage(userId, text, options = {}, provider = 'kimi') {
     if (!text || !text.trim()) {
       throw new Error('Message text is required');
@@ -3595,11 +3794,34 @@ class KimiBridge {
 
       // Handle newChat option (only for instant/thinking modes)
       if (options.newChat && !isAgentOrSwarm) {
-        const newChatUrl = this._modeUrl(resolvedProvider, 'instant');
-        await page.goto(newChatUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(2000);
+        const pageContext = page.context();
+        const pagesBefore = new Set(pageContext.pages());
+        const openedUrl = await this._openNewChat(page, resolvedProvider);
+
+        // v10.36-fix: Kimi sometimes opens the new chat in a new tab.
+        const pagesAfter = pageContext.pages();
+        for (const p of pagesAfter) {
+          if (!pagesBefore.has(p) && !p.isClosed()) {
+            let url = '';
+            try { url = p.url(); } catch (e) { url = ''; }
+            log.info(`[sendMessage] detected new tab: ${url}`);
+            if (url.includes('/chat/') || url.includes('kimi.com')) {
+              try { if (!page.isClosed()) await page.close(); } catch (e) {}
+              session.page = p;
+              p._lunaUserId = userId;
+              p._lunaProvider = resolvedProvider;
+              page = p;
+              break;
+            }
+          }
+        }
+
         session.chatUrl = page.url();
         this._saveChatUrl(userId, session.chatUrl, { provider: resolvedProvider });
+
+        // v10.36-fix: Close leftover landing-page tabs so the user does not see
+        // a deslogada page after the new chat opens in a new tab.
+        await this._closeStaleProviderTabs(pageContext, page, resolvedProvider);
       }
 
       // v3.4: Verify we're on the correct chat URL. If newChat was used or
@@ -3638,26 +3860,8 @@ class KimiBridge {
       // .markdown-container yet; timeout: 0 hangs forever waiting for one.
       const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
 
-      // v10.18-fix: Focus the editor first. Kimi's Lexical contenteditable on the
-      // landing page does not register fill()/Enter events unless it is focused.
-      // Playwright's click() can hang on the landing editor, so we use JS focus().
-      await inputLocator.evaluate((el) => el.focus());
-      await page.waitForTimeout(200);
-
-      // Clear any existing text first
-      await inputLocator.fill('');
-      await page.waitForTimeout(300);
-
-      // v10.18-fix: Playwright's type() does not work reliably on Kimi's Lexical
-      // contenteditable editor on the landing page. Always use fill + native input
-      // events so the editor registers the text and the send button becomes active.
-      await inputLocator.fill(text);
-      await page.waitForTimeout(200);
-      await inputLocator.evaluate((el) => {
-        const data = el.value || el.innerText || '';
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      // v10.35-fix: Use Lexical-safe fill helper for Kimi contenteditable editor.
+      await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(500 + Math.floor(Math.random() * 1000));
 
       // v7.7-INFALÍVEL: Capture full snapshot before sending
@@ -3802,15 +4006,9 @@ class KimiBridge {
       await inputLocator.evaluate((el) => el.focus());
       await page.waitForTimeout(200);
 
-      await inputLocator.fill('');
-      await page.waitForTimeout(300);
-      await inputLocator.fill(text);
-      await page.waitForTimeout(200);
-      await inputLocator.evaluate((el) => {
-        const data = el.value || el.innerText || '';
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      // v10.38-fix: Use Lexical-safe fill helper so the editor state updates
+      // and the send button enables correctly on Kimi's contenteditable input.
+      await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(500);
 
       await this._pressEnterOnInput(inputLocator);
@@ -3913,96 +4111,196 @@ class KimiBridge {
   }
 
   /**
-   * Ensure the persistent Chrome profile exists and contains login data.
-   * If missing or empty, copies essential data from the user's default Chrome profile.
+   * v11.0: Discover a CDP endpoint for the user's real Chrome.
+   * Chrome 144+ can expose one via chrome://inspect/#remote-debugging
+   * (writes DevToolsActivePort). Older Chrome needs --remote-debugging-port.
    */
-  _ensureChromeProfile() {
-    const { execSync } = require('child_process');
-    const os = require('os');
-    const userDataDir = path.join(config?.LUNA_DIR || path.join(os.homedir(), '.luna'), 'chrome-profile');
-    const sourceProfile = path.join(os.homedir(), '.config', 'google-chrome');
+  _discoverUserChromeCdp() {
+    const fs = require('fs');
+    const path = require('path');
+    const http = require('http');
 
-    // If persistent profile already has Local Storage data, assume it's good
-    const localStorageDir = path.join(userDataDir, 'Default', 'Local Storage', 'leveldb');
-    if (fs.existsSync(localStorageDir)) {
-      const files = fs.readdirSync(localStorageDir).filter(f => f.endsWith('.ldb') || f.endsWith('.log'));
-      if (files.length > 0) {
-        log.info(`Persistent profile already exists with data: ${userDataDir}`);
-        return userDataDir;
-      }
-    }
-
-    // Create persistent profile directory
-    if (!fs.existsSync(userDataDir)) {
-      fs.mkdirSync(userDataDir, { recursive: true });
-    }
-
-    // If source profile doesn't exist, just return the empty persistent profile
-    if (!fs.existsSync(sourceProfile)) {
-      log.warn(`Source Chrome profile not found at ${sourceProfile}. Starting with empty profile.`);
-      return userDataDir;
-    }
-
-    log.info(`Copying Chrome profile from ${sourceProfile} to ${userDataDir}...`);
-
-    // Copy essential directories/files that contain login/session data
-    const itemsToCopy = [
-      'Default/Cookies',
-      'Default/Network/Cookies',
-      'Default/Login Data',
-      'Default/Web Data',
-      'Default/Local Storage',
-      'Default/Session Storage',
-      'Default/IndexedDB',
-      'Default/SharedStorage',
-      'Default/QuotaManager',
-      'Default/QuotaManager-journal',
-      'Default/Preferences',
-      'Default/Secure Preferences',
-      'Local State',
-    ];
-
-    for (const item of itemsToCopy) {
-      const src = path.join(sourceProfile, item);
-      const dst = path.join(userDataDir, item);
-      if (!fs.existsSync(src)) continue;
+    // 1) Chrome 144+ DevToolsActivePort file
+    if (fs.existsSync(USER_CHROME_DEVTOOLS_PORT_FILE)) {
       try {
-        const dstDir = path.dirname(dst);
-        if (!fs.existsSync(dstDir)) {
-          fs.mkdirSync(dstDir, { recursive: true });
+        const lines = fs.readFileSync(USER_CHROME_DEVTOOLS_PORT_FILE, 'utf8').split(/\r?\n/).filter(Boolean);
+        if (lines.length >= 2) {
+          const port = parseInt(lines[0], 10);
+          const wsPath = lines[1];
+          if (port > 0 && wsPath) {
+            return { port, wsPath, source: 'DevToolsActivePort' };
+          }
         }
-        const stat = fs.statSync(src);
-        if (stat.isDirectory()) {
-          // Use cp -r for directories
-          execSync(`cp -r "${src}" "${dst}"`, { stdio: 'ignore' });
-        } else {
-          // Use cp for files
-          execSync(`cp "${src}" "${dst}"`, { stdio: 'ignore' });
-        }
-      } catch (e) {
-        log.warn(`Failed to copy ${item}: ${e.message}`);
-      }
+      } catch (e) { /* ignore */ }
     }
 
-    log.success(`Chrome profile copied to ${userDataDir}`);
-    return userDataDir;
+    // 2) Fallback: check if user's Chrome was launched with --remote-debugging-port
+    try {
+      const { execSync } = require('child_process');
+      const ps = execSync("ps aux | grep -E '/opt/google/chrome/chrome|/usr/bin/google-chrome' | grep -v grep", { encoding: 'utf8' });
+      const m = ps.match(/--remote-debugging-port=(\d+)/);
+      if (m) {
+        const port = parseInt(m[1], 10);
+        return { port, wsPath: null, source: 'process' };
+      }
+    } catch (e) { /* ignore */ }
+
+    return null;
   }
 
   /**
-   * Check if Chrome is running with CDP and start if needed.
-   * Supports dynamic ports (9222-9225). Kills headless Chrome. Starts visible Chrome.
-   * Always uses the persistent profile (~/.luna/chrome-profile).
-   * Kills Chrome if it's running with a temporary /tmp/ profile.
-   * Returns { running: bool, started: bool, pid?: number, error?: string, wasHeadless?: bool, port?: number }
+   * v11.0: Modify the user's Chrome .desktop launcher to always include
+   * --remote-debugging-port, then gracefully restart Chrome so Luna can attach
+   * to the user's real profile and reuse real login sessions.
+   */
+  async _enableUserChromeRemoteDebugging() {
+    const fs = require('fs');
+    const path = require('path');
+    const { execSync, spawn } = require('child_process');
+    const os = require('os');
+
+    const flag = '--remote-debugging-port=9222';
+
+    // Patch the first writable .desktop file we find
+    let patchedFile = null;
+    for (const desktopPath of USER_CHROME_DESKTOP_FILES) {
+      if (!fs.existsSync(desktopPath)) continue;
+      try {
+        let content = fs.readFileSync(desktopPath, 'utf8');
+        if (content.includes(flag)) { patchedFile = desktopPath; break; }
+        // Add flag right after the chrome binary in Exec= lines
+        const original = content;
+        content = content.replace(
+          /(Exec=\S*google-chrome(?:-stable)?\b)(\s+%U)?/g,
+          `$1 ${flag}$2`
+        );
+        content = content.replace(
+          /(Exec=\S*chrome(?:-stable)?\b)(\s+--app-id|\s+--incognito|\s+%U)?/g,
+          `$1 ${flag}$2`
+        );
+        if (content !== original) {
+          fs.writeFileSync(desktopPath, content, 'utf8');
+          patchedFile = desktopPath;
+          log.info(`Patched Chrome launcher for CDP: ${desktopPath}`);
+          break;
+        }
+      } catch (e) {
+        log.warn(`Could not patch ${desktopPath}: ${e.message}`);
+      }
+    }
+
+    // Find the Chrome binary
+    let chromePath = null;
+    for (const cmd of USER_CHROME_CMD_CANDIDATES) {
+      if (cmd.startsWith('/')) {
+        if (fs.existsSync(cmd)) { chromePath = cmd; break; }
+      } else {
+        try { chromePath = execSync(`which ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim(); break; } catch {}
+      }
+    }
+    if (!chromePath) {
+      log.warn('Could not find Chrome binary to restart with CDP');
+      return false;
+    }
+
+    // Gracefully close user's Chrome processes (except any already-debuggable one)
+    const isUserChrome = (cmdline) => {
+      return cmdline.includes('/opt/google/chrome/chrome') || cmdline.includes('/usr/bin/google-chrome');
+    };
+
+    try {
+      const ps = execSync('ps aux', { encoding: 'utf8' });
+      const pids = ps.split('\n')
+        .filter(line => isUserChrome(line) && !line.includes('remote-debugging-port'))
+        .map(line => parseInt(line.trim().split(/\s+/)[1], 10))
+        .filter(n => n && !isNaN(n));
+
+      if (pids.length === 0) {
+        // Nothing to restart; launch a fresh user-Chrome with CDP
+        try {
+          const proc = spawn(chromePath, [flag, '--restore-last-session'], { detached: true, stdio: 'ignore', env: process.env });
+          proc.unref();
+          await new Promise(r => setTimeout(r, 3000));
+          return true;
+        } catch (e) {
+          log.warn(`Failed to launch user Chrome with CDP: ${e.message}`);
+          return false;
+        }
+      }
+
+      log.info(`Requesting graceful shutdown of ${pids.length} user Chrome process(es) to enable CDP...`);
+      for (const pid of pids) {
+        try { process.kill(pid, 'SIGTERM'); } catch {}
+      }
+
+      // Wait up to 12s for processes to exit
+      for (let i = 0; i < 24; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        try {
+          const still = execSync('ps aux', { encoding: 'utf8' })
+            .split('\n')
+            .filter(line => isUserChrome(line) && !line.includes('remote-debugging-port'));
+          if (still.length === 0) break;
+        } catch {}
+      }
+
+      // Last resort: SIGKILL anything still running
+      try {
+        const still = execSync('ps aux', { encoding: 'utf8' })
+          .split('\n')
+          .filter(line => isUserChrome(line) && !line.includes('remote-debugging-port'))
+          .map(line => parseInt(line.trim().split(/\s+/)[1], 10))
+          .filter(n => n && !isNaN(n));
+        for (const pid of still) {
+          try { process.kill(pid, 'SIGKILL'); } catch {}
+        }
+      } catch {}
+
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Restart user's Chrome with CDP and session restore
+      const proc = spawn(chromePath, [flag, '--restore-last-session'], { detached: true, stdio: 'ignore', env: process.env });
+      proc.unref();
+      log.info(`Restarted user Chrome with CDP (pid ${proc.pid})`);
+      await new Promise(r => setTimeout(r, 4000));
+      return true;
+    } catch (e) {
+      log.warn(`Error enabling user Chrome remote debugging: ${e.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Ensure the Luna Chrome profile directory exists. We use a single isolated
+   * directory for the CDP browser so the user can log in once inside it and
+   * the session (cookies, localStorage, tokens) persists across restarts.
+   * v11.0: Stop cloning the user's main profile — it invalidates device-bound
+   * session tokens. Instead the user logs in directly inside Luna's Chrome.
+   */
+  _ensureChromeProfile() {
+    // v11.1: Always use the kernel's own directory for the Chrome profile.
+    // This guarantees the profile travels with the kernel installation and
+    // survives restarts regardless of what LUNA_HOME/LUNA_DIR points to.
+    const lunaProfile = path.join(__dirname, 'chrome-profile');
+    if (!fs.existsSync(lunaProfile)) {
+      fs.mkdirSync(lunaProfile, { recursive: true });
+    }
+    return lunaProfile;
+  }
+
+  /**
+   * Check if Chrome/Chromium is running with CDP and start if needed.
+   * v11.0: Best practice is to attach to the user's REAL Chrome profile via CDP
+   * (Chrome 144+ remote-debugging toggle, or --remote-debugging-port). This
+   * reuses the user's live login sessions without copying profiles. If that is
+   * unavailable we fall back to the Luna-isolated profile copied from the user.
    */
   async checkChrome() {
     const { execSync, spawn } = require('child_process');
     const http = require('http');
     const os = require('os');
     const net = require('net');
-    const userDataDir = this._ensureChromeProfile();
 
-    // Helper: check if a port has Chrome responding
     const probePort = (port) => new Promise((resolve) => {
       const req = http.get(`${makeCdpUrl(port)}/json/version`, (res) => {
         resolve(res.statusCode === 200 ? port : 0);
@@ -4011,7 +4309,6 @@ class KimiBridge {
       req.setTimeout(2000, () => { req.destroy(); resolve(0); });
     });
 
-    // Helper: check if port is occupied by any process
     const isPortOccupied = (port) => new Promise((resolve) => {
       const s = net.createServer();
       s.once('error', () => resolve(true));
@@ -4019,100 +4316,82 @@ class KimiBridge {
       s.listen(port, '127.0.0.1');
     });
 
-    // Phase 1: Scan all ports for existing Chrome
-    let foundPort = 0;
-    let wasHeadless = false;
-    let existingProfileDir = null;
+    // v11.0: Use Luna's isolated persistent profile. The user will log in
+    // directly inside this Chrome instance once, and the session will persist
+    // across Luna restarts because we always reuse the same user-data-dir.
+    const profileDir = this._ensureChromeProfile();
+
+    // Phase 1: Scan for an existing Luna Chrome with CDP on our ports
     for (const port of CDP_PORTS) {
       const ok = await probePort(port);
       if (!ok) continue;
-      foundPort = port;
-      // Check if this Chrome is headless or using a temporary /tmp/ profile
       try {
-        const psOutput = execSync(`ps aux | grep 'chrome.*remote-debugging-port=${port}' | grep -v grep`, { encoding: 'utf8' });
+        const psOutput = execSync(`ps aux | grep -E 'chrom(?:e|ium).*remote-debugging-port=${port}' | grep -v grep`, { encoding: 'utf8' });
         const dataDirMatch = psOutput.match(/--user-data-dir=([^\s]+)/);
-        if (dataDirMatch) existingProfileDir = dataDirMatch[1];
+        const existingProfileDir = dataDirMatch ? dataDirMatch[1] : null;
 
-        // Kill headless Chrome
         if (psOutput.includes('--headless') || psOutput.includes('--ozone-platform=headless')) {
-          wasHeadless = true;
-          log.warn(`Chrome headless detectado na porta ${port}. Matando...`);
-          execSync(`pkill -f 'chrome.*remote-debugging-port=${port}'`);
+          log.warn(`Headless Chrome detected on port ${port}. Killing...`);
+          execSync(`pkill -f 'chrom.*remote-debugging-port=${port}'`);
           await new Promise(r => setTimeout(r, 3000));
-          foundPort = 0;
-          wasHeadless = false;
-          existingProfileDir = null;
           continue;
         }
 
-        // Kill Chrome if using a temporary /tmp/ profile (loses login data)
         if (existingProfileDir && existingProfileDir.startsWith('/tmp/')) {
-          log.warn(`Chrome na porta ${port} está usando perfil temporário ${existingProfileDir}. Matando para usar perfil persistente...`);
-          execSync(`pkill -f 'chrome.*remote-debugging-port=${port}'`);
+          log.warn(`Chrome on port ${port} is using a temporary profile ${existingProfileDir}. Killing...`);
+          execSync(`pkill -f 'chrom.*remote-debugging-port=${port}'`);
           await new Promise(r => setTimeout(r, 3000));
-          foundPort = 0;
-          existingProfileDir = null;
           continue;
         }
 
-        // Valid visible Chrome with persistent profile found
         this.cdpUrl = makeCdpUrl(port);
+        log.info(`Reusing existing CDP Chrome on port ${port} (profile: ${existingProfileDir || 'default'})`);
         return { running: true, started: false, wasHeadless: false, port };
       } catch {
-        // Could not determine, assume it's ok
         this.cdpUrl = makeCdpUrl(port);
         return { running: true, started: false, wasHeadless: false, port };
       }
     }
 
-    // Phase 2: Find first free port to start Chrome on
+    // Phase 2: Find a free CDP port
     let startPort = CDP_PORTS[0];
     for (const port of CDP_PORTS) {
       const occupied = await isPortOccupied(port);
       if (!occupied) { startPort = port; break; }
     }
-    // If all ports occupied by non-Chrome processes, use the first one and warn
-    if (startPort !== CDP_PORTS[0]) {
-      const allOccupied = await Promise.all(CDP_PORTS.map(p => isPortOccupied(p)));
-      if (allOccupied.every(o => o)) {
-        log.warn('Todas as portas CDP ocupadas por outros processos. Usando porta 9222 mesmo assim.');
-        startPort = CDP_PORTS[0];
-      }
-    }
 
-    // Start visible Chrome
+    // Phase 3: Start visible Chrome/Chromium with the Luna profile (synced from user)
     const chromeCmds = [
-      'google-chrome',
+      '/opt/google/chrome/google-chrome',
+      '/opt/google/chrome/chrome',
       'google-chrome-stable',
-      'chromium',
-      'chromium-browser',
+      'google-chrome',
+      '/usr/bin/google-chrome-stable',
       '/usr/bin/google-chrome',
       '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      'chromium',
+      'chromium-browser',
     ];
     let chromePath = null;
     for (const cmd of chromeCmds) {
-      try { execSync(`which ${cmd}`, { stdio: 'ignore' }); chromePath = cmd; break; } catch {}
+      if (cmd.startsWith('/')) {
+        if (fs.existsSync(cmd)) { chromePath = cmd; break; }
+      } else {
+        try { chromePath = execSync(`which ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim(); break; } catch {}
+      }
     }
     if (!chromePath) {
-      return { running: false, started: false, error: 'Chrome não encontrado. Instale google-chrome-stable ou chromium.' };
+      return { running: false, started: false, error: 'Chrome/Chromium não encontrado. Instale google-chrome-stable ou chromium.' };
     }
 
     try {
-      // Always use the persistent profile, never a temporary one
-      const profileDir = userDataDir;
-      log.info(`Iniciando Chrome com perfil persistente: ${profileDir}`);
+      log.info(`Starting ${chromePath} with Luna profile (synced from user): ${profileDir}`);
 
-      // v7.3-fix: Auto-load Luna Extension for reliable DOM observation
-      const extensionPath = require('path').join(__dirname, 'luna-extension');
+      const extensionPath = path.join(__dirname, 'luna-extension');
       const extensionArgs = [];
-      try {
-        const fs = require('fs');
-        if (fs.existsSync(extensionPath) && fs.existsSync(require('path').join(extensionPath, 'manifest.json'))) {
-          extensionArgs.push('--load-extension=' + extensionPath);
-          log.info(`Extension will be loaded from: ${extensionPath}`);
-        }
-      } catch (e) {
-        log.warn(`Could not load extension: ${e.message}`);
+      if (fs.existsSync(extensionPath) && fs.existsSync(path.join(extensionPath, 'manifest.json'))) {
+        extensionArgs.push('--load-extension=' + extensionPath);
       }
 
       const proc = spawn(chromePath, [
@@ -4128,15 +4407,25 @@ class KimiBridge {
       ], { detached: true, stdio: 'ignore', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
       proc.unref();
 
-      await new Promise(r => setTimeout(r, 5000));
+      proc.on('error', (err) => log.warn(`[checkChrome] Chrome process error: ${err.message}`));
+      proc.on('exit', (code, signal) => {
+        if (code !== 0 && code !== null) {
+          log.warn(`[checkChrome] Chrome process exited with code ${code}, signal ${signal}`);
+        }
+      });
 
-      // Verify it started
-      const ok = await probePort(startPort);
+      // Wait up to 30s for Chrome to open its CDP port
+      let ok = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        if (await probePort(startPort)) { ok = true; break; }
+      }
+
       if (ok) {
         this.cdpUrl = makeCdpUrl(startPort);
-        return { running: true, started: true, pid: proc.pid, wasHeadless, profileDir, port: startPort };
+        return { running: true, started: true, pid: proc.pid, profileDir, port: startPort };
       }
-      return { running: false, started: true, pid: proc.pid, wasHeadless, profileDir, port: startPort, error: 'Chrome iniciou mas não respondeu em 5s' };
+      return { running: false, started: true, pid: proc.pid, profileDir, port: startPort, error: 'Chrome iniciou mas não respondeu em 30s' };
     } catch (e) {
       return { running: false, started: false, error: e.message };
     }
@@ -4354,6 +4643,41 @@ class KimiBridge {
       }
     } catch (e) {
       log.warn(`[Cookies] Failed to save: ${e.message}`);
+    }
+  }
+
+  /**
+   * v10.36-fix: Sync master cookies JSON from the current Chrome profile.
+   * This forces the bridge to use the cookies already saved by Chrome instead
+   * of stale file backups that can log the user out.
+   */
+  async _syncMasterCookiesFromContext(providerName = 'kimi') {
+    if (!this.defaultContext) return false;
+    try {
+      const providerCfg = loadProviderConfig(providerName);
+      const cookiePaths = getProviderCookies(providerCfg);
+      const masterPath = cookiePaths.master;
+      const cookies = await this.defaultContext.cookies();
+      if (!cookies || cookies.length === 0) {
+        log.info(`[_syncMasterCookiesFromContext] No cookies in Chrome profile yet for ${providerName}`);
+        return false;
+      }
+      // Build master file in the expected format
+      const providerDomain = providerCfg.domain || '.kimi.com';
+      const providerCookies = cookies.filter(c => c.domain.includes(providerDomain.replace(/^\./, '')) || c.domain.endsWith(providerDomain));
+      const masterData = {
+        savedAt: new Date().toISOString(),
+        totalCookies: cookies.length,
+        kimiCookies: providerCookies.length,
+        cookies,
+      };
+      fs.mkdirSync(path.dirname(masterPath), { recursive: true });
+      fs.writeFileSync(masterPath, JSON.stringify(masterData, null, 2), 'utf8');
+      log.info(`[_syncMasterCookiesFromContext] Synced ${cookies.length} cookies (${providerCookies.length} for ${providerName}) from Chrome profile to ${masterPath}`);
+      return true;
+    } catch (e) {
+      log.warn(`[_syncMasterCookiesFromContext] Failed to sync: ${e.message}`);
+      return false;
     }
   }
 
@@ -6461,13 +6785,19 @@ class KimiBridge {
     // Fast path: doesn't look like JSON at all
     if (!cleaned.includes('{') && !cleaned.includes('```json')) return text;
 
-    // v5.6-fix: Remove DOM-extracted code block headers that Kimi Web sometimes includes
+    // v10.36-fix: Strip code block fences and Kimi DOM headers like "JSON\nCopy\n".
     cleaned = cleaned
       .replace(/^```json\s*/i, '')
       .replace(/^```\s*$/gm, '')
       .replace(/```/g, '')
-      .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
-      .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '');
+      .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/gim, '')
+      .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/gim, '');
+
+    // v10.36-fix: If the model duplicated the JSON block, keep only the first one.
+    const firstBlockEnd = cleaned.indexOf('}\n\n{');
+    if (firstBlockEnd > 0) {
+      cleaned = cleaned.slice(0, firstBlockEnd + 1);
+    }
 
     // Try to parse as JSON
     try {
@@ -6796,14 +7126,38 @@ class KimiBridge {
       log.info(`[DEBUG-LUNA] Step 2: verifySession OK`);
 
       if (options.newChat) {
-        const newChatUrl = this._modeUrl(resolvedProvider, 'instant');
-        await page.goto(newChatUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(2000);
+        const pageContext = page.context();
+        const pagesBefore = new Set(pageContext.pages());
+        const openedUrl = await this._openNewChat(page, resolvedProvider);
+
+        // v10.36-fix: Kimi sometimes opens the new chat in a new tab.
+        // Detect and migrate to the new tab to keep sending on the active thread.
+        const pagesAfter = pageContext.pages();
+        for (const p of pagesAfter) {
+          if (!pagesBefore.has(p) && !p.isClosed()) {
+            let url = '';
+            try { url = p.url(); } catch (e) { url = ''; }
+            log.info(`[sendMessageStream] detected new tab: ${url}`);
+            if (url.includes('/chat/') || url.includes('kimi.com')) {
+              try { if (!page.isClosed()) await page.close(); } catch (e) {}
+              session.page = p;
+              p._lunaUserId = userId;
+              p._lunaProvider = resolvedProvider;
+              page = p;
+              break;
+            }
+          }
+        }
+
         session = this.userSessions.get(userId);
         if (session) {
           session.chatUrl = page.url();
           this._saveChatUrl(userId, session.chatUrl, { provider: resolvedProvider });
         }
+
+        // v10.36-fix: Close leftover landing-page tabs so the user does not see
+        // a deslogada page after the new chat opens in a new tab.
+        await this._closeStaleProviderTabs(pageContext, page, resolvedProvider);
       }
 
       if (options.mode) {

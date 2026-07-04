@@ -97,8 +97,8 @@ const KIMI = {
   persistentMode: process.env.KIMI_PERSISTENT_MODE === 'true' || process.env.KIMI_PERSISTENT_MODE === '1',
   cdpPorts: [9222, 9223, 9224, 9225],
   modeUrls: {
-    instant: 'https://www.kimi.com/?chat_enter_method=new_chat',
-    thinking: 'https://www.kimi.com/?chat_enter_method=new_chat',
+    instant: 'https://www.kimi.com',
+    thinking: 'https://www.kimi.com',
     agent: 'https://www.kimi.com/agent',
     swarm: 'https://www.kimi.com/agent-swarm',
   },
