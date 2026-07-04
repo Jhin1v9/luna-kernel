@@ -283,8 +283,16 @@ async function main() {
   rl.close();
 }
 
-main().catch((err) => {
-  console.error('❌ Erro no installer:', err.message);
-  rl.close();
-  process.exit(1);
-});
+module.exports = {
+  ask, run, generateToken, ensureDir,
+  generateEcosystem, createShortcuts, runKimiWizard, main,
+  LUNA_DIR, LUNA_HOME, HOME,
+};
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('❌ Erro no installer:', err.message);
+    rl.close();
+    process.exit(1);
+  });
+}
