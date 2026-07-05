@@ -4979,15 +4979,14 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     });
   }
 
+  _escapePromptString(str) {
+    if (typeof str !== 'string') return String(str);
+    return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
   async *_telegramPipeline(input, options = {}) {
     const sessionId = options.sessionId || 'telegram-default';
     const userId = options.userId || 'luna-default';
-
-    this.sessionManager.appendEvent(sessionId, {
-      type: 'user',
-      content: input,
-      timestamp: new Date().toISOString(),
-    });
 
     yield { type: 'thinking_start', sessionId };
     yield { type: 'thinking_delta', text: 'Só um instantinho, tô vendo isso pra você... 🌙', fullThinking: 'Só um instantinho, tô vendo isso pra você... 🌙', sessionId };
@@ -4996,94 +4995,139 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     let toolCall = null;
 
     try {
-      category = await this._classifyIntent(input, userId);
+      category = await this._classifyIntent(input, options);
     } catch (err) {
       console.error('[TelegramPipeline] Classify intent failed:', err.message);
     }
 
     if (!category || category === 'CHAT' || !getCategory(category)) {
-      const response = await this._telegramChatResponse(input, userId);
+      const response = await this._telegramChatResponse(input, options);
       yield { type: 'response_delta', text: response, fullResponse: response, sessionId };
       yield { type: 'response_done', response, thinking: '', sessionId };
+      this.sessionManager.appendEvent(sessionId, {
+        type: 'assistant',
+        response,
+        timestamp: new Date().toISOString(),
+      });
       yield { type: 'done', result: { success: true, mode: 'CHAT', response, sessionId }, sessionId };
       return;
     }
 
     try {
-      toolCall = await this._selectDashboardTool(input, category, userId);
+      toolCall = await this._selectDashboardTool(input, category, options);
     } catch (err) {
       console.error('[TelegramPipeline] Select tool failed:', err.message);
     }
 
     if (!toolCall || !toolCall.tool || !isDashboardTool(toolCall.tool)) {
-      const response = await this._telegramChatResponse(input, userId);
+      const response = await this._telegramChatResponse(input, options);
       yield { type: 'response_delta', text: response, fullResponse: response, sessionId };
       yield { type: 'response_done', response, thinking: '', sessionId };
+      this.sessionManager.appendEvent(sessionId, {
+        type: 'assistant',
+        response,
+        timestamp: new Date().toISOString(),
+      });
       yield { type: 'done', result: { success: true, mode: 'CHAT', response, sessionId }, sessionId };
       return;
     }
 
-    yield { type: 'action_start', tool: toolCall.tool, params: toolCall.params || {}, sessionId };
+    const toolInstanceId = nextToolEventId();
+    this.sessionManager.appendEvent(sessionId, {
+      type: 'tool_call',
+      tool: toolCall.tool,
+      params: toolCall.params || {},
+      timestamp: new Date().toISOString(),
+    });
+    yield { type: 'action_start', toolInstanceId, tool: toolCall.tool, params: toolCall.params || {}, sessionId };
 
     let result;
     try {
-      result = await this._executeDashboardTool(toolCall.tool, toolCall.params || {});
+      result = await this._executeDashboardTool(toolCall.tool, toolCall.params || {}, category);
     } catch (err) {
       result = { success: false, error: err.message };
     }
 
-    yield { type: 'action_end', tool: toolCall.tool, result, sessionId };
+    this.sessionManager.appendEvent(sessionId, {
+      type: 'tool_result',
+      tool: toolCall.tool,
+      success: result?.success ?? false,
+      output: result?.message || result?.data || result?.stdout || result?.result?.stdout || JSON.stringify(result),
+      error: result?.error || null,
+      timestamp: new Date().toISOString(),
+    });
+    yield { type: 'action_end', toolInstanceId, tool: toolCall.tool, result, sessionId };
 
     if (!result || result.success === false) {
       const errorText = result?.error || 'Algo deu errado ao executar a ação. 😅';
       yield { type: 'response_delta', text: errorText, fullResponse: errorText, sessionId };
       yield { type: 'response_done', response: errorText, thinking: '', sessionId };
+      this.sessionManager.appendEvent(sessionId, {
+        type: 'assistant',
+        response: errorText,
+        timestamp: new Date().toISOString(),
+      });
       yield { type: 'done', result: { success: false, mode: 'CHAT', response: errorText, sessionId }, sessionId };
       return;
     }
 
-    const formatted = await this._formatTelegramResponse(result, category, input, userId);
+    const formatted = await this._formatTelegramResponse(result, category, input, options);
     yield { type: 'response_delta', text: formatted, fullResponse: formatted, sessionId };
     yield { type: 'response_done', response: formatted, thinking: '', sessionId };
+    this.sessionManager.appendEvent(sessionId, {
+      type: 'assistant',
+      response: formatted,
+      timestamp: new Date().toISOString(),
+    });
     yield { type: 'done', result: { success: true, mode: 'CHAT', response: formatted, sessionId }, sessionId };
   }
 
-  async _classifyIntent(input, userId) {
+  async _classifyIntent(input, options = {}) {
+    const userId = options.userId || 'luna-default';
+    const escapedInput = this._escapePromptString(input);
     const categories = getCategories().concat('CHAT').map(c => c.toUpperCase()).join(', ');
-    const prompt = `Classifique a intenção desta mensagem em UMA categoria: ${categories}.\nResponda APENAS com a palavra da categoria.\nMensagem: "${input}"`;
-    const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, 'kimi');
-    const text = (result?.response || '').trim().toLowerCase();
-    const category = getCategories().find(c => c.toLowerCase() === text);
-    if (category) return category;
-    if (text === 'chat') return 'CHAT';
-    for (const c of getCategories()) {
-      if (text.includes(c.toLowerCase())) return c;
+    const prompt = `Classifique a intenção desta mensagem em UMA categoria: ${categories}.\nResponda APENAS com a palavra da categoria.\nMensagem: "${escapedInput}"`;
+    try {
+      const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
+      const text = (result?.response || '').trim().toLowerCase();
+      const category = getCategories().find(c => c.toLowerCase() === text);
+      if (category) return category;
+      if (text === 'chat') return 'CHAT';
+      for (const c of getCategories()) {
+        if (text.includes(c.toLowerCase())) return c;
+      }
+      return 'CHAT';
+    } catch (err) {
+      console.error('[TelegramPipeline] classifyIntent sendMessage failed:', err.message);
+      return 'CHAT';
     }
-    return 'CHAT';
   }
 
-  async _selectDashboardTool(input, category, userId) {
+  async _selectDashboardTool(input, category, options = {}) {
+    const userId = options.userId || 'luna-default';
     const cat = getCategory(category);
+    const escapedInput = this._escapePromptString(input);
     const toolList = cat.tools.map(t => `- \`${t.name}(${t.params.map(p => p + '?').join(', ')})\` — ${t.description}`).join('\n');
-    const prompt = `Você tem acesso apenas a estas tools da categoria **${cat.label}**:\n${toolList}\n\nPara atender a mensagem "${input}", escolha a tool correta e responda em JSON:\n{"tool": "${cat.tools[0].name}", "params": {}}`;
-    const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, 'kimi');
-    const text = result?.response || '';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
+    const prompt = `Você tem acesso apenas a estas tools da categoria **${cat.label}**:\n${toolList}\n\nPara atender a mensagem "${escapedInput}", escolha a tool correta e responda em JSON:\n{"tool": "${cat.tools[0].name}", "params": {}}`;
     try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (parsed.tool && typeof parsed.tool === 'string' && typeof parsed.params === 'object') {
+      const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
+      const text = result?.response || '';
+      const parsed = tolerantJsonParse(text);
+      if (parsed && parsed.tool && typeof parsed.tool === 'string' && typeof parsed.params === 'object') {
         return parsed;
       }
-    } catch (e) {
-      console.warn('[TelegramPipeline] Failed to parse tool JSON:', e.message);
+    } catch (err) {
+      console.warn('[TelegramPipeline] Select dashboard tool sendMessage failed:', err.message);
     }
     return null;
   }
 
-  async _executeDashboardTool(toolName, params) {
+  async _executeDashboardTool(toolName, params, category) {
     if (!isDashboardTool(toolName)) {
       return { success: false, error: 'Tool não permitida no Telegram.' };
+    }
+    if (category && !getToolsForCategory(category).some(t => t.name === toolName)) {
+      return { success: false, error: `Tool ${toolName} não pertence à categoria ${category}.` };
     }
     const toolFn = lunaTools[toolName];
     if (!toolFn) {
@@ -5092,18 +5136,31 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     return await toolFn(params);
   }
 
-  async _formatTelegramResponse(result, category, input, userId) {
+  async _formatTelegramResponse(result, category, input, options = {}) {
+    const userId = options.userId || 'luna-default';
     const cat = getCategory(category);
-    const raw = result?.stdout || result?.result?.stdout || result?.message || JSON.stringify(result);
+    const raw = result?.message || result?.data || result?.stdout || result?.result?.stdout || JSON.stringify(result);
     const prompt = `Você é Luna, 19 anos, nerd e descontraída. Formate a resposta abaixo de forma amigável para o Telegram, usando emojis, listas e negrito. Seja breve e direta.\n\nCategoria: ${cat.emoji} ${cat.label}\n\nDados:\n${raw}\n\nResposta:`;
-    const formatted = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, 'kimi');
-    return formatted?.response || raw;
+    try {
+      const formatted = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
+      return formatted?.response || raw;
+    } catch (err) {
+      console.error('[TelegramPipeline] formatTelegramResponse sendMessage failed:', err.message);
+      return raw;
+    }
   }
 
-  async _telegramChatResponse(input, userId) {
-    const prompt = `Você é Luna, 19 anos, nerd e descontraída. Responda de forma amigável, breve e direta no Telegram.\n\nMensagem do usuário: ${input}\n\nResposta:`;
-    const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, 'kimi');
-    return result?.response || 'Hmm, não consegui pensar em uma resposta agora. 😅';
+  async _telegramChatResponse(input, options = {}) {
+    const userId = options.userId || 'luna-default';
+    const escapedInput = this._escapePromptString(input);
+    const prompt = `Você é Luna, 19 anos, nerd e descontraída. Responda de forma amigável, breve e direta no Telegram.\n\nMensagem do usuário: ${escapedInput}\n\nResposta:`;
+    try {
+      const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
+      return result?.response || 'Hmm, não consegui pensar em uma resposta agora. 😅';
+    } catch (err) {
+      console.error('[TelegramPipeline] telegramChatResponse sendMessage failed:', err.message);
+      return 'Hmm, não consegui pensar em uma resposta agora. 😅';
+    }
   }
 }
 
