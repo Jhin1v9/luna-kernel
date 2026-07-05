@@ -374,7 +374,10 @@ class TelegramLunaAdapter {
             const meta = this.activeStreams.get(chatId);
             const text = this._sanitizeText(ev.response || '');
             if (meta && text) {
-              await this._finalizeMessage(chatId, text);
+              // Evita reenvio se o response_delta já editou para o mesmo texto
+              if (text.slice(0, 4000) !== meta.lastText) {
+                await this._finalizeMessage(chatId, text);
+              }
             } else if (text) {
               await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
             }
