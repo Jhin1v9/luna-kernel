@@ -209,7 +209,7 @@ const DASHBOARD_TOOL_REGISTRY = {
       {
         name: 'dashboardListRoadmaps',
         description: 'Lista roadmaps com filtros opcionais.',
-        params: ['status', 'client_id', 'project_type'],
+        params: ['status', 'clientId', 'projectType'],
       },
       {
         name: 'dashboardGetRoadmap',
@@ -219,7 +219,18 @@ const DASHBOARD_TOOL_REGISTRY = {
       {
         name: 'dashboardCreateRoadmap',
         description: 'Cria um novo roadmap de projeto.',
-        params: ['title', 'client_id', 'lead_id', 'project_type', 'total_value', 'currency', 'start_date', 'github_repo', 'subdomain', 'onboarding_answers'],
+        params: [
+          'title',
+          'clientId',
+          'leadId',
+          'projectType',
+          'totalValue',
+          'currency',
+          'startDate',
+          'githubRepo',
+          'subdomain',
+          'onboardingAnswers',
+        ],
       },
       {
         name: 'dashboardAdvanceRoadmapPhase',
@@ -376,6 +387,8 @@ function isDashboardTool(name) {
   if (typeof name !== 'string' || !name.startsWith('dashboard')) return false;
   return getAllToolNames().includes(name);
 }
+
+Object.freeze(DASHBOARD_TOOL_REGISTRY);
 
 module.exports = {
   DASHBOARD_TOOL_REGISTRY,
