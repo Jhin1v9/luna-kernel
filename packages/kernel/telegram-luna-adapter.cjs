@@ -32,6 +32,7 @@ if (!telegramBotPath) {
 const getTelegramBot = require(telegramBotPath);
 const { LunaSoul } = require('./luna-soul.cjs');
 const { SessionManager } = require('./session-manager.cjs');
+const { getCategory, DASHBOARD_TOOL_REGISTRY } = require('./dashboard-tool-registry.cjs');
 
 const SESSION_DIR = path.join(__dirname, '..', 'data', 'telegram-sessions');
 if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -278,6 +279,13 @@ class TelegramLunaAdapter {
     } catch (e) { console.warn('[TG] Erro ao salvar awake state:', e.message); }
   }
 
+  _getCategoryForTool(toolName) {
+    for (const cat of Object.values(DASHBOARD_TOOL_REGISTRY)) {
+      if (cat.tools.some(t => t.name === toolName)) return cat;
+    }
+    return null;
+  }
+
   // ── MENSAGEM PRINCIPAL ──
 
   async _handleUserMessage(msg) {
@@ -322,7 +330,7 @@ class TelegramLunaAdapter {
     }
 
     // Envia "Pensando..."
-    const thinkingMsg = await this.bot.sendMessage(chatId, '🧠 *Pensando...*', {
+    const thinkingMsg = await this.bot.sendMessage(chatId, '🌙 *Só um instantinho, tô vendo isso pra você...*', {
       parse_mode: 'Markdown',
       reply_to_message_id: msg.message_id,
     });
@@ -339,6 +347,7 @@ class TelegramLunaAdapter {
         userId,
         mode: session.mode,
         persona,
+        channel: 'telegram',
       });
 
       let fullResponse = '';
@@ -347,7 +356,7 @@ class TelegramLunaAdapter {
       for await (const ev of stream) {
         switch (ev.type) {
           case 'thinking_start':
-            // já mostramos "Pensando..."
+            // "Pensando..." message already sent before the loop
             break;
 
           case 'thinking_delta':
@@ -361,23 +370,33 @@ class TelegramLunaAdapter {
             break;
           }
 
+          case 'response_done': {
+            const meta = this.activeStreams.get(chatId);
+            const text = this._sanitizeText(ev.response || '');
+            if (meta && text) {
+              await this._finalizeMessage(chatId, text);
+            } else if (text) {
+              await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+            }
+            break;
+          }
+
           case 'action_start': {
             const toolName = ev.tool || 'tool';
-            await this.bot.sendMessage(chatId, `🔧 *Executando:* \`${toolName}\``, {
-              parse_mode: 'Markdown',
-            });
+            const cat = this._getCategoryForTool(toolName);
+            const emoji = cat?.emoji || '🔧';
+            const label = cat?.label || 'ação';
+            await this.bot.sendMessage(chatId, `${emoji} *${label}* — Só um segundinho...`, { parse_mode: 'Markdown' });
             break;
           }
 
           case 'action_end': {
             const res = ev.result;
-            const icon = res?.success !== false ? '✅' : '❌';
-            const output = res?.stdout || res?.output || res?.text || res?.result?.stdout || res?.result?.output || res?.result?.text || '';
-            const short = this._sanitizeText(output).slice(0, 500);
-            await this.bot.sendMessage(chatId,
-              `${icon} *${ev.tool}* concluído${short ? `\n\n\`\`\`\n${short}\n\`\`\`` : ''}`,
-              { parse_mode: 'Markdown' }
-            );
+            const cat = this._getCategoryForTool(ev.tool);
+            const emoji = cat?.emoji || '🔧';
+            if (res?.success === false) {
+              await this.bot.sendMessage(chatId, `${emoji} *${cat?.label || 'Ação'}* falhou.`, { parse_mode: 'Markdown' });
+            }
             break;
           }
 
@@ -389,11 +408,7 @@ class TelegramLunaAdapter {
           }
 
           case 'done': {
-            // Mensagem final já foi editada pelo response_delta
-            const meta = this.activeStreams.get(chatId);
-            if (meta && fullResponse) {
-              await this._finalizeMessage(chatId, fullResponse);
-            }
+            // Mensagem final já foi definida por response_done
             break;
           }
         }
