@@ -5094,6 +5094,13 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     yield { type: 'done', result: { success: true, mode: 'CHAT', response: formatted, sessionId }, sessionId };
   }
 
+  async _kimiSendWithTimeout(userId, prompt, options, provider, fallback, timeoutMs = 30000) {
+    return Promise.race([
+      this.kimiBridge.sendMessage(userId, prompt, options, provider),
+      new Promise((resolve) => setTimeout(() => resolve({ response: fallback }), timeoutMs)),
+    ]);
+  }
+
   async _classifyIntent(input, options = {}) {
     const userId = options.userId || 'luna-default';
     const escapedInput = this._escapePromptString(input);
@@ -5101,7 +5108,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Classifique a intenção desta mensagem em UMA categoria: ${categories}.\nResponda APENAS com a palavra da categoria.\nMensagem: "${escapedInput}"`;
     try {
-      const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi');
+      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi', 'CHAT', 45000);
       const text = (result?.response || '').trim().toLowerCase();
       const category = getCategories().find(c => c.toLowerCase() === text);
       if (category) return category;
@@ -5124,7 +5131,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Você tem acesso apenas a estas tools da categoria **${cat.label}**:\n${toolList}\n\nPara atender a mensagem "${escapedInput}", escolha a tool correta e responda em JSON:\n{"tool": "${cat.tools[0].name}", "params": {}}`;
     try {
-      const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi');
+      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi', null, 45000);
       const text = result?.response || '';
       const parsed = tolerantJsonParse(text);
       if (parsed && parsed.tool && typeof parsed.tool === 'string' && typeof parsed.params === 'object') {
@@ -5157,7 +5164,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Formate a resposta abaixo de forma amigável para o Telegram, usando emojis, listas e negrito. Seja breve e direta.\n\nCategoria: ${cat.emoji} ${cat.label}\n\nDados:\n${raw}\n\nResposta:`;
     try {
-      const formatted = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi');
+      const formatted = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi', raw, 60000);
       return formatted?.response || raw;
     } catch (err) {
       console.error('[TelegramPipeline] formatTelegramResponse sendMessage failed:', err.message);
@@ -5171,7 +5178,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Responda de forma amigável, breve e direta no Telegram.\n\nMensagem do usuário: ${escapedInput}\n\nResposta:`;
     try {
-      const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi');
+      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: true }, options.provider || 'kimi', 'Hmm, não consegui pensar em uma resposta agora. 😅', 60000);
       return result?.response || 'Hmm, não consegui pensar em uma resposta agora. 😅';
     } catch (err) {
       console.error('[TelegramPipeline] telegramChatResponse sendMessage failed:', err.message);
