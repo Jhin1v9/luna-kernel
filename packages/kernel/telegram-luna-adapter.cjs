@@ -32,7 +32,7 @@ if (!telegramBotPath) {
 const getTelegramBot = require(telegramBotPath);
 const { LunaSoul } = require('./luna-soul.cjs');
 const { SessionManager } = require('./session-manager.cjs');
-const { getCategory, DASHBOARD_TOOL_REGISTRY } = require('./dashboard-tool-registry.cjs');
+const { DASHBOARD_TOOL_REGISTRY } = require('./dashboard-tool-registry.cjs');
 
 const SESSION_DIR = path.join(__dirname, '..', 'data', 'telegram-sessions');
 if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -385,7 +385,7 @@ class TelegramLunaAdapter {
             const toolName = ev.tool || 'tool';
             const cat = this._getCategoryForTool(toolName);
             const emoji = cat?.emoji || '🔧';
-            const label = cat?.label || 'ação';
+            const label = cat?.label || 'Ação';
             await this.bot.sendMessage(chatId, `${emoji} *${label}* — Só um segundinho...`, { parse_mode: 'Markdown' });
             break;
           }
@@ -394,9 +394,9 @@ class TelegramLunaAdapter {
             const res = ev.result;
             const cat = this._getCategoryForTool(ev.tool);
             const emoji = cat?.emoji || '🔧';
-            if (res?.success === false) {
-              await this.bot.sendMessage(chatId, `${emoji} *${cat?.label || 'Ação'}* falhou.`, { parse_mode: 'Markdown' });
-            }
+            const icon = res?.success !== false ? '✅' : '❌';
+            const label = cat?.label || 'Ação';
+            await this.bot.sendMessage(chatId, `${icon} *${label}* ${res?.success !== false ? 'concluída' : 'falhou'}.`, { parse_mode: 'Markdown' });
             break;
           }
 
