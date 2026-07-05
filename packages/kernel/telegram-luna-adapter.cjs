@@ -393,7 +393,6 @@ class TelegramLunaAdapter {
           case 'action_end': {
             const res = ev.result;
             const cat = this._getCategoryForTool(ev.tool);
-            const emoji = cat?.emoji || '🔧';
             const icon = res?.success !== false ? '✅' : '❌';
             const label = cat?.label || 'Ação';
             await this.bot.sendMessage(chatId, `${icon} *${label}* ${res?.success !== false ? 'concluída' : 'falhou'}.`, { parse_mode: 'Markdown' });
