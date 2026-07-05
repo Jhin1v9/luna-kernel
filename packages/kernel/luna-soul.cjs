@@ -4988,6 +4988,18 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const sessionId = options.sessionId || 'telegram-default';
     const userId = options.userId || 'luna-default';
 
+    const personaPath = path.join(lunaConfig.PATHS.lunaKernel, 'packages', 'kernel', 'personas', 'telegram-assistant.json');
+    let telegramPersona = '';
+    try {
+      if (fs.existsSync(personaPath)) {
+        telegramPersona = JSON.parse(fs.readFileSync(personaPath, 'utf8')).systemPrompt || '';
+      }
+    } catch (e) {
+      console.warn('[TelegramPipeline] Could not load telegram persona:', e.message);
+    }
+
+    this._telegramPersona = telegramPersona;
+
     yield { type: 'thinking_start', sessionId };
     yield { type: 'thinking_delta', text: 'Só um instantinho, tô vendo isso pra você... 🌙', fullThinking: 'Só um instantinho, tô vendo isso pra você... 🌙', sessionId };
 
@@ -5086,7 +5098,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const userId = options.userId || 'luna-default';
     const escapedInput = this._escapePromptString(input);
     const categories = getCategories().concat('CHAT').map(c => c.toUpperCase()).join(', ');
-    const prompt = `Classifique a intenção desta mensagem em UMA categoria: ${categories}.\nResponda APENAS com a palavra da categoria.\nMensagem: "${escapedInput}"`;
+    const telegramPersona = this._telegramPersona || '';
+    const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Classifique a intenção desta mensagem em UMA categoria: ${categories}.\nResponda APENAS com a palavra da categoria.\nMensagem: "${escapedInput}"`;
     try {
       const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
       const text = (result?.response || '').trim().toLowerCase();
@@ -5108,7 +5121,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const cat = getCategory(category);
     const escapedInput = this._escapePromptString(input);
     const toolList = cat.tools.map(t => `- \`${t.name}(${t.params.map(p => p + '?').join(', ')})\` — ${t.description}`).join('\n');
-    const prompt = `Você tem acesso apenas a estas tools da categoria **${cat.label}**:\n${toolList}\n\nPara atender a mensagem "${escapedInput}", escolha a tool correta e responda em JSON:\n{"tool": "${cat.tools[0].name}", "params": {}}`;
+    const telegramPersona = this._telegramPersona || '';
+    const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Você tem acesso apenas a estas tools da categoria **${cat.label}**:\n${toolList}\n\nPara atender a mensagem "${escapedInput}", escolha a tool correta e responda em JSON:\n{"tool": "${cat.tools[0].name}", "params": {}}`;
     try {
       const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
       const text = result?.response || '';
@@ -5140,7 +5154,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const userId = options.userId || 'luna-default';
     const cat = getCategory(category);
     const raw = result?.message || result?.data || result?.stdout || result?.result?.stdout || JSON.stringify(result);
-    const prompt = `Você é Luna, 19 anos, nerd e descontraída. Formate a resposta abaixo de forma amigável para o Telegram, usando emojis, listas e negrito. Seja breve e direta.\n\nCategoria: ${cat.emoji} ${cat.label}\n\nDados:\n${raw}\n\nResposta:`;
+    const telegramPersona = this._telegramPersona || '';
+    const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Formate a resposta abaixo de forma amigável para o Telegram, usando emojis, listas e negrito. Seja breve e direta.\n\nCategoria: ${cat.emoji} ${cat.label}\n\nDados:\n${raw}\n\nResposta:`;
     try {
       const formatted = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
       return formatted?.response || raw;
@@ -5153,7 +5168,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
   async _telegramChatResponse(input, options = {}) {
     const userId = options.userId || 'luna-default';
     const escapedInput = this._escapePromptString(input);
-    const prompt = `Você é Luna, 19 anos, nerd e descontraída. Responda de forma amigável, breve e direta no Telegram.\n\nMensagem do usuário: ${escapedInput}\n\nResposta:`;
+    const telegramPersona = this._telegramPersona || '';
+    const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Responda de forma amigável, breve e direta no Telegram.\n\nMensagem do usuário: ${escapedInput}\n\nResposta:`;
     try {
       const result = await this.kimiBridge.sendMessage(userId, prompt, { mode: 'instant' }, options.provider || 'kimi');
       return result?.response || 'Hmm, não consegui pensar em uma resposta agora. 😅';
