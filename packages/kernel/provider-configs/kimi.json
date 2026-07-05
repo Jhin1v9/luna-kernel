@@ -3,8 +3,8 @@
   "displayName": "Kimi Web",
   "baseUrl": "https://www.kimi.com",
   "modeUrls": {
-    "instant": "https://www.kimi.com/en?chat_enter_method=shortcut",
-    "thinking": "https://www.kimi.com/en?chat_enter_method=shortcut",
+    "instant": "https://www.kimi.com/en?chat_enter_method=new_chat",
+    "thinking": "https://www.kimi.com/en?chat_enter_method=new_chat",
     "agent": "https://www.kimi.com/agent?lang=en",
     "swarm": "https://www.kimi.com/agent-swarm?lang=en"
   },
