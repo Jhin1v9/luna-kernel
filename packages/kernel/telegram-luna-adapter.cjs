@@ -47,7 +47,7 @@ if (!TOKEN) {
 // ── ADAPTER ──
 class TelegramLunaAdapter {
   constructor() {
-    this.bot = getTelegramBot(TOKEN);
+    this.bot = getTelegramBot(TOKEN, { polling: true });
     this.luna = null;
     this.activeStreams = new Map(); // chatId → { messageId, lastEdit }
     this.activeUsers = new Set();   // evita overlapping requests
