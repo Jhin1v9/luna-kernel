@@ -83,6 +83,8 @@ const lunaIntentParser = new IntentParser({
 });
 const { getUndoService } = require('./services/undo-service');
 const lunaUndoService = getUndoService();
+const { createAuditLogService } = require('./services/audit-log-service');
+const auditLogService = createAuditLogService(dataStore);
 
 const lunaActionExecutor = new ActionExecutor({
   apiBase: `http://localhost:${process.env.PORT || 3456}/api`,
@@ -1361,12 +1363,22 @@ app.post('/api/tasks', async (req, res) => {
     updatedAt: now
   };
   await dataStore.saveTask(task);
-  
+
+  auditLogService.log({
+    entityType: 'task',
+    entityId: task.id,
+    action: 'create',
+    actor: req.body.actor || req.body.addedBy || 'dashboard',
+    source: req.body.source || 'dashboard',
+    after: task,
+    description: `Criou tarefa "${task.title}"`,
+  });
+
   // Notificar Telegram
   if (taskNotifier?.sendTaskNotification) {
     taskNotifier.sendTaskNotification(task).catch(() => {});
   }
-  
+
   res.json(task);
 });
 
@@ -1383,6 +1395,17 @@ app.put('/api/tasks/:id', async (req, res) => {
   const updated = { ...existing, ...updates };
   await dataStore.saveTask(updated);
 
+  auditLogService.log({
+    entityType: 'task',
+    entityId: updated.id,
+    action: 'update',
+    actor: req.body.actor || req.body.updatedBy || req.body.addedBy || 'dashboard',
+    source: req.body.source || 'dashboard',
+    before: existing,
+    after: updated,
+    description: `Atualizou tarefa "${updated.title || existing.title}"`,
+  });
+
   // Notificar Telegram
   if (taskNotifier?.sendSimpleMessage) {
     taskNotifier.sendSimpleMessage(
@@ -1397,8 +1420,21 @@ app.put('/api/tasks/:id', async (req, res) => {
 });
 
 app.delete('/api/tasks/:id', async (req, res) => {
-  await dataStore.deleteTask(req.params.id);
-  res.json({ ok: true });
+  const tasks = await dataStore.getTasks();
+  const existing = tasks.find(t => t.id === req.params.id);
+  const deleted = await dataStore.deleteTask(req.params.id);
+  if (existing) {
+    auditLogService.log({
+      entityType: 'task',
+      entityId: existing.id,
+      action: 'delete',
+      actor: req.body?.actor || req.query.actor || 'dashboard',
+      source: req.body?.source || req.query.source || 'dashboard',
+      before: existing,
+      description: `Excluiu tarefa "${existing.title}"`,
+    });
+  }
+  res.json({ ok: true, deleted });
 });
 
 // POST /api/tasks/complete-by-title — Conclui tarefa buscando pelo título
@@ -1818,6 +1854,17 @@ app.post('/api/payments', async (req, res) => {
       updatedAt: nowISO()
     };
     await dataStore.savePayment(payment);
+
+    auditLogService.log({
+      entityType: 'payment',
+      entityId: payment.id || payment.paymentId,
+      action: 'create',
+      actor: req.body.actor || 'dashboard',
+      source: req.body.source || 'dashboard',
+      after: payment,
+      description: `Criou pagamento "${payment.description || payment.clientName || payment.id}"`,
+    });
+
     res.json(payment);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1832,6 +1879,18 @@ app.put('/api/payments/:id', async (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Payment not found' });
     const updated = { ...existing, ...req.body, updatedAt: nowISO() };
     await dataStore.savePayment(updated);
+
+    auditLogService.log({
+      entityType: 'payment',
+      entityId: updated.id || updated.paymentId,
+      action: 'update',
+      actor: req.body.actor || 'dashboard',
+      source: req.body.source || 'dashboard',
+      before: existing,
+      after: updated,
+      description: `Atualizou pagamento "${updated.description || updated.clientName || updated.id}"`,
+    });
+
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1841,7 +1900,20 @@ app.put('/api/payments/:id', async (req, res) => {
 // DELETE payment
 app.delete('/api/payments/:id', async (req, res) => {
   try {
+    const payments = await dataStore.getPayments();
+    const existing = payments.find(p => p.paymentId === req.params.id || p.id === req.params.id);
     await dataStore.deletePayment(req.params.id);
+    if (existing) {
+      auditLogService.log({
+        entityType: 'payment',
+        entityId: existing.id || existing.paymentId,
+        action: 'delete',
+        actor: req.body?.actor || req.query.actor || 'dashboard',
+        source: req.body?.source || req.query.source || 'dashboard',
+        before: existing,
+        description: `Excluiu pagamento "${existing.description || existing.clientName || existing.id}"`,
+      });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1995,6 +2067,16 @@ app.post('/api/expenses', async (req, res) => {
     };
     await dataStore.saveExpense(expense);
 
+    auditLogService.log({
+      entityType: 'expense',
+      entityId: expense.id,
+      action: 'create',
+      actor: req.body.actor || req.body.createdBy || 'dashboard',
+      source: req.body.source || 'dashboard',
+      after: expense,
+      description: `Criou despesa "${expense.name || expense.description}"`,
+    });
+
     // Update cash box if auto-deduct
     if (expense.autoDeductFromCashBox && amountVal > 0) {
       const cashBox = await dataStore.getCashBox();
@@ -2046,6 +2128,18 @@ app.put('/api/expenses/:id', async (req, res) => {
     }
 
     await dataStore.saveExpense(updated);
+
+    auditLogService.log({
+      entityType: 'expense',
+      entityId: updated.id,
+      action: 'update',
+      actor: req.body.actor || req.body.createdBy || 'dashboard',
+      source: req.body.source || 'dashboard',
+      before: oldExpense,
+      after: updated,
+      description: `Atualizou despesa "${updated.name || updated.description || updated.id}"`,
+    });
+
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2059,6 +2153,15 @@ app.delete('/api/expenses/:id', async (req, res) => {
     const expense = expenses.find(e => e.id === req.params.id);
     if (!expense) return res.status(404).json({ error: 'Expense not found' });
     await dataStore.deleteExpense(req.params.id);
+    auditLogService.log({
+      entityType: 'expense',
+      entityId: expense.id,
+      action: 'delete',
+      actor: req.body?.actor || req.query.actor || 'dashboard',
+      source: req.body?.source || req.query.source || 'dashboard',
+      before: expense,
+      description: `Excluiu despesa "${expense.name || expense.description || expense.id}"`,
+    });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3132,7 +3235,7 @@ app.get('/api/ideas', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-app.use('/api/ideas', ideasRouter(requireAuth));
+app.use('/api/ideas', ideasRouter(requireAuth, auditLogService));
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Leads Routes (Demo Request — público, sem auth)
@@ -3145,7 +3248,7 @@ const roadmapsRouter = require('./routes/roadmaps');
 app.use('/api/roadmaps', roadmapsRouter(dataStore, { requireAuth }));
 
 // ── Voting Routes ──
-setupVotingRoutes(app, { requireAuth, dataStore });
+setupVotingRoutes(app, { requireAuth, dataStore, auditLogService });
 
 // Catch-all -> SPA
 // ── Quotes / Orçamentos ──
@@ -3165,6 +3268,17 @@ app.get('/api/quotes/:id', async (req, res) => {
 app.post('/api/quotes', async (req, res) => {
   const newQuote = { ...req.body, quoteId: `quote-${Date.now()}`, createdAt: new Date().toISOString() };
   await dataStore.saveQuote(newQuote);
+
+  auditLogService.log({
+    entityType: 'quote',
+    entityId: newQuote.quoteId,
+    action: 'create',
+    actor: req.body.actor || 'dashboard',
+    source: req.body.source || 'dashboard',
+    after: newQuote,
+    description: `Criou cotação "${newQuote.projectName || newQuote.clientName || newQuote.quoteId}"`,
+  });
+
   res.json(newQuote);
 });
 
@@ -3172,13 +3286,39 @@ app.put('/api/quotes/:id', async (req, res) => {
   const quotes = await dataStore.getQuotes();
   const idx = quotes.findIndex(q => q.quoteId === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Orçamento não encontrado' });
-  const updated = { ...quotes[idx], ...req.body, updatedAt: new Date().toISOString() };
+  const existing = quotes[idx];
+  const updated = { ...existing, ...req.body, updatedAt: new Date().toISOString() };
   await dataStore.saveQuote(updated);
+
+  auditLogService.log({
+    entityType: 'quote',
+    entityId: updated.quoteId,
+    action: 'update',
+    actor: req.body.actor || 'dashboard',
+    source: req.body.source || 'dashboard',
+    before: existing,
+    after: updated,
+    description: `Atualizou cotação "${updated.projectName || updated.clientName || updated.quoteId}"`,
+  });
+
   res.json(updated);
 });
 
 app.delete('/api/quotes/:id', async (req, res) => {
+  const quotes = await dataStore.getQuotes();
+  const existing = quotes.find(q => q.quoteId === req.params.id);
   await dataStore.deleteQuote(req.params.id);
+  if (existing) {
+    auditLogService.log({
+      entityType: 'quote',
+      entityId: existing.quoteId,
+      action: 'delete',
+      actor: req.body?.actor || req.query.actor || 'dashboard',
+      source: req.body?.source || req.query.source || 'dashboard',
+      before: existing,
+      description: `Excluiu cotação "${existing.projectName || existing.clientName || existing.quoteId}"`,
+    });
+  }
   res.json({ success: true });
 });
 
@@ -5120,6 +5260,56 @@ app.get('/api/luna/undo/stack', async (req, res) => {
 });
 
 // ============================================================
+// AUDIT LOG / LIXEIRA — Dashboard Pro
+// ============================================================
+app.get('/api/audit-log', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const result = auditLogService.list({
+      limit,
+      entityType: req.query.entityType,
+      action: req.query.action,
+      actor: req.query.actor,
+      source: req.query.source,
+      includeRestored: req.query.includeRestored === 'true',
+    });
+    res.json({ success: true, data: result, stats: auditLogService.getStats() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get('/api/audit-log/trash', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const result = auditLogService.listTrash({ limit, entityType: req.query.entityType });
+    res.json({ success: true, data: result });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/audit-log/undo-last', async (req, res) => {
+  try {
+    const { actor } = req.body;
+    if (!actor) return res.status(400).json({ success: false, error: 'actor obrigatório' });
+    const result = await auditLogService.undoLast(actor, { actions: req.body.actions });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/audit-log/restore/:id', async (req, res) => {
+  try {
+    const result = await auditLogService.restoreEntry(req.params.id, { actor: req.body.actor || 'api', via: 'dashboard' });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================
 // POST /api/luna/chat — MODO CONCIERGE v19.0
 // IntentParser (regex/LLM) → ActionExecutor → resposta humanizada
 // LLM usado APENAS como fallback para conversas sociais
@@ -6848,6 +7038,17 @@ app.post('/api/links', async (req, res) => {
     };
 
     await dataStore.saveLink(newLink);
+
+    auditLogService.log({
+      entityType: 'link',
+      entityId: newLink.id,
+      action: 'create',
+      actor: req.body.actor || author || 'dashboard',
+      source: req.body.source || 'dashboard',
+      after: newLink,
+      description: `Adicionou link "${newLink.url}"`,
+    });
+
     res.status(201).json({ success: true, link: newLink });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -6857,7 +7058,20 @@ app.post('/api/links', async (req, res) => {
 // DELETE /api/links/:id
 app.delete('/api/links/:id', async (req, res) => {
   try {
+    const result = await dataStore.getLinks();
+    const existing = result.links.find(l => l.id === req.params.id);
     await dataStore.deleteLink(req.params.id);
+    if (existing) {
+      auditLogService.log({
+        entityType: 'link',
+        entityId: existing.id,
+        action: 'delete',
+        actor: req.body?.actor || req.query.actor || 'dashboard',
+        source: req.body?.source || req.query.source || 'dashboard',
+        before: existing,
+        description: `Excluiu link "${existing.url}"`,
+      });
+    }
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -6872,6 +7086,18 @@ app.put('/api/links/:id', async (req, res) => {
     if (!existing) return res.status(404).json({ success: false, error: 'Link não encontrado' });
     const updated = { ...existing, ...req.body, updatedAt: new Date().toISOString() };
     await dataStore.saveLink(updated);
+
+    auditLogService.log({
+      entityType: 'link',
+      entityId: updated.id,
+      action: 'update',
+      actor: req.body.actor || 'dashboard',
+      source: req.body.source || 'dashboard',
+      before: existing,
+      after: updated,
+      description: `Atualizou link "${updated.url}"`,
+    });
+
     res.json({ success: true, link: updated });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -7456,6 +7682,16 @@ app.post('/api/leads', async (req, res) => {
     };
     await dataStore.saveLead(lead);
 
+    auditLogService.log({
+      entityType: 'lead',
+      entityId: lead.id,
+      action: 'create',
+      actor: req.body.actor || 'dashboard',
+      source: source || 'dashboard',
+      after: lead,
+      description: `Criou lead "${lead.displayName}"`,
+    });
+
     // Notificar Telegram
     try {
       if (taskNotifier?.sendLeadNotification) {
@@ -7501,6 +7737,16 @@ app.post('/api/internal/leads', async (req, res) => {
     };
     await dataStore.saveLead(lead);
 
+    auditLogService.log({
+      entityType: 'lead',
+      entityId: lead.id,
+      action: 'create',
+      actor: req.body.actor || 'luna-agent',
+      source: 'luna-agent',
+      after: lead,
+      description: `Criou lead "${lead.displayName}" (via agente)`,
+    });
+
     // Notificar Telegram
     try {
       if (taskNotifier?.sendLeadNotification) {
@@ -7533,6 +7779,18 @@ app.put('/api/leads/:id', async (req, res) => {
     }
     updated.updatedAt = new Date().toISOString();
     await dataStore.saveLead(updated);
+
+    auditLogService.log({
+      entityType: 'lead',
+      entityId: updated.id,
+      action: 'update',
+      actor: req.body.actor || 'dashboard',
+      source: req.body.source || 'dashboard',
+      before: existing,
+      after: updated,
+      description: `Atualizou lead "${updated.displayName || existing.displayName}"`,
+    });
+
     res.json({ success: true, lead: updated });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -7598,7 +7856,20 @@ Pasta padrão do workspace NEXO.
 // DELETE /api/leads/:id — Remover lead
 app.delete('/api/leads/:id', async (req, res) => {
   try {
+    const leads = await dataStore.getLeads();
+    const existing = leads.find(l => l.id === req.params.id);
     await dataStore.deleteLead(req.params.id);
+    if (existing) {
+      auditLogService.log({
+        entityType: 'lead',
+        entityId: existing.id,
+        action: 'delete',
+        actor: req.body?.actor || req.query.actor || 'dashboard',
+        source: req.body?.source || req.query.source || 'dashboard',
+        before: existing,
+        description: `Excluiu lead "${existing.displayName}"`,
+      });
+    }
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });

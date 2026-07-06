@@ -676,7 +676,7 @@ async function executeToolCall(toolCall, currentIdeaId, reqUser) {
 // MIDDLEWARE FACTORY (router recebe requireAuth do server.js)
 // As rotas especificas (templates, stats, from-template) DEVEM vir antes de /:id
 // ============================================================================
-module.exports = function(requireAuth) {
+module.exports = function(requireAuth, auditLogService) {
 
   // ==========================================================================
   // 1. GET /api/ideas - Listar ideias com filtros, busca full-text, paginacao
@@ -925,6 +925,18 @@ module.exports = function(requireAuth) {
 
       backupJSON(IDEAS_FILE);
       await saveIdeasData(ideasData);
+
+      if (auditLogService) {
+        auditLogService.log({
+          entityType: 'idea',
+          entityId: newIdea.id,
+          action: 'create',
+          actor: req.user?.id || req.user?.userId || 'dashboard',
+          source: 'dashboard',
+          after: newIdea,
+          description: `Criou ideia "${newIdea.title}"`,
+        });
+      }
 
       res.status(201).json({ success: true, data: { idea: newIdea } });
 
@@ -1233,6 +1245,7 @@ module.exports = function(requireAuth) {
         return res.status(404).json({ success: false, error: 'Ideia nao encontrada' });
       }
 
+      const beforeIdea = JSON.parse(JSON.stringify(idea));
       const oldSnapshot = {
         title: idea.title,
         status: idea.status,
@@ -1353,6 +1366,19 @@ module.exports = function(requireAuth) {
       backupJSON(IDEAS_FILE);
       await saveIdeasData(ideasData);
 
+      if (auditLogService) {
+        auditLogService.log({
+          entityType: 'idea',
+          entityId: idea.id,
+          action: 'update',
+          actor: req.user?.id || req.user?.userId || 'dashboard',
+          source: 'dashboard',
+          before: beforeIdea,
+          after: idea,
+          description: `Atualizou ideia "${idea.title}"`,
+        });
+      }
+
       res.json({ success: true, data: { idea } });
 
     } catch (err) {
@@ -1379,6 +1405,7 @@ module.exports = function(requireAuth) {
         return res.status(400).json({ success: false, error: 'Ideia ja esta arquivada' });
       }
 
+      const beforeIdea = JSON.parse(JSON.stringify(idea));
       idea.status = 'arquivada';
       idea.updatedAt = new Date().toISOString();
 
@@ -1395,6 +1422,19 @@ module.exports = function(requireAuth) {
       ideasData.ideas[ideaId] = idea;
       backupJSON(IDEAS_FILE);
       await saveIdeasData(ideasData);
+
+      if (auditLogService) {
+        auditLogService.log({
+          entityType: 'idea',
+          entityId: idea.id,
+          action: 'update',
+          actor: req.user?.id || req.user?.userId || 'dashboard',
+          source: 'dashboard',
+          before: beforeIdea,
+          after: idea,
+          description: `Arquivou ideia "${idea.title}"`,
+        });
+      }
 
       res.json({
         success: true,

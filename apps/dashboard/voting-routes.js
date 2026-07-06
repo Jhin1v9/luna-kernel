@@ -76,7 +76,7 @@ async function executeVotingTool(toolRegistry, toolName, toolParams) {
   return await tool(toolParams);
 }
 
-module.exports = function(app, { requireAuth, dataStore }) {
+module.exports = function(app, { requireAuth, dataStore, auditLogService }) {
   const toolRegistry = createToolRegistry(dataStore);
 
   // Helper: enrich session with votes
@@ -177,6 +177,18 @@ module.exports = function(app, { requireAuth, dataStore }) {
 
       await dataStore.saveVotingSession(newSession);
 
+      if (auditLogService) {
+        auditLogService.log({
+          entityType: 'votingSession',
+          entityId: newSession.id,
+          action: 'create',
+          actor: req.user?.userId || 'dashboard',
+          source: 'dashboard',
+          after: newSession,
+          description: `Criou votação "${newSession.title}"`,
+        });
+      }
+
       // Notificar Telegram
       if (telegramNotifier?.sendVotingNotification) {
         telegramNotifier.sendVotingNotification({ type: 'new', session: { ...newSession, votes: buildVotesObject([]) } }).catch(() => {});
@@ -201,6 +213,7 @@ module.exports = function(app, { requireAuth, dataStore }) {
         return res.status(400).json({ error: 'Cannot edit a closed session' });
       }
       const updates = req.body;
+      const beforeSession = JSON.parse(JSON.stringify(session));
       const updated = {
         ...session,
         title: updates.title !== undefined ? updates.title : session.title,
@@ -212,6 +225,20 @@ module.exports = function(app, { requireAuth, dataStore }) {
         updatedAt: new Date().toISOString()
       };
       await dataStore.saveVotingSession(updated);
+
+      if (auditLogService) {
+        auditLogService.log({
+          entityType: 'votingSession',
+          entityId: updated.id,
+          action: 'update',
+          actor: req.user?.userId || 'dashboard',
+          source: 'dashboard',
+          before: beforeSession,
+          after: updated,
+          description: `Atualizou votação "${updated.title}"`,
+        });
+      }
+
       res.json({ ...updated, votes: buildVotesObject(await dataStore.getVotingVotes(req.params.id)) });
     } catch (err) {
       console.error('[API] Error updating session:', err);
@@ -378,8 +405,24 @@ module.exports = function(app, { requireAuth, dataStore }) {
         return res.status(400).json({ error: 'Cannot delete a closed session' });
       }
       // Soft delete by updating status
-      await dataStore.saveVotingSession({ ...session, status: 'deleted', updatedAt: new Date().toISOString() });
-      res.json({ message: 'Session deleted', session });
+      const beforeSession = JSON.parse(JSON.stringify(session));
+      const updated = { ...session, status: 'deleted', updatedAt: new Date().toISOString() };
+      await dataStore.saveVotingSession(updated);
+
+      if (auditLogService) {
+        auditLogService.log({
+          entityType: 'votingSession',
+          entityId: updated.id,
+          action: 'update',
+          actor: req.user?.userId || 'dashboard',
+          source: 'dashboard',
+          before: beforeSession,
+          after: updated,
+          description: `Excluiu votação "${updated.title}"`,
+        });
+      }
+
+      res.json({ message: 'Session deleted', session: updated });
     } catch (err) {
       res.status(500).json({ error: 'Internal server error' });
     }

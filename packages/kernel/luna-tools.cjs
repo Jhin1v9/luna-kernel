@@ -29,17 +29,22 @@ const lunaConfig = require('./config/luna-config');
 const LUNA_TMP_DIR = lunaConfig.PATHS.tmp;
 lunaConfig.ensureDir(LUNA_TMP_DIR);
 
-// Load .env from dashboard backend (dynamic path)
-const ENV_PATH = path.join(lunaConfig.NEXO_DIR, 'backend', '.env');
-if (fs.existsSync(ENV_PATH)) {
-  fs.readFileSync(ENV_PATH, 'utf8').split('\n').forEach(line => {
-    const eq = line.indexOf('=');
-    if (eq > 0 && !line.startsWith('#')) {
-      const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim();
-      if (key && process.env[key] === undefined) process.env[key] = val;
-    }
-  });
+// Load .env from dashboard (dynamic path)
+const ENV_PATHS = [
+  path.join(lunaConfig.NEXO_DIR, 'backend', '.env'),
+  path.join(lunaConfig.NEXO_DIR, '.env'),
+];
+for (const ENV_PATH of ENV_PATHS) {
+  if (fs.existsSync(ENV_PATH)) {
+    fs.readFileSync(ENV_PATH, 'utf8').split('\n').forEach(line => {
+      const eq = line.indexOf('=');
+      if (eq > 0 && !line.startsWith('#')) {
+        const key = line.slice(0, eq).trim();
+        const val = line.slice(eq + 1).trim();
+        if (key && process.env[key] === undefined) process.env[key] = val;
+      }
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1367,9 +1372,9 @@ function openDebugTerminal(params = {}) {
 // 11. DASHBOARD TOOLS (API REST localhost:3456)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const DASHBOARD_BASE = 'http://localhost:3456/api';
+const DASHBOARD_BASE = process.env.DASHBOARD_API_URL || 'https://vps.nexo-digital.app:3501/api';
 function getInternalApiToken() {
-  return process.env.INTERNAL_API_TOKEN || '';
+  return process.env.DASHBOARD_INTERNAL_API_TOKEN || process.env.INTERNAL_API_TOKEN || '';
 }
 
 async function dashboardApi(path, method = 'GET', body = null) {
@@ -2387,6 +2392,64 @@ async function dashboardDeleteVotingSession(params) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// AUDIT LOG / LIXEIRA DO DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function dashboardListRecentChanges(params) {
+  const query = new URLSearchParams();
+  query.set('limit', String(params.limit || 20));
+  if (params.entityType) query.set('entityType', params.entityType);
+  if (params.action) query.set('action', params.action);
+  const result_data = await dashboardApi(`/audit-log?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
+  const entries = data.data || [];
+  if (entries.length === 0) return ok({ stdout: '📜 Nenhuma alteração recente no dashboard.' });
+  const lines = entries.map(e => {
+    const emoji = e.action === 'delete' ? '🗑️' : e.action === 'update' ? '✏️' : '🆕';
+    const when = new Date(e.timestamp).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return `${emoji} ${when} · ${e.description} (${e.entityType})`;
+  }).join('\n');
+  return ok({ stdout: `📜 Últimas alterações do dashboard:\n${lines}` });
+}
+
+async function dashboardListTrash(params) {
+  const query = new URLSearchParams();
+  query.set('limit', String(params.limit || 30));
+  if (params.entityType) query.set('entityType', params.entityType);
+  const result_data = await dashboardApi(`/audit-log/trash?${query.toString()}`);
+  if (!result_data.success) return result_data;
+  const data = result_data.data;
+  const entries = data.data || [];
+  if (entries.length === 0) return ok({ stdout: '🗑️ Lixeira vazia. Nada para restaurar.' });
+  const lines = entries.map((e, i) => {
+    const when = new Date(e.timestamp).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const title = e.beforeSnapshot?.title || e.beforeSnapshot?.displayName || e.beforeSnapshot?.name || e.entityId;
+    return `${i + 1}. 🗑️ ${when} · ${e.entityType} "${title}" — ID histórico: \`${e.id}\``;
+  }).join('\n');
+  return ok({ stdout: `🗑️ Lixeira do dashboard (${entries.length} itens):\n${lines}\n\nPara restaurar, digite: *restaurar <número>* ou *restaurar <id do histórico>*` });
+}
+
+async function dashboardUndoLastChange(params) {
+  const actor = params.actor || 'telegram';
+  const result = await dashboardApi('/audit-log/undo-last', 'POST', { actor, actions: params.actions || ['delete', 'update'] });
+  if (!result.success) return result;
+  const data = result.data;
+  if (!data.success) return { success: false, error: data.error };
+  return ok({ stdout: `↩️ ${data.message}\nEntidade: ${data.entityType} · Ação desfeita: ${data.action}` });
+}
+
+async function dashboardRestoreItem(params) {
+  const id = params.id || params.auditId || params.historicoId;
+  if (!id) return err('ID do histórico é obrigatório. Use o ID mostrado na lixeira.');
+  const result = await dashboardApi(`/audit-log/restore/${id}`, 'POST', { actor: params.actor || 'telegram' });
+  if (!result.success) return result;
+  const data = result.data;
+  if (!data.success) return { success: false, error: data.error };
+  return ok({ stdout: `♻️ ${data.message}\nEntidade: ${data.entityType} · ID restaurado: ${data.restoredId}` });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD TOOLS — ROADMAPS & METAS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2637,6 +2700,11 @@ module.exports = {
   dashboardCreateVotingSession,
   dashboardVoteInSession,
   dashboardDeleteVotingSession,
+  // Dashboard — Audit Log / Lixeira
+  dashboardListRecentChanges,
+  dashboardListTrash,
+  dashboardUndoLastChange,
+  dashboardRestoreItem,
   // Dashboard — Roadmaps & Metas
   dashboardListRoadmaps,
   dashboardGetRoadmap,

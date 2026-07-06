@@ -987,13 +987,28 @@ class KimiBridge {
   }
 
   /**
+   * v10.41-fix: Detect when the provider says the conversation reached its
+   * context limit. Used by sendMessage/sendMessageStream to surface the flag
+   * so callers can start a new chat only when actually needed.
+   */
+  _isContextLimitResponse(response) {
+    if (!response) return false;
+    const contextLimitRegex = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i;
+    return contextLimitRegex.test(response);
+  }
+
+  /**
    * v10.36-fix: Close stale provider landing-page tabs after migrating to a
    * new chat tab. Keeps only the active logged-in tab open so the user does not
    * see a deslogada page left behind.
+   * v10.40-fix: Also close previous provider chat threads belonging to the same
+   * Luna user so new chats do not pile up tabs in Chrome (Telegram mode sends
+   * newChat for every turn).
    */
   async _closeStaleProviderTabs(context, keepPage, provider = 'kimi') {
-    if (!context) return;
+    if (!context || !keepPage) return;
     const providerDomain = this._providerDomain(provider);
+    const keepUserId = keepPage._lunaUserId;
     const pages = context.pages();
     for (const p of pages) {
       if (p === keepPage || p.isClosed()) continue;
@@ -1002,9 +1017,15 @@ class KimiBridge {
         if (!url.includes(providerDomain)) continue;
         // Close landing/new-chat pages that are not real chat threads.
         // Real threads contain /chat/<id>.
-        if (url.includes('chat_enter_method=new_chat') && !url.includes('/chat/')) {
+        const isStaleLanding = url.includes('chat_enter_method=new_chat') && !url.includes('/chat/');
+        // Close managed chat threads owned by the same Luna user. This prevents
+        // an infinite stack of Kimi tabs when each Telegram message opens a
+        // fresh chat. Tabs without _lunaUserId are left alone to avoid killing
+        // manually opened provider pages.
+        const sameUserManaged = keepUserId && p._lunaUserId === keepUserId;
+        if (isStaleLanding || sameUserManaged) {
           await p.close();
-          log.info(`[_closeStaleProviderTabs] Closed stale landing tab: ${url}`);
+          log.info(`[_closeStaleProviderTabs] Closed stale provider tab: ${url} (landing=${isStaleLanding}, sameUser=${sameUserManaged})`);
         }
       } catch (e) {
         // ignore
@@ -3988,10 +4009,19 @@ class KimiBridge {
 
       log.success(`Response ready for user ${hashUserId(userId)} (len=${response.length})`);
 
+      // v10.41-fix: Surface context-limit flag so the Telegram pipeline can
+      // decide whether to start a fresh chat. Prevents throwing away context
+      // on every turn when newChat is false by default.
+      const isContextLimit = this._isContextLimitResponse(response);
+      if (isContextLimit) {
+        log.warn(`[sendMessage] Context limit detected for user ${hashUserId(userId)}`);
+      }
+
       return {
         response,
         chatUrl: session.chatUrl,
         mode: session.mode,
+        contextLimit: isContextLimit,
       };
     } catch (err) {
       // Try to clear input on error so next message doesn't have leftover text
@@ -7768,7 +7798,7 @@ class KimiBridge {
         }
       }
 
-      const isContextLimit = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i.test(finalResponse);
+      const isContextLimit = this._isContextLimitResponse(finalResponse);
       if (isContextLimit) {
         log.warn(`[sendMessageStream] Context limit detected`);
         yield { type: 'context_limit', response: finalResponse, thinking: lastThinking };

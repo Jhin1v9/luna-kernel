@@ -296,6 +296,34 @@ const DASHBOARD_TOOL_REGISTRY = {
     ],
   },
 
+  historico: {
+    label: 'Histórico',
+    emoji: '🕒',
+    description: 'Audit log, lixeira e restauração de alterações do dashboard.',
+    tools: [
+      {
+        name: 'dashboardListRecentChanges',
+        description: 'Lista as alterações recentes no dashboard (criações, atualizações, exclusões).',
+        params: ['limit', 'entityType', 'action'],
+      },
+      {
+        name: 'dashboardListTrash',
+        description: 'Mostra a lixeira do dashboard com itens excluídos que podem ser restaurados.',
+        params: ['limit', 'entityType'],
+      },
+      {
+        name: 'dashboardUndoLastChange',
+        description: 'Desfaz a última alteração feita pelo usuário no dashboard.',
+        params: ['actor', 'actions'],
+      },
+      {
+        name: 'dashboardRestoreItem',
+        description: 'Restaura um item específico a partir do ID do histórico (audit log).',
+        params: ['id', 'actor'],
+      },
+    ],
+  },
+
   links: {
     label: 'Links',
     emoji: '🔗',

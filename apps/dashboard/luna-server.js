@@ -62,6 +62,39 @@ const JWT_SECRET = config.AUTH.jwtSecret;
 const JWT_EXPIRES_IN = config.AUTH.jwtExpiresIn;
 const USERS_FILE = path.join(__dirname, 'data', 'users.json');
 
+// Ensure default users exist so login works out-of-the-box
+const DEFAULT_PASSWORD_HASH = '$2b$10$KnJlQTb9opcUu2EVPkw56ez410v9.LNBFLNGV200EiXskvMjjnUla'; // hash de '7741'
+(function ensureDefaultUsers() {
+  try {
+    let data = { users: {} };
+    if (fs.existsSync(USERS_FILE)) {
+      data = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
+    }
+    if (!data.users) data.users = {};
+    let changed = false;
+    for (const key of ['abner', 'nonoke', 'elias']) {
+      if (!data.users[key]) {
+        data.users[key] = {
+          name: key.charAt(0).toUpperCase() + key.slice(1),
+          role: 'Admin',
+          color: '#3742fa',
+          passwordHash: DEFAULT_PASSWORD_HASH,
+        };
+        changed = true;
+      } else if (!data.users[key].passwordHash && !data.users[key].password) {
+        data.users[key].passwordHash = DEFAULT_PASSWORD_HASH;
+        changed = true;
+      }
+    }
+    if (changed) {
+      fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
+      console.log('[INIT] Default users ensured in', USERS_FILE);
+    }
+  } catch (e) {
+    console.error('[INIT] Failed to ensure default users:', e.message);
+  }
+})();
+
 // ── Auth helpers (copied from Dashboard server.js) ──
 function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
