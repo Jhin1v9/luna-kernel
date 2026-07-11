@@ -57,3 +57,5 @@ packages/kernel/current_session
 packages/kernel/session_index.json
 packages/data/
 packages/kernel/.brain/.pending-commits
+packages/kernel/.brain/.pending-commits.inflight
+packages/kernel/.brain/.sync.lock
