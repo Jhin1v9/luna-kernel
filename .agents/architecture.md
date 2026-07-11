@@ -101,7 +101,7 @@ via the Kimi UI mode selector (Kimi only); for DeepSeek the mode is stored but n
 switch happens. Mode URLs come from `provider-configs/*.json`
 (e.g. kimi instant: `https://www.kimi.com/en?chat_enter_method=new_chat`; agent:
 `https://www.kimi.com/agent?lang=en`; swarm: `https://www.kimi.com/agent-swarm?lang=en`),
-with fallbacks in `config/luna-config.js` (`KIMI.modeUrls`) and `kimi-bridge.cjs:69`.
+with fallbacks in `packages/kernel/config/luna-config.js` (`KIMI.modeUrls`) and `kimi-bridge.cjs:69`.
 
 ## Compaction
 

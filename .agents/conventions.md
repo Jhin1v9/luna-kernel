@@ -24,8 +24,8 @@ pnpm workspaces (`pnpm-workspace.yaml`): `packages/*`, `apps/*`, `packages/kerne
 ```bash
 corepack pnpm install        # install all workspaces
 corepack pnpm build          # builds luna-web (corepack pnpm -r build)
-corepack pnpm dev:kernel     # Vite dev server for the web UI (:5173)
-corepack pnpm dev:dashboard  # Luna backend (:3458)
+corepack pnpm --filter luna-web dev  # Vite dev server (:5173)
+corepack pnpm dev:dashboard          # Luna backend (:3458)
 
 pm2 start pm2-ecosystem.config.js   # production
 pm2 save
@@ -60,7 +60,7 @@ via dotenv) and `packages/kernel/.env`. `config/luna-config.js` also points
   `node packages/kernel/tests/url-landing.test.cjs` (covers `normalizeBaseUrl` /
   landing-URL comparison). All tests pass as of 2026-07-11.
 - `apps/dashboard/__tests__/*.test.js` — Jest suite (`apps/dashboard/jest.config.js`;
-  ~18 files: users, leads, tasks, payments, …). Run from `apps/dashboard` with
+  18 files: users, leads, tasks, payments, …). Run from `apps/dashboard` with
   `npx jest` (no `test` script is declared in `apps/dashboard/package.json`; the root
   `corepack pnpm test` maps to `pnpm -r test` and currently has nothing to run).
 

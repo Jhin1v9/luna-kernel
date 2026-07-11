@@ -42,7 +42,7 @@ safe**; nothing was lost.
   (`provider-configs/kimi.json`; bridge defaults at kimi-bridge.cjs:69-70) — so a login
   redirect or locale drift breaks new-chat detection.
 - **agent/swarm mode active**: `sendMessageNoWait` throws for agent/swarm modes
-  (kimi-bridge.cjs:4049). The checkpoint is sent with `mode: 'thinking'` explicitly, but
+  (kimi-bridge.cjs:4050). The checkpoint is sent with `mode: 'thinking'` explicitly, but
   a broken mode switch earlier can leave the page in a bad state — navigate the Kimi tab
   back to the base URL and retry.
 
