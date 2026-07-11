@@ -1,6 +1,7 @@
 # Architecture Decisions
 
-> Living document. Dates are verifiable in `git log` unless marked otherwise.
+> Living document. Updated by luna-brain-sync and by the owner manually.
+> Dates are verifiable in `git log` unless marked otherwise.
 
 ## Plan Mode ("Detective Mode") implementation decisions
 
@@ -19,7 +20,7 @@
 ## Dated decisions
 
 - **2026-06-08 — Lazy Connect (v10.0 bridge refactor).** Commit 4658522 rewrote the Luna-Kimi bridge modularly with lazy connect: the server starts without Chrome and attaches when the browser becomes available, so a missing browser no longer blocks boot.
-- **2026-06-26→29 — Multi-provider via `provider-configs/*.json`.** Kimi + DeepSeek configs merged into main (commits 8bf463f, 849c972, 0af5686; files in `packages/kernel/provider-configs/`). Agent/swarm modes remain Kimi-only — their mode URLs point at `kimi.com/agent*` in `kimi-bridge.cjs`.
+- **2026-06-26 – 2026-06-29 — Multi-provider via `provider-configs/*.json`.** Kimi + DeepSeek configs merged into main (commits 8bf463f, 849c972, 0af5686; files in `packages/kernel/provider-configs/`). Agent/swarm modes remain Kimi-only — their mode URLs point at `kimi.com/agent*` in `kimi-bridge.cjs`.
 - **2026-07-04 — Compaction 100% manual.** Commit 18a569a removed all automatic compaction triggers; compaction now only runs through the manual flow (`/api/luna/compact`, repaired in a7a4eb6). (Owner record dated this 2026-07-03; git shows 2026-07-04 00:09 +0200.)
 - **2026-07-03 — "Luna Mirror" identity frame.** Kimi K2.6 refused the "you control the computer" identity, so the prompt reframes the model as a senior DevOps engineer producing JSON that the "Luna-Mirror" system executes. The framing is present in `packages/kernel/LUNA_MASTER_PROMPT.md` and `luna-soul.cjs`; the refusal episode itself is owner record, not in git.
 - **2026-07-04 — Monorepo pnpm merge.** Commit d306834 merged the dashboard into the kernel workspace: `packages/kernel` + `apps/dashboard` under one pnpm workspace (`pnpm-workspace.yaml`).
