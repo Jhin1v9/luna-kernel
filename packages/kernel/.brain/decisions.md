@@ -29,3 +29,26 @@
 - **2026-07-11 — Docs split by audience.** `.agents/` + `.brain/` are written in English for AI agents; the human-facing guide is in Spanish. Motive: each audience reads its own language without duplicated documents.
 - **2026-07-11 — Old audits (v10.8/v10.32) declared unreliable.** They are not a source of truth for bugs; the bug list in `.brain/bugs.md` will be rebuilt manually by the owner, verified against code.
 - **2026-07-11 — Living memory automated via post-commit hook.** Commit 71a5740 added `.githooks/post-commit` + `scripts/luna-brain-sync.sh`: after each commit an agent rewrites `.brain/` from the diff, so `changelog.md` is no longer hand-edited. Hardened in 81d0158 (snapshot queue, dead-hash skip, injection guard, flock). Motive: keep `.brain/` current without relying on manual discipline.
+
+## 2026-07-11 — External architecture review (ChatGPT) evaluated by owner + code agent
+
+The review reframed Luna as an "agent runtime" (kernel + pluggable providers) and proposed frontend decomposition. Evaluated item by item against the actual codebase:
+
+**ACCEPTED (direction, scheduled in the fix plan):**
+
+- **Provider abstraction as the end state** — "Luna never talks to a model, she talks to a Provider (`provider.send(messages)`)". This is the natural completion of the multi-provider work (2026-06-26..29, `provider-configs/*.json`). Caveat the review missed: our providers are NOT uniform — Kimi/DeepSeek are browser-scraped (login, DOM, streaming by polling), API providers (OpenAI/Claude/Gemini) are request/response with native tool-calling. The Provider interface must absorb both worlds (stream of events + tool-call normalization), not pretend they're identical. Phased: after the flow bugs are fixed and the tool registry exists.
+- **Single tool registry, frontend derives from it** — replacing `TOOL_COLORS`/`TOOL_ICONS` maps with one registry. We go further: the frontend registry must be GENERATED from (or fetched from) the backend tool registry (Phase 1 of modularization), otherwise we create a 5th source of truth for tool names (today there are 4, already desynced — see bugs.md guard entry).
+- **ChatArea.svelte (1530 lines) and ToolCard.svelte decomposition** — confirmed by our own audit (reset logic duplicated 4x, dead code, leaks). Decompose into StreamingManager/ToolManager/EventParser etc. AFTER the rendering bugs are fixed and behavior is pinned by tests. Refactoring on top of broken behavior hides regressions.
+- **UX: human tool labels, output collapsed by default, per-tool icons, mini-app actions (view diff, copy, rerun), visible-mode toggle instead of `/visible`** — all accepted as a dedicated frontend phase. Pragmatic scope: a few specialized cards (terminal, file read, file edit/diff, search) + registry-driven generic card, NOT 120 custom components.
+
+**DEFERRED (right idea, wrong time):**
+
+- **Rename "Luna Soul" → "Luna Kernel / Agent Runtime"** — accurate (she is the OS, not the personality), but pure churn today: pm2 config, imports, docs. Falls out naturally in modularization Phase 4 (soul becomes the thin orchestrator).
+- **"Multiple agents, one per concern" (multi-agent runtime)** — the review's framing, and an old internal draft (`PLANO_AGENTES_LUNA.md`, since deleted) went there too. YAGNI now: provider abstraction + tool registry + decomposed frontend deliver ~80% of the value at ~20% of the risk. Revisit when the kernel is modular.
+
+**REJECTED / NOTED AS WRONG FOR US:**
+
+- **Treating API providers as near-zero-cost additions** — the review assumes swapping Kimi→Claude→GPT changes "absolutely nothing" in execution. True for the EXECUTION layer (that separation is real and was praised correctly), but the provider layer carries real per-provider cost: auth, rate limits, tool-call dialects, streaming quirks, cost controls. Each new provider is a real adapter, not a config line.
+- **Immediate ToolCard/ChatArea rewrites before bug fixes** — ordering matters: fix behavior first, pin with tests, then decompose.
+
+What the review got objectively right and we confirmed independently: LLM/execution separation is the project's strongest asset; transparency (visible command, timing, success border) is the differentiator worth doubling down on; both monoliths (ChatArea 53k chars, ToolCard 17k chars) are confirmed maintenance risks.
