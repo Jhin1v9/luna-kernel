@@ -47,7 +47,9 @@ luna
 ```
 
 Esto arranca todos los servicios y abre en el navegador la interfaz web
-(http://localhost:3458). Si prefieres ir directo al dashboard clásico:
+(http://localhost:3458). También se abre una segunda pestaña con el frontend
+de desarrollo (https://localhost:5173): puedes ignorarla o cerrarla, es solo
+para desarrolladores. Si prefieres ir directo al dashboard clásico:
 
 ```bash
 dashboard
@@ -206,6 +208,18 @@ http://localhost:9222/json
 
 - Si da error → el Chrome está caído: `pm2 restart luna-server`.
 - Si responde pero Kimi pide login → sigue la sección 5.
+
+### Si nada de esto funciona
+
+El primer paso de diagnóstico es mirar los registros (logs):
+
+```bash
+pm2 logs                # logs de todos los servicios
+pm2 logs luna-server    # solo los del servidor de Luna
+```
+
+Ahí suele verse el error exacto. Si no sabes interpretarlo, guarda lo que
+aparezca y pásaselo a Jhin.
 
 ---
 
