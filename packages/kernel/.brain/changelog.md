@@ -2,6 +2,13 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-11 65f7895] docs: fix broken links in root README — corrected three broken links in README.md
+- [2026-07-11 0f40e37] chore: remove tracked backups, old audit and screenshots — deleted ~35k lines of tracked backup copies, the old audit doc, kernel install.sh and stale screenshots
+- [2026-07-11 8da749f] docs(brain): backfill changelog for pre-hook commits — added 7 changelog entries for commits that predated the sync hook
+- [2026-07-11 b381bb3] docs(brain): fix compaction endpoint ref and stale wording in agent docs — corrected the compaction endpoint reference and stale wording across .agents docs and status.md
+- [2026-07-11 9b12f02] docs: add root AGENTS.md entrypoint for agents — added root AGENTS.md with read order and golden rules for AI agents
+- [2026-07-11 81d0158] fix(brain): harden luna-brain-sync — added snapshot queue, dead-hash skipping, prompt-injection guard and flock to the sync script
+- [2026-07-11 71a5740] feat(brain): add post-commit hook and luna-brain-sync automation — added .githooks/post-commit and scripts/luna-brain-sync.sh to update .brain/ automatically after each commit
 - [2026-07-11 d0ea264] chore: fix gitignore for current_session (file not dir) — corrected .gitignore entry to ignore current_session as a file
 - [2026-07-11 9d5644d] chore: gitignore runtime state, commit superpowers history docs — ignored runtime state files and committed superpowers plan/design history docs
 - [2026-07-11 5f81d99] chore(docs): remove obsolete prompts and pre-monorepo docs — deleted 27 legacy prompt variants, pre-monorepo docs and the luna-installer directory
