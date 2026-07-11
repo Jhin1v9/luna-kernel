@@ -1,0 +1,6 @@
+#!/bin/bash
+# Luna living-memory hook: queue the commit hash for luna-brain-sync.
+# Must be instant — never blocks the commit.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PENDING="$REPO_ROOT/packages/kernel/.brain/.pending-commits"
+git rev-parse HEAD >> "$PENDING" 2>/dev/null || true
