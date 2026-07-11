@@ -53,6 +53,6 @@ vite.config.js.timestamp-*.mjs
 # luna runtime state (per-machine, never commit)
 current_session/
 session_index.json
-packages/kernel/current_session/
+packages/kernel/current_session
 packages/kernel/session_index.json
 packages/data/
