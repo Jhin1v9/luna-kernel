@@ -62,7 +62,7 @@ luna      # abre Luna Web + Vite Dev
 dashboard # abre Nexo Dashboard
 ```
 
-Para instruções detalhadas, veja [`docs/HUMAN-GUIDE.md`](docs/HUMAN-GUIDE.md).
+Para instruções detalhadas, veja [`docs/guia-humano.md`](docs/guia-humano.md).
 
 ## 🚀 Instalação Manual
 
@@ -166,8 +166,8 @@ NEXO_DIR=/home/jhin/.luna-kernel/apps/dashboard
 
 ## 📚 Documentação
 
-- **Guia humano (liga/desliga/atalhos):** [`docs/HUMAN-GUIDE.md`](docs/HUMAN-GUIDE.md)
-- Manual de compactação: [`packages/kernel/docs/LUNA-MANUAL-COMPACTACAO-MANUAL.md`](packages/kernel/docs/LUNA-MANUAL-COMPACTACAO-MANUAL.md)
+- **Guia humano (liga/desliga/atalhos):** [`docs/guia-humano.md`](docs/guia-humano.md)
+- Compactação travou: [`.agents/runbooks/compactacao-travou.md`](.agents/runbooks/compactacao-travou.md)
 - README do kernel: [`packages/kernel/README.md`](packages/kernel/README.md)
 
 ---
