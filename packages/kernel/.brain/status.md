@@ -1,40 +1,34 @@
-# Status — Refatoração do Modo Detetive
+# Status
 
-## Resumo
-O Modo Detetive foi refatorado para um loop multi-turno real no backend. A Kimi investiga com ferramentas de leitura no PC local, vê os resultados de volta e só no final entrega o card do plano.
+> Living document — current state only, no history. Read together with `decisions.md` and `bugs.md`.
 
-## O que está funcionando
-- ✅ `/plan <mensagem>` ativa o modo e envia para `/api/plan`.
-- ✅ `Shift+Tab` / `Shift+Alt` ativam manualmente.
-- ✅ O backend executa ferramentas de leitura (`listFiles`, `viewDirectory`, `readFile`, `grep`, `searchFiles`, `getFileInfo`, `glob`, `ipython`, etc.).
-- ✅ Os resultados das ferramentas são devolvidos à Kimi para o próximo turno.
-- ✅ Após investigação suficiente (≥5 ferramentas), o backend força o plano final em JSON `{"response": "# Plano: ..."}`.
-- ✅ O plano final é persistido em `~/.luna-kernel/plans/<sessionId>.md`.
-- ✅ O frontend exibe cada ferramenta em execução e, ao final, renderiza o card com botões Aprovar/Rejeitar/Revisar.
-- ✅ Aprovação/rejeição/revisão chamam `/api/plan/approve`, `/api/plan/reject`, `/api/plan/revise`.
-- ✅ O gatilho automático `PLAN` não ativa mais o modo sozinho (v10.13-fix).
+## What Luna is
 
-## Arquivos alterados
-- `.luna-kernel/luna-soul.cjs`
-  - `processPlanModeStream` (loop multi-turno)
-  - `_buildPlanModePrompt`
-  - `_buildPlanFollowUpPrompt`
-  - `_extractPlanMarkdown`
-  - `_sanitizePlanResponse`
-  - `_formatToolResultForPlan`
-- `.luna-kernel/luna-web/src/components/ChatArea.svelte`
-  - Handler de `plan_display` / `plan_awaiting_approval` separado
-  - Atualização do `planModeState` no `plan_awaiting_approval`
-- `.luna-kernel/luna-web/src/App.svelte`
-  - Aceitar `?session=<id>` mesmo fora da lista local
-- `.luna-kernel/package.json`
-  - Adicionada dependência `glob`
+Luna is an autonomous "mirror" agent: reasoning happens inside the Kimi or DeepSeek web apps, driven through a real Chrome via CDP (:9222) by `kimi-bridge.cjs`. Luna (`luna-soul.cjs`) parses the model's JSON tool blocks and executes them on a real Linux PC — files, shell, git, dashboards — then feeds the results back for the next turn. The model never executes anything directly; Luna is the executor.
 
-## Testes realizados
-- Teste real via navegador/Playwright: a Kimi executou `listFiles`, `viewDirectory`, `readFile`, `grep`, `searchFiles`, `getFileInfo`, `glob` e gerou planos estruturados em português.
-- O arquivo de plano `~/.luna-kernel/plans/web-mq9rncnf-cn27.md` foi gerado com conteúdo markdown completo.
+## Working
 
-## Restrições / próximos passos sugeridos
-1. Persistir o plano em memória (`planModeSessions`) entre restarts do servidor para permitir aprovar após reinício.
-2. Adicionar flag no Playwright para ignorar certificado self-signed nos testes E2E.
-3. Avaliar reduzir o mínimo de ferramentas para tarefas triviais, mantendo 5 como padrão.
+- **Web chat UI** on :3458 (`luna-server`, `apps/dashboard/luna-server.js`) with the Vite dev server on :5173.
+- **Manual context compaction** — `POST /api/luna/compact` in `packages/kernel/luna-api-server.cjs`; all automatic triggers were removed (decision 2026-07-04).
+- **Telegram pipeline** — `_telegramPipeline` in `luna-soul.cjs`: intent classification → dashboard tool registry → telegram-assistant persona formatting. Runs as the `luna-telegram-adapter` pm2 process (owner's PC only).
+- **Plan mode ("Detective Mode")** — multi-turn read-only investigation loop in the backend, ending in an Approve/Reject/Revise plan card.
+- **Multi-provider** — Kimi + DeepSeek via `packages/kernel/provider-configs/*.json` (agent/swarm modes are Kimi-only).
+- **Dashboard audit log + trash** — commit c51561e: `/api/audit-log`, `/audit-log/trash`, `/audit-log/undo-last`, `/audit-log/restore/:id`, with undo/restore available from Telegram.
+
+## Known broken / risky
+
+See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits are unreliable, so bugs will be registered manually after verification against the code.
+
+## Current focus
+
+Documentation unification + living memory: `.agents/` + `.brain/` in English for AI agents, human-facing guide in Spanish.
+
+## How to run
+
+`pm2 status` should show 5 online processes:
+
+- `luna-server` — Luna API + chat backend (:3458)
+- `nexo-dashboard` — NEXO dashboard (:3456)
+- `luna-telegram-adapter` — Telegram bot (owner's PC only, not distributed)
+- `luna-vite` — Vite dev server for the web UI (:5173)
+- `luna-health-watchdog` — health monitor

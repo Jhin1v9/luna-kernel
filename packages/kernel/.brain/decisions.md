@@ -1,39 +1,29 @@
-# Decisões de Arquitetura — Modo Detetive (Plan Mode)
+# Architecture Decisions
 
-## 1. Loop multi-turno real no backend
-- **Decisão:** `processPlanModeStream` agora executa até 8 turnos. A Kimi envia uma ferramenta de leitura, o backend executa no PC local, retorna o resultado real e reenvia para a próxima inferência.
-- **Motivo:** O usuário queria investigação visível, com mínimo de 5 ferramentas, e o card do plano só no final.
-- **Arquivos:** `.luna-kernel/luna-soul.cjs` (`processPlanModeStream`, `_buildPlanModePrompt`, `_buildPlanFollowUpPrompt`, `_extractPlanMarkdown`, `_sanitizePlanResponse`).
+> Living document. Dates are verifiable in `git log` unless marked otherwise.
 
-## 2. Prompt do Modo Detetive isolado do system prompt normal
-- **Decisão:** O system prompt do modo plan é injetado como `[SYSTEM OVERRIDE — MÁXIMA PRIORIDADE]` e exige saída JSON-only com code blocks, igual ao prompt normal.
-- **Motivo:** Evitar texto livre e garantir que a Kimi use a mesma sintaxe de ferramentas JSON.
-- **Detalhe:** `ipython` e `python` foram removidos da lista proibida e mantidos na lista de ferramentas de leitura permitidas.
+## Plan Mode ("Detective Mode") implementation decisions
 
-## 3. Ferramentas de leitura apenas
-- **Decisão:** Em plan mode, write/execute são bloqueados. Permitidos: `readFile`, `glob`, `grep`, `searchFiles`, `viewDirectory`, `listFiles`, `getFileInfo`, `searchWeb`, `fetchURL`, git read-only, dashboards read-only, `ipython`, `python`, `think`.
-- **Motivo:** O Modo Detetive é investigação antes de execução; não deve modificar nada.
+(Dates not recorded — these predate this log format.)
 
-## 4. Sanitização do texto da Kimi
-- **Decisão:** `_sanitizePlanResponse` remove blocos JSON de ferramentas e seções `Think ...` que vazam para o texto de resposta.
-- **Motivo:** Evitar que a Kimi reenvie seus próprios comandos de ferramenta como conteúdo do plano.
+1. **Real multi-turn loop in the backend** — `processPlanModeStream` runs up to 8 turns: Kimi requests a read tool, the backend executes it on the local PC and feeds the real result back into the next inference. Motive: visible investigation (minimum 5 tools) with the plan card only at the end. Files: `packages/kernel/luna-soul.cjs` (`processPlanModeStream`, `_buildPlanModePrompt`, `_buildPlanFollowUpPrompt`, `_extractPlanMarkdown`, `_sanitizePlanResponse`).
+2. **Plan-mode prompt isolated from the normal system prompt** — injected as `[SYSTEM OVERRIDE — MÁXIMA PRIORIDADE]`, demanding JSON-only output with code blocks, same tool syntax as normal chat. Motive: avoid free text. `ipython`/`python` were kept in the allowed read-tools list.
+3. **Read-only tools in plan mode** — write/execute blocked; allowed: `readFile`, `glob`, `grep`, `searchFiles`, `viewDirectory`, `listFiles`, `getFileInfo`, `searchWeb`, `fetchURL`, read-only git/dashboards, `ipython`, `python`, `think`. Motive: investigate before executing; modify nothing.
+4. **Sanitize Kimi's text** — `_sanitizePlanResponse` strips tool JSON blocks and leaking `Think ...` sections before plan extraction and before adding to history. Motive: Kimi was re-sending its own tool commands as plan content.
+5. **Truncated follow-up history** — `_formatToolResultForPlan` caps each tool result at 2000 chars and the follow-up keeps only the 6 most recent events. Motive: prompts blew past 24k chars, leaving Kimi slow/unresponsive.
+6. **Force the final plan after enough investigation** — at `totalToolCalls >= 5` or 2 turns left, the follow-up becomes a direct order to produce the final JSON `{"response": "# Plano: ..."}`. Motive: guarantee the investigation ends and the card appears.
+7. **Single plan card, state in the frontend** — `plan_display` adds the plan message; `plan_awaiting_approval` only updates `planModeState`. Motive: avoid duplicate cards. Files: `packages/kernel/luna-web/src/components/ChatArea.svelte`.
+8. **Accept session via URL** — `App.svelte` sets `currentSessionId` directly from `?session=...`, regardless of whether `fetchSessions` returns it. Motive: direct links and API-created test sessions.
+9. **`glob` dependency added** — `npm install glob --save` in the kernel package. Motive: the `glob` tool failed with "Cannot find module 'glob'".
 
-## 5. Histórico truncado no follow-up
-- **Decisão:** `_formatToolResultForPlan` limita cada resultado a 2000 caracteres e o follow-up mantém apenas os 6 eventos mais recentes.
-- **Motivo:** O prompt estourava (24k+ chars) e deixava a Kimi lenta/sem resposta.
+## Dated decisions
 
-## 6. Forçar plano final após investigação suficiente
-- **Decisão:** Quando `totalToolCalls >= 5` ou faltam 2 turnos, o follow-up passa a ser uma ordem direta para produzir o JSON final `{"response": "# Plano: ..."}`.
-- **Motivo:** Garantir que a investigação termine e o card apareça.
-
-## 7. Card único e estado no frontend
-- **Decisão:** `plan_display` adiciona a mensagem do plano; `plan_awaiting_approval` apenas atualiza `planModeState`. Isso evita cards duplicados.
-- **Arquivos:** `.luna-kernel/luna-web/src/components/ChatArea.svelte`.
-
-## 8. Aceitar sessão via URL mesmo fora da lista local
-- **Decisão:** `App.svelte` agora seta `currentSessionId` diretamente quando há `?session=...`, independentemente de `fetchSessions` retornar a sessão.
-- **Motivo:** Permitir links diretos e testes com sessões criadas via API.
-
-## 9. Dependência `glob` adicionada
-- **Decisão:** `npm install glob --save` em `.luna-kernel`.
-- **Motivo:** A ferramenta `glob` falhava com "Cannot find module 'glob'".
+- **2026-06-08 — Lazy Connect (v10.0 bridge refactor).** Commit 4658522 rewrote the Luna-Kimi bridge modularly with lazy connect: the server starts without Chrome and attaches when the browser becomes available, so a missing browser no longer blocks boot.
+- **2026-06-26→29 — Multi-provider via `provider-configs/*.json`.** Kimi + DeepSeek configs merged into main (commits 8bf463f, 849c972, 0af5686; files in `packages/kernel/provider-configs/`). Agent/swarm modes remain Kimi-only — their mode URLs point at `kimi.com/agent*` in `kimi-bridge.cjs`.
+- **2026-07-04 — Compaction 100% manual.** Commit 18a569a removed all automatic compaction triggers; compaction now only runs through the manual flow (`/api/luna/compact`, repaired in a7a4eb6). (Owner record dated this 2026-07-03; git shows 2026-07-04 00:09 +0200.)
+- **2026-07-03 — "Luna Mirror" identity frame.** Kimi K2.6 refused the "you control the computer" identity, so the prompt reframes the model as a senior DevOps engineer producing JSON that the "Luna-Mirror" system executes. The framing is present in `packages/kernel/LUNA_MASTER_PROMPT.md` and `luna-soul.cjs`; the refusal episode itself is owner record, not in git.
+- **2026-07-04 — Monorepo pnpm merge.** Commit d306834 merged the dashboard into the kernel workspace: `packages/kernel` + `apps/dashboard` under one pnpm workspace (`pnpm-workspace.yaml`).
+- **2026-07-04 — Telegram bot NOT distributed to end-user installs.** Commit 44ef35f removed the telegram-bot from the repo ecosystem and made its env vars required at install: it runs only on the owner's PC.
+- **2026-07-05 — Telegram dedicated pipeline.** Commit 26838f4 added `_telegramPipeline` in `luna-soul.cjs`: classify intent → dashboard tool registry (`dashboard-tool-registry.cjs`) → telegram-assistant persona formatting, instead of routing Telegram through the generic web-chat path.
+- **2026-07-11 — Docs split by audience.** `.agents/` + `.brain/` are written in English for AI agents; the human-facing guide is in Spanish. Motive: each audience reads its own language without duplicated documents.
+- **2026-07-11 — Old audits (v10.8/v10.32) declared unreliable.** They are not a source of truth for bugs; the bug list in `.brain/bugs.md` will be rebuilt manually by the owner, verified against code.
