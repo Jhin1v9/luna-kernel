@@ -9,7 +9,7 @@ Luna is an autonomous "mirror" agent: reasoning happens inside the Kimi or DeepS
 ## Working
 
 - **Web chat UI** on :3458 (`luna-server`, `apps/dashboard/luna-server.js`) with the Vite dev server on :5173.
-- **Manual context compaction** — `POST /api/luna/compact` in `packages/kernel/luna-api-server.cjs`; all automatic triggers were removed (decision 2026-07-04).
+- **Manual context compaction** — `POST /api/luna/compact` in `apps/dashboard/luna-chat-routes.js:1913` (mounted by `luna-server.js`); `packages/kernel/luna-api-server.cjs` is only a legacy stub that simulates it. All automatic triggers were removed (decision 2026-07-04).
 - **Telegram pipeline** — `_telegramPipeline` in `luna-soul.cjs`: intent classification → dashboard tool registry → telegram-assistant persona formatting. Runs as the `luna-telegram-adapter` pm2 process (owner's PC only).
 - **Plan mode ("Detective Mode")** — multi-turn read-only investigation loop in the backend, ending in an Approve/Reject/Revise plan card.
 - **Multi-provider** — Kimi + DeepSeek via `packages/kernel/provider-configs/*.json` (agent/swarm modes are Kimi-only).

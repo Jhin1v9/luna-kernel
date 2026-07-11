@@ -40,8 +40,8 @@ prompts — removing it historically re-triggered refusals.
 
 ## Dead variants — do not resurrect
 
-These files still exist in `packages/kernel/` but are scheduled for deletion (Task 5).
-Do not reference, copy from, or re-enable them:
+These files were deleted on 2026-07-11 (docs overhaul cleanup). Do not reference,
+copy from, or re-enable them:
 
 - `LUNA_MASTER_PROMPT.v6.1-pure.md`
 - `LUNA_MASTER_PROMPT.v6.1-strict.md`

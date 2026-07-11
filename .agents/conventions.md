@@ -69,7 +69,8 @@ via dotenv) and `packages/kernel/.env`. `config/luna-config.js` also points
 - Single branch: `main`. **Only Jhin pushes.**
 - Other PCs (Pai, Nonoke) run `packages/kernel/luna-sync.sh` via cron every 5 minutes
   (`*/5 * * * *`) to `git pull`, rebuild the frontend and restart PM2 — see
-  `packages/kernel/SYNC_GUIDE.md`. Note: that script still carries pre-monorepo paths
+  `docs/guia-humano.md`, section 6 ("Sincronización entre los 3 PCs"). Note: that
+  script still carries pre-monorepo paths
   (`NEXO_DASHBOARD_DIR`, pm2 name `telegram-bot`) and needs updating; treat it as legacy.
 - Do not commit secrets; `.env` files are local-only.
 

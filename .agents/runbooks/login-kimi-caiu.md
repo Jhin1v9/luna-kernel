@@ -5,7 +5,8 @@
 - kimi.com shows the login screen inside the isolated Chrome (CDP :9222).
 - Bridge logs report login indicators / `login_required` events; requests stall.
 - Root cause: Kimi uses short-lived JWT sessions; Chrome restarts or token refresh
-  expiry invalidate them (`packages/kernel/COOKIES_KIMI.md`).
+  expiry invalidate them (previously documented in `packages/kernel/COOKIES_KIMI.md`,
+  deleted on 2026-07-11 — no longer exists).
 
 ## Check first
 

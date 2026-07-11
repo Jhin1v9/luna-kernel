@@ -38,8 +38,8 @@ a VPS deploy, or an old tmux/screen session) is polling the same token.
 - The bot runs **only on the owner's PC by design** (decision 2026-07-04, commit
   44ef35f): it is not part of end-user installs and requires `TELEGRAM_BOT_TOKEN` at
   install time.
-- Reference group (from `packages/kernel/.telegram-group-ref.md`, scheduled for deletion
-  in Task 5 — this runbook is now the canonical copy):
+- Reference group (this runbook is now the canonical copy; the old
+  `packages/kernel/.telegram-group-ref.md` was deleted on 2026-07-11):
   - **CHAT_ID: `-1003915957914`** — group "Nexo Digital" (https://t.me/+MZRRqsApkFw0OTNk,
     4 CEOs). Used for dashboard voting notifications; bot: @lunanexobot.
   - Env var: `TELEGRAM_GROUP_CHAT_ID=-1003915957914`.
