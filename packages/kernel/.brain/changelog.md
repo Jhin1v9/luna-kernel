@@ -2,6 +2,13 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-11 d0ea264] chore: fix gitignore for current_session (file not dir) — corrected .gitignore entry to ignore current_session as a file
+- [2026-07-11 9d5644d] chore: gitignore runtime state, commit superpowers history docs — ignored runtime state files and committed superpowers plan/design history docs
+- [2026-07-11 5f81d99] chore(docs): remove obsolete prompts and pre-monorepo docs — deleted 27 legacy prompt variants, pre-monorepo docs and the luna-installer directory
+- [2026-07-11 8b77531] docs: guia humano - mention dev tab 5173 and pm2 logs fallback — added Vite dev tab :5173 and pm2 logs fallback to the human guide
+- [2026-07-11 7b04a6a] docs: add unified human guide in Spanish — added docs/guia-humano.md, the single human-facing guide
+- [2026-07-11 b14e245] docs(agents): fix dev command and line references from quality review — corrected dev command and stale line references in .agents docs
+- [2026-07-11 e943b57] docs(agents): add .agents knowledge base (architecture, conventions, prompts, runbooks) — added the .agents/ knowledge base with architecture, conventions, prompts and 3 runbooks
 - [2026-07-11 637128a] docs(brain): minor consistency fixes in decisions.md — aligned wording in decisions.md after the English rewrite
 - [2026-07-11 f1dfaf3] docs(brain): consolidate bugs, decisions and status in English — rewrote bugs.md, decisions.md and status.md in concise English
 - [2026-07-11 4bbd29c] docs: spec - documentacao viva e unificacao (.agents + .brain + guia humano) — added design spec for unifying living docs across .agents, .brain and a human guide
