@@ -1,1 +1,0 @@
-# Plano: Diagnóstico \"Plano Vazio\" no Frontend Luna Web\n\n## Resumo\nO modo plano da Luna gera o conteúdo corretamente via Kimi, mas o frontend (`luna-web`) exibe \"plano vazio\". A raiz está na **pipeline de parsing → salvamento → renderização**: a resposta da Kimi vem dentro de `{\"response\": \"...\
