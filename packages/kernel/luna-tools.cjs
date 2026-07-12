@@ -25,7 +25,19 @@ const http = require('http');
 const lunaConfig = require('./config/luna-config');
 const { looksBinary } = require('./lib/text-file.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
-const { clampExecTimeout } = require('./lib/exec-timeout.cjs');
+const { clampExecTimeout, shQuote } = require('./lib/exec-timeout.cjs');
+
+// Wave3-fix D: GNU `timeout` runs the command in its own process group and
+// signals the whole group — execSync's native timeout only kills the direct
+// /bin/sh child, orphaning grandchildren. Detect once at load.
+const HAS_GNU_TIMEOUT = (() => {
+  try {
+    execSync('timeout --version', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 // v10.28-fix: Centralize runtime paths via LUNA_HOME. Auto-create dirs so the
 // Luna never fails with ENOENT on temp files across different PCs/VPS.
@@ -119,11 +131,24 @@ function err(message, extra = {}) {
 }
 
 function safeExec(cmd, opts = {}) {
+  const timeoutMs = clampExecTimeout(opts.timeout); // seconds in, ms out; default 60s, cap 600s
+  let finalCmd = cmd;
+  let execTimeout = timeoutMs;
+  if (HAS_GNU_TIMEOUT) {
+    // execSync's own timeout only SIGTERMs the direct child (/bin/sh) — the
+    // shell's children survive as orphans. GNU `timeout` runs the command in
+    // its own process group and signals the WHOLE group (TERM, then KILL
+    // after 10s), so a timed-out rg/git/npx actually dies. execSync's
+    // timeout stays as a backstop slightly larger than the wrapper.
+    const sec = Math.ceil(timeoutMs / 1000);
+    finalCmd = `timeout -k 10 ${sec} sh -c ${shQuote(cmd)}`;
+    execTimeout = timeoutMs + 15000;
+  }
   try {
-    const output = execSync(cmd, {
+    const output = execSync(finalCmd, {
       encoding: 'utf8',
       cwd: opts.cwd || process.cwd(),
-      timeout: clampExecTimeout(opts.timeout), // seconds in, ms out; default 60s, cap 600s
+      timeout: execTimeout,
       maxBuffer: opts.maxBuffer || 1024 * 1024,
       stdio: ['pipe', 'pipe', 'ignore'],
     });

@@ -322,17 +322,28 @@ test('D2: safeExec no longer defaults to an unlimited timeout (content assertion
   const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
   const fnIdx = src.indexOf('function safeExec(');
   assert.ok(fnIdx !== -1, 'safeExec must exist');
-  const body = src.slice(fnIdx, fnIdx + 600);
+  const body = src.slice(fnIdx, fnIdx + 1400);
   assert.ok(!body.includes('timeout: opts.timeout || 0'), 'safeExec must not keep the v8.5 unlimited default');
-  assert.ok(body.includes('timeout: clampExecTimeout(opts.timeout)'), 'safeExec must clamp via clampExecTimeout');
+  assert.ok(body.includes('clampExecTimeout(opts.timeout)'), 'safeExec must clamp via clampExecTimeout');
+  assert.ok(
+    body.includes('timeout -k 10') && body.includes('shQuote(cmd)'),
+    'safeExec must wrap the command in GNU timeout so the whole process group is killed'
+  );
 });
 
 test('D2: a short-timeout exec of sleep actually terminates (no 30s hang)', () => {
+  // Distinctive duration so we can identify OUR process; '[s]' keeps the
+  // pgrep pattern from matching pgrep's own command line.
   const start = Date.now();
-  const result = runTests({ command: 'sleep 30', timeout: 1 });
+  const result = runTests({ command: 'sleep 98765', timeout: 1 });
   const elapsed = Date.now() - start;
   assert.strictEqual(result.success, false, 'killed command must report success:false');
-  assert.ok(elapsed < 5000, `must abort near the 1s timeout, not wait for sleep 30 (took ${elapsed}ms)`);
+  assert.ok(elapsed < 5000, `must abort near the 1s timeout, not wait for sleep 98765 (took ${elapsed}ms)`);
+  // The whole process GROUP must be dead — execSync's native timeout only
+  // kills the direct /bin/sh child and orphans the sleep grandchild.
+  const { execSync } = require('node:child_process');
+  const survivors = execSync(`pgrep -af '[s]leep 98765' || true`, { encoding: 'utf8' }).trim();
+  assert.strictEqual(survivors, '', `timed-out process group must be dead, found: ${survivors}`);
 });
 
 test('D3: dashboardApi fetch carries a 15s AbortSignal (content assertion)', () => {
