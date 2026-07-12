@@ -589,17 +589,19 @@
         });
         
         // v9.3-fix: Decrement and check ONLY current turn's tools
-        // Wave 4: a watchdog-timed-out card already decremented the count.
+        // Wave 4: a watchdog-timed-out card already decremented the count AND
+        // already unlocked the input — a late action_end for it must not touch
+        // streaming state at all (it could kill the user's NEXT turn mid-stream).
         const wasTimedOut = lastTool ? timedOutToolIds.delete(lastTool.id) : false;
         if (!wasTimedOut) {
           pendingToolCount = Math.max(0, pendingToolCount - 1);
-        }
-        if (pendingToolCount <= 0) {
-          mascotState.set('idle');
-          mascotMessage.set('O que mais posso fazer?');
-          isStreaming.set(false);
-        } else {
-          mascotMessage.set('Próxima tool...');
+          if (pendingToolCount <= 0) {
+            mascotState.set('idle');
+            mascotMessage.set('O que mais posso fazer?');
+            isStreaming.set(false);
+          } else {
+            mascotMessage.set('Próxima tool...');
+          }
         }
         break;
       }

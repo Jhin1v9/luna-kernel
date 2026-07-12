@@ -364,4 +364,7 @@ test('T7: ChatArea wires the registry into action_start, action_end, reconnect a
   assert.ok(!src.includes('toolTimeoutTimers = new Map'), 'old dead timeout map must be gone');
   assert.ok(src.includes('toolTimers.clearAll()'), 'reconnect/destroy must cancel all timers');
   assert.ok(src.includes('onTimeout'), 'bug 1: a timeout handler must mark the tool failed');
+  // review follow-up: the double-decrement / late-action_end guard must stay wired
+  assert.ok(src.includes('timedOutToolIds'), 'timedOutToolIds guard must exist');
+  assert.ok(src.includes('const wasTimedOut = lastTool ? timedOutToolIds.delete(lastTool.id) : false;'), 'late action_end must consult the guard');
 });
