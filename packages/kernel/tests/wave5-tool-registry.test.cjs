@@ -168,3 +168,70 @@ test('P0-12: wrong-type rejects pinned for every remaining schema field', () => 
   rejects('grep', { pattern: 'foo', type: 42 }, /"type" deve ser string/);
   rejects('validateProject', { path: 42 }, /"path" deve ser string/);
 });
+
+// ── T2: registry completeness + schema-shape validity ────────────────────────
+
+test('T2: registry covers every luna-tools export + the 3 soul-only dispatched tools', () => {
+  const { TOOL_REGISTRY } = require('../lib/tool-registry.cjs');
+  const toolNames = Object.keys(require('../luna-tools.cjs'));
+  // Dispatched by luna-soul.cjs outside the export map (:4579-4586, :4526-4578):
+  const SOUL_ONLY = ['dashboardCommandRouter', 'ipython', 'computer'];
+  for (const name of [...toolNames, ...SOUL_ONLY]) {
+    assert.ok(TOOL_REGISTRY[name], `registry entry missing for dispatched tool "${name}"`);
+  }
+  assert.strictEqual(
+    Object.keys(TOOL_REGISTRY).length,
+    toolNames.length + SOUL_ONLY.length,
+    'registry must contain EXACTLY the dispatched tools — adding a tool means adding a registry entry'
+  );
+});
+
+test('T2: every registry entry has a valid shape (schema vocabulary + meta slots)', () => {
+  const { TOOL_REGISTRY } = require('../lib/tool-registry.cjs');
+  const SCHEMA_KEYS = new Set(['required', 'types', 'pathMustExist', 'pathMustBeAbsolute', 'pathMustNotContain', 'forbiddenPatterns']);
+  const TYPE_VALUES = new Set(['string', 'number', 'boolean', 'object']);
+  for (const [name, entry] of Object.entries(TOOL_REGISTRY)) {
+    assert.ok(entry.meta && 'icon' in entry.meta && 'color' in entry.meta && 'label' in entry.meta,
+      `${name}: meta must carry the icon/color/label slots`);
+    if (entry.aliasOf) assert.strictEqual(typeof entry.aliasOf, 'string', `${name}: aliasOf must be a string`);
+    if (!entry.schema) continue;
+    for (const key of Object.keys(entry.schema)) {
+      assert.ok(SCHEMA_KEYS.has(key), `${name}: unknown schema key "${key}" (validateToolCall would ignore it)`);
+    }
+    assert.ok(Array.isArray(entry.schema.required), `${name}: schema.required must be an array`);
+    for (const [field, type] of Object.entries(entry.schema.types || {})) {
+      assert.ok(TYPE_VALUES.has(type), `${name}: bad type "${type}" for field "${field}"`);
+    }
+    for (const re of entry.schema.forbiddenPatterns || []) {
+      assert.ok(re instanceof RegExp, `${name}: forbiddenPatterns entries must be RegExp (got ${typeof re})`);
+    }
+  }
+});
+
+test('T2: registry schemas are identical to the pre-migration guard TOOL_SCHEMAS (verbatim move)', () => {
+  const { buildToolSchemas } = require('../lib/tool-registry.cjs');
+  const { TOOL_SCHEMAS } = require('../luna-tool-guard.cjs');
+  const fromRegistry = buildToolSchemas();
+  assert.deepStrictEqual(Object.keys(fromRegistry).sort(), Object.keys(TOOL_SCHEMAS).sort(),
+    'registry must carry exactly the 12 current schemas');
+  for (const name of Object.keys(TOOL_SCHEMAS)) {
+    assert.deepStrictEqual(fromRegistry[name], TOOL_SCHEMAS[name], `${name}: schema must be a verbatim move`);
+  }
+});
+
+test('T2: registry meta is a superset of the 18 harvested ToolCard entries', () => {
+  const { TOOL_REGISTRY } = require('../lib/tool-registry.cjs');
+  const HARVESTED = {
+    writeFile: ['📄', '#3b82f6'], readFile: ['👁', '#22c55e'], executeShell: ['⚡', '#a855f7'],
+    searchWeb: ['🌐', '#f97316'], searchFiles: ['🔍', '#f97316'], gitStatus: ['🌿', '#6b7280'],
+    gitDiff: ['📊', '#6b7280'], gitLog: ['📜', '#6b7280'], gitCommit: ['💾', '#6b7280'],
+    dashboardCreateTask: ['📋', '#ec4899'], dashboardListTasks: ['📋', '#ec4899'],
+    dashboardCreateLead: ['👤', '#ec4899'], dashboardListLeads: ['👥', '#ec4899'],
+    dashboardGetFinanceSummary: ['💰', '#ec4899'], replaceInFile: ['✏️', '#06b6d4'],
+    ipython: ['🐍', '#f59e0b'], web_search: ['🌐', '#f97316'], browser: ['🌍', '#3b82f6'],
+  };
+  for (const [name, [icon, color]] of Object.entries(HARVESTED)) {
+    assert.strictEqual(TOOL_REGISTRY[name]?.meta?.icon, icon, `${name}: icon must match ToolCard`);
+    assert.strictEqual(TOOL_REGISTRY[name]?.meta?.color, color, `${name}: color must match ToolCard`);
+  }
+});
