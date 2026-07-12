@@ -115,7 +115,6 @@ test('T4: immediate schedule flushes pending work synchronously', () => {
   s.schedule(true);
   assert.strictEqual(calls, 1, 'immediate run executes now');
   assert.strictEqual(t.pendingCount(), 0, 'pending timer cancelled by the immediate run');
-  t.fireNext = () => { throw new Error('nothing may remain armed'); };
 });
 
 test('T4: cancel drops a pending run', () => {
@@ -126,6 +125,19 @@ test('T4: cancel drops a pending run', () => {
   s.cancel();
   assert.strictEqual(t.pendingCount(), 0);
   assert.strictEqual(calls, 0);
+});
+
+test('T4: scheduler re-arms cleanly after a fired run', () => {
+  const t = fakeTimer();
+  let calls = 0;
+  const s = createDebouncedScheduler(() => calls++, 120, t);
+  s.schedule();
+  t.fireNext();
+  assert.strictEqual(calls, 1);
+  s.schedule();
+  assert.strictEqual(t.pendingCount(), 1, 'can arm again after firing');
+  t.fireNext();
+  assert.strictEqual(calls, 2);
 });
 
 test('T4: AssistantMessage uses a module-scope Marked instance, not per-instance marked.use', () => {

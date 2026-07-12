@@ -33,7 +33,7 @@
 </script>
 
 <script>
-  import { onMount, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { createDebouncedScheduler } from '../lib/debounce.js';
   import { formatTime } from '../utils.js';
   import LunaAvatar from './LunaAvatar.svelte';
@@ -71,9 +71,16 @@
     highlightCode();
   }, 120);
 
+  let lastScheduledContent = null;
+
   $: scheduleRender(content, isStreaming);
 
   function scheduleRender(_content, streaming) {
+    // Wave 4 review follow-up: skip redundant renders — unrelated messages
+    // re-fire when the global isStreaming flag flips. Never skip while a
+    // debounced render is pending (the immediate path must be able to flush it).
+    if (_content === lastScheduledContent && !renderScheduler.pending) return;
+    lastScheduledContent = _content;
     renderScheduler.schedule(!streaming);
   }
 
@@ -141,6 +148,10 @@
   onMount(() => {
     highlightCode();
   });
+
+  // Wave 4 review follow-up: cancel any armed debounced render on destroy so a
+  // late timer can't fire into a destroyed component.
+  onDestroy(() => renderScheduler.cancel());
 </script>
 
 <div class="assistant-message-wrapper {personalityClass}">
