@@ -298,9 +298,11 @@ test('D1: sendMessageStream finally stops the DOM poller BEFORE clearing process
 // and clear queue events, lastReadIndex, and _completionState.
 test('D2: sendMessageStream purges stale queue right after Enter (content assertion)', () => {
   const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
-  const enterIdx = src.indexOf('await this._pressEnterOnInput(inputLocator);');
-  assert.ok(enterIdx !== -1, 'pressEnterOnInput call must exist');
-  const window = src.slice(enterIdx, enterIdx + 600);
+  // Multiple functions call _pressEnterOnInput; the purge lives in
+  // sendMessageStream, right after its 'Step 6' log line.
+  const enterIdx = src.indexOf("log.info(`[DEBUG-LUNA] Step 6: pressing Enter`);");
+  assert.ok(enterIdx !== -1, 'sendMessageStream Enter step must exist');
+  const window = src.slice(enterIdx, enterIdx + 800);
   assert.ok(window.includes('queue.events.length = 0;'), 'purge must clear queue.events');
   assert.ok(window.includes('queue.lastReadIndex = 0;'), 'purge must reset lastReadIndex');
   assert.ok(window.includes('session._completionState = null'), 'purge must reset completion state');
