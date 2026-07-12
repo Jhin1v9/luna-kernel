@@ -12,6 +12,15 @@ const INJECTED_PATH = path.join(__dirname, '..', 'luna-extension', 'injected.js'
 const OBSERVER_PATH = path.join(__dirname, '..', 'kimi-dom-observer.js');
 
 /**
+ * Return a source window of `span` chars centered on the first occurrence of
+ * `needle` (empty string when not found). Robust to line-number drift.
+ */
+const sliceAround = (s, needle, span) => {
+  const i = s.indexOf(needle);
+  return i === -1 ? '' : s.slice(Math.max(0, i - span / 2), i + span / 2);
+};
+
+/**
  * Extract the Kimi `textContent` selector string from a SELECTORS definition:
  * the `textContent:` line that follows the Kimi-branch marker `.segment-assistant`
  * (or, in the observer, the single SELECTORS object which is Kimi-only).
@@ -392,4 +401,18 @@ test('E1f: diverged flag returned and committed unchanged on cross-source disagr
   assert.strictEqual(res.diverged, true);
   assert.strictEqual(res.emit, null);
   assert.strictEqual(c.committed, before, 'committed must be unchanged after a divergent event');
+});
+
+test('W6-T1: new-assistant wait loop is bounded and cancellable', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  // Anchor on the generator definition (plain 'sendMessageStream' also appears
+  // in earlier comments), then locate the loop's own selector probe.
+  const streamIdx = src.indexOf('async *sendMessageStream');
+  assert.notStrictEqual(streamIdx, -1, 'sendMessageStream must exist');
+  const loopIdx = src.indexOf("querySelectorAll('.segment-assistant')", streamIdx);
+  assert.notStrictEqual(loopIdx, -1, 'new-assistant loop must exist');
+  const window = src.slice(Math.max(0, loopIdx - 500), loopIdx + 3000);
+  assert.ok(window.includes('NEW_ASSISTANT_TIMEOUT_MS'), 'loop must have a timeout constant');
+  assert.ok(window.includes('stopConsuming'), 'loop must check the cancel flag');
+  assert.ok(/NO_ASSISTANT_DETECTED|STREAM_CANCELLED/.test(window), 'loop must throw a visible error on expiry/cancel');
 });

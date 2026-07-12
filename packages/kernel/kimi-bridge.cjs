@@ -7412,8 +7412,24 @@ class KimiBridge {
       // generic polling path can stream the response.
       let newAssistantWaitCount = 0;
       let targetAssistantIndex = -1;
+      // W6-T1: register the soft-cancel flag BEFORE the assistant-detection
+      // loop so the loop can observe it (previously registered later, at
+      // stream-consumer setup).
+      let stopConsuming = false;
+      this.streamStopFlags.set(userId, () => { stopConsuming = true; });
+      // W6-T1: bounded wait — a renamed selector or a silent Enter failure must
+      // not hang the stream forever (session.processing would stay true and
+      // brick every future message from this user).
+      const NEW_ASSISTANT_TIMEOUT_MS = 120_000;
+      const newAssistantDeadline = Date.now() + NEW_ASSISTANT_TIMEOUT_MS;
       if (resolvedProvider === 'kimi') {
         while (true) {
+          // W6-T1: cancel + deadline checks (this loop was previously
+          // unbounded and ignored the cancel flag).
+          if (stopConsuming) throw new Error('STREAM_CANCELLED');
+          if (Date.now() > newAssistantDeadline) {
+            throw new Error('NO_ASSISTANT_DETECTED: selector broke or send failed (no .segment-assistant within 120s)');
+          }
           const assistants = await page.evaluate(() => {
             const nodes = document.querySelectorAll('.segment-assistant');
             return Array.from(nodes).map((el, i) => ({
@@ -7431,8 +7447,9 @@ class KimiBridge {
               break;
             }
           }
-          // v8.4: NO TIMEOUT — wait forever for new assistant to appear.
-          // Chrome may lag when sending large prompts. Kimi is still generating.
+          // W6-T1: bounded wait (NEW_ASSISTANT_TIMEOUT_MS above) — Chrome may
+          // lag on large prompts, but a broken selector or failed send now
+          // errors out instead of hanging forever.
           if (++newAssistantWaitCount > 100) {
             log.info(`[sendMessageStream] New assistant not detected yet (wait=${newAssistantWaitCount*100}ms), continuing to wait...`);
           }
@@ -7457,7 +7474,8 @@ class KimiBridge {
       const divergedSourcesLogged = new Set(); // log.warn once per diverging source
       let lastCanSteer = false;
       let isComplete = false;
-      let stopConsuming = false;
+      // W6-T1: `stopConsuming` is declared and registered earlier (above the
+      // new-assistant detection loop) so that loop can observe cancellation.
       let pollCount = 0;
       let textHasChanged = false;
 
@@ -7470,9 +7488,6 @@ class KimiBridge {
       const emittedResponseHashes = new Set();
       const emittedJsonActionHashes = new Set();
       let domActionsCount = 0;
-
-      // Register soft-cancel signal
-      this.streamStopFlags.set(userId, () => { stopConsuming = true; });
 
       // Phase 0: Wait for first text change via queue events
       // v8.4: NO TIMEOUT — Kimi may take hours for large file generation.
