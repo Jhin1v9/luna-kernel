@@ -1134,3 +1134,27 @@ test('I3: BUILD_TIMEOUT_MS is 60000 and drives the execSync timeout', () => {
   assert.ok(src.includes('timeout: BUILD_TIMEOUT_MS'), 'execSync must use BUILD_TIMEOUT_MS');
   assert.ok(!src.includes('timeout: 180000'), 'the old 180s inline timeout must be gone');
 });
+
+// ── Wave 6: visible-shell no-log fallback (live bug 2026-07-12) ─────────────
+// PM2 inherited DISPLAY from the shell → executeShell went down the VISIBLE
+// path (executeShellVisible) → the graphical terminal produced no log under
+// the PM2 session (no D-Bus) → readFileSync(tmpFile) ENOENT was classified as
+// a bogus "file not found" tool failure instead of falling back to the
+// invisible shell. Every executeShell failed.
+
+test('W6a: invisible executeShell still executes (regression baseline)', async () => {
+  const { executeShell } = require('../luna-tools.cjs');
+  const res = await executeShell('echo w6-marker', { visible: false, timeout: 10 });
+  assert.strictEqual(res.success, true, `invisible shell must work, got ${JSON.stringify(res)}`);
+  assert.ok((res.stdout || '').includes('w6-marker'), 'stdout must carry the echo output');
+});
+
+test('W6b: close-handler falls back to invisible shell when the terminal produced no log', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  const closeIdx = src.indexOf("child.on('close'");
+  assert.ok(closeIdx !== -1, 'executeShellVisible must have a close handler');
+  const closeFn = src.slice(closeIdx, closeIdx + 2000);
+  assert.ok(closeFn.includes("e.code === 'ENOENT'"), 'close handler must detect the missing-log case specifically');
+  assert.ok(closeFn.includes('visible: false'), 'close handler must fall back to invisible execution on missing log');
+  assert.ok(closeFn.includes('setTimeout(async () =>'), 'the close setTimeout must be async to await the fallback');
+});

@@ -910,7 +910,7 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
     child.on('close', () => {
       clearInterval(pollInterval);
       // Give tee a moment to flush
-      setTimeout(() => {
+      setTimeout(async () => {
         try {
           const finalOutput = fs.readFileSync(tmpFile, 'utf8');
           const exitMatch = finalOutput.match(/\[LUNA_EXIT_CODE=(\d+)\]/);
@@ -931,6 +931,16 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
         } catch (e) {
           try { fs.unlinkSync(scriptFile); } catch {}
           try { fs.unlinkSync(tmpFile); } catch {}
+          // Wave 6 hotfix: ENOENT on the log means the graphical terminal never
+          // ran the script (PM2 without D-Bus session, Wayland/X auth quirks) —
+          // a log file that existed would be at least empty. The command almost
+          // certainly never executed, so fall back to the invisible shell
+          // instead of reporting a bogus "file not found" failure.
+          if (e && e.code === 'ENOENT') {
+            console.warn('[executeShellVisible] Terminal produced no log — falling back to invisible shell.');
+            const fallback = await executeShell(command, { ...opts, visible: false }, onProgress);
+            return resolve(fallback);
+          }
           const { reason, suggestion } = _classifyShellError(command, e.message, 1, false, opts.timeout || 60);
           resolve({ success: false, command, stdout: output, stderr: e.message, exitCode: 1, error: e.message, reason, suggestion });
         }
