@@ -299,14 +299,9 @@ function appendFile(filePath, content, opts = {}) {
 
 function replaceInFile(filePath, oldStr, newStr, opts = {}) {
   const resolved = resolvePath(filePath);
-  let createdFile = false;
 
   if (!fs.existsSync(resolved)) {
-    // FALLBACK: arquivo não existe — cria primeiro
-    const dir = path.dirname(resolved);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(resolved, '', 'utf8');
-    createdFile = true;
+    return err(`Arquivo não encontrado: ${filePath}. Use writeFile para criar novos arquivos.`);
   }
 
   try {
@@ -325,8 +320,6 @@ function replaceInFile(filePath, oldStr, newStr, opts = {}) {
       return ok({
         path: resolved,
         editsApplied: edits.length,
-        createdFile: createdFile || undefined,
-        message: createdFile ? `ARQUIVO NAO CRIADO. CRIEI PRIMEIRO PRA DEPOIS ESCREVER: ${resolved}` : undefined,
       });
     }
 
@@ -345,8 +338,6 @@ function replaceInFile(filePath, oldStr, newStr, opts = {}) {
     return ok({
       path: resolved,
       occurrences,
-      createdFile: createdFile || undefined,
-      message: createdFile ? `ARQUIVO NAO CRIADO. CRIEI PRIMEIRO PRA DEPOIS ESCREVER: ${resolved}` : undefined,
     });
   } catch (e) {
     return err(e.message);
@@ -390,16 +381,23 @@ function executeScript(code, opts = {}) {
     // Limpa arquivo temporário (não bloqueante)
     try { fs.unlinkSync(scriptPath); } catch {}
 
+    if (result.exitCode !== 0) {
+      return err(`Script ${language} falhou (exit ${result.exitCode})`, {
+        language,
+        scriptPath,
+        stdout: result.stdout || '',
+        stderr: result.stderr || '',
+        exitCode: result.exitCode,
+      });
+    }
+
     return ok({
       language,
       scriptPath,
       stdout: result.stdout || '',
       stderr: result.stderr || '',
       exitCode: result.exitCode || 0,
-      success: result.exitCode === 0,
-      message: result.exitCode === 0
-        ? `✅ Script ${language} executado com sucesso`
-        : `❌ Script ${language} falhou (exit ${result.exitCode})`,
+      message: `✅ Script ${language} executado com sucesso`,
     });
   } catch (e) {
     try { fs.unlinkSync(scriptPath); } catch {}

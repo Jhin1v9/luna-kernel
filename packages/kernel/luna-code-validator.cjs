@@ -13,6 +13,10 @@ const path = require('path');
 const { execSync } = require('child_process');
 const { shellQuote } = require('./lib/shell-quote.cjs');
 
+// Build check roda dentro do caminho do writeFile — cap em 60s para não
+// bloquear o tool path por até 180s (o guard de tools já tem budget próprio).
+const BUILD_TIMEOUT_MS = 60000;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. JSX BALANCE CHECKER
 // ═══════════════════════════════════════════════════════════════════════════
@@ -336,7 +340,7 @@ function runBuildCheck(projectPath) {
     const stdout = execSync('npm run build', {
       cwd: projectPath,
       encoding: 'utf8',
-      timeout: 180000,
+      timeout: BUILD_TIMEOUT_MS,
       stdio: 'pipe',
     });
     return { ok: true, errors: [], stdout, stderr: '' };

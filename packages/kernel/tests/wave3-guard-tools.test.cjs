@@ -8,6 +8,8 @@
 // Fix G: SSRF guard for fetchURL/downloadFile/browser (lib/url-safety.cjs + luna-tools.cjs)
 // Fix H: guard registry desync — fail-open default schema, alias-aware paths, per-session workspace guard,
 //        mutating-only idempotency, executeShell timeout alignment (luna-tool-guard.cjs + luna-soul.cjs)
+// Fix I: quick wins — replaceInFile errors on missing file, executeScript consistent failure shape,
+//        runBuildCheck capped at 60s (luna-tools.cjs + luna-code-validator.cjs)
 // Run: node --test packages/kernel/tests/wave3-guard-tools.test.cjs
 'use strict';
 
@@ -19,7 +21,7 @@ const path = require('node:path');
 
 const { looksBinary } = require('../lib/text-file.cjs');
 const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
-const { readFile, writeFile, replaceInFile } = require('../luna-tools.cjs');
+const { readFile, writeFile, replaceInFile, executeScript } = require('../luna-tools.cjs');
 const { ToolGuard, IdempotencyStore, validateToolCall } = require('../luna-tool-guard.cjs');
 
 // ── Fix A1: looksBinary (pure unit tests) ────────────────────────────────────
@@ -1082,4 +1084,52 @@ test('H5: negative/garbage executeShell timeout is sanitized, not passed through
   await guard.execute('executeShell', params, toolFn);
   assert.ok(params.timeout > 0, `clamped timeout must be positive, got ${params.timeout}`);
   assert.ok(params.timeout <= 30, `clamped timeout must respect the guard budget, got ${params.timeout}`);
+});
+
+// ── Fix I1: replaceInFile must NOT create the file when the target is missing ──
+
+test('I1: replaceInFile on a missing file returns success:false and does not create it', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'does-not-exist.txt');
+    const result = replaceInFile(file, 'a', 'b');
+    assert.strictEqual(result.success, false);
+    assert.match(result.error, /writeFile/i, 'error must point the model to writeFile');
+    assert.ok(!fs.existsSync(file), 'missing target must NOT be created');
+  });
+});
+
+test('I1: replaceInFile on a missing file does not create parent dirs either', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'nested', 'deep', 'missing.txt');
+    const result = replaceInFile(file, 'a', 'b');
+    assert.strictEqual(result.success, false);
+    assert.ok(!fs.existsSync(path.join(dir, 'nested')), 'parent dirs must NOT be created');
+  });
+});
+
+// ── Fix I2: executeScript single success semantics ──
+
+test('I2: executeScript failure returns success:false WITH an error string', () => {
+  const result = executeScript('exit 3', { language: 'bash' });
+  assert.strictEqual(result.success, false);
+  assert.strictEqual(typeof result.error, 'string', 'failed script must carry an error field');
+  assert.match(result.error, /exit 3/);
+  assert.strictEqual(result.exitCode, 3);
+});
+
+test('I2: executeScript success keeps success:true and exitCode 0', () => {
+  const result = executeScript('echo hello', { language: 'bash' });
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(result.exitCode, 0);
+  assert.match(result.stdout, /hello/);
+  assert.strictEqual(result.error, undefined);
+});
+
+// ── Fix I3: runBuildCheck timeout capped at 60s (content assertion) ──
+
+test('I3: BUILD_TIMEOUT_MS is 60000 and drives the execSync timeout', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-code-validator.cjs'), 'utf8');
+  assert.ok(/const BUILD_TIMEOUT_MS = 60000;/.test(src), 'BUILD_TIMEOUT_MS constant must be hoisted at 60s');
+  assert.ok(src.includes('timeout: BUILD_TIMEOUT_MS'), 'execSync must use BUILD_TIMEOUT_MS');
+  assert.ok(!src.includes('timeout: 180000'), 'the old 180s inline timeout must be gone');
 });
