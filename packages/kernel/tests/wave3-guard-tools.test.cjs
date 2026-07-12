@@ -201,3 +201,32 @@ test('B3: luna-soul.cjs auto-fix rewrite is atomic', () => {
   assert.ok(!src.includes('fs.writeFileSync(writtenPath'), 'soul auto-fix must not write directly');
   assert.ok(src.includes('atomicWriteFileSync(writtenPath'), 'soul auto-fix must use atomicWriteFileSync');
 });
+
+// B4: mode preservation — overwriting an executable file must keep its mode
+// (tmp+rename replaces the inode; without chmod the mode would reset to
+// 0o666 & ~umask and Luna's self-edited .sh files would lose +x).
+test('B4: atomicWriteFileSync preserves the target file mode on overwrite', () => {
+  const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
+  withTmpDir(dir => {
+    const target = path.join(dir, 'script.sh');
+    fs.writeFileSync(target, '#!/bin/bash\necho old\n');
+    fs.chmodSync(target, 0o755);
+
+    atomicWriteFileSync(target, '#!/bin/bash\necho new\n');
+
+    const mode = fs.statSync(target).mode & 0o777;
+    assert.strictEqual(mode, 0o755, `mode must be preserved, got ${mode.toString(8)}`);
+    assert.strictEqual(fs.readFileSync(target, 'utf8'), '#!/bin/bash\necho new\n');
+  });
+});
+
+test('B4b: atomicWriteFileSync on a new file uses default mode', () => {
+  const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
+  withTmpDir(dir => {
+    const target = path.join(dir, 'fresh.txt');
+    atomicWriteFileSync(target, 'hello');
+    assert.strictEqual(fs.readFileSync(target, 'utf8'), 'hello');
+    // Default mode = 0o666 & ~umask — just assert it exists and is a file.
+    assert.ok(fs.statSync(target).isFile());
+  });
+});
