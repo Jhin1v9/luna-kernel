@@ -240,3 +240,41 @@ test('T6 (bug 3): ChatArea reuses the SSEManager instead of discarding it per re
   const occurrences = src.split('new SSEManager()').length - 1;
   assert.strictEqual(occurrences, 1, 'only the declaration at :19 may instantiate SSEManager');
 });
+
+// Review follow-up: pins the single line (api.js connect()-entry timer clear)
+// that prevents the most dangerous zombie case — a backoff timer for the OLD
+// session firing after an external connect() switched to a NEW session.
+test('T6 (bug 3): connect() for a new session cancels a pending backoff timer (no old-session resurrection)', async () => {
+  const m = freshManager();
+  try {
+    m.connect('s1', () => {});
+    m.eventSource.onerror();              // backoff timer armed for s1
+    assert.ok(m.reconnectTimer, 'timer armed');
+    m.connect('s2', () => {});            // external session switch before it fires
+    assert.strictEqual(m.reconnectTimer, null, 'connect() must cancel the pending timer at entry');
+    const afterSwitch = eventSourceCount;
+    const s2Source = m.eventSource;
+    await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(eventSourceCount, afterSwitch, 'old timer must never fire a new EventSource');
+    assert.strictEqual(m.eventSource, s2Source, 's2 connection must remain the live one');
+    assert.ok(m.eventSource.url.includes('sessionId=s2'), 'live connection is for the new session');
+  } finally {
+    m.disconnect();
+  }
+});
+
+// Review follow-up: the full same-session reconnect path (eventSource lost),
+// not just the duplicate-connection early-return guard.
+test('T6 (bug 5): same-session reconnect after connection loss preserves lastMessageCount', () => {
+  const m = freshManager();
+  try {
+    m.connect('s1', () => {});
+    m.lastMessageCount = 7;
+    m.eventSource.close();
+    m.eventSource = null;      // simulate lost connection (full reconnect path)
+    m.connect('s1', () => {});
+    assert.strictEqual(m.lastMessageCount, 7, 'same-session reconnect must preserve the count');
+  } finally {
+    m.disconnect();
+  }
+});
