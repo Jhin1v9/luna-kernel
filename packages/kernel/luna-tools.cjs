@@ -24,6 +24,7 @@ const https = require('https');
 const http = require('http');
 const lunaConfig = require('./config/luna-config');
 const { looksBinary } = require('./lib/text-file.cjs');
+const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 
 // v10.28-fix: Centralize runtime paths via LUNA_HOME. Auto-create dirs so the
 // Luna never fails with ENOENT on temp files across different PCs/VPS.
@@ -216,10 +217,8 @@ function writeFile(filePath, content, opts = {}) {
     let finalContent = content;
     if (opts.encoding === 'base64' && typeof content === 'string') {
       finalContent = Buffer.from(content, 'base64');
-      fs.writeFileSync(resolved, finalContent);
-    } else {
-      fs.writeFileSync(resolved, content, 'utf8');
     }
+    atomicWriteFileSync(resolved, finalContent);
     return ok({
       path: resolved,
       operation: 'write',
@@ -288,7 +287,7 @@ function replaceInFile(filePath, oldStr, newStr, opts = {}) {
         if (!oldS) continue;
         content = content.split(oldS).join(newS);
       }
-      fs.writeFileSync(resolved, content, 'utf8');
+      atomicWriteFileSync(resolved, content);
       return ok({
         path: resolved,
         editsApplied: edits.length,
@@ -308,7 +307,7 @@ function replaceInFile(filePath, oldStr, newStr, opts = {}) {
       return err(`Múltiplas ocorrências (${occurrences}). Use replaceAll=true.`, { occurrences });
     }
     content = content.split(target).join(replacement);
-    fs.writeFileSync(resolved, content, 'utf8');
+    atomicWriteFileSync(resolved, content);
     return ok({
       path: resolved,
       occurrences,

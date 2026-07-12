@@ -27,6 +27,7 @@ const { loadBrainContext } = require('./brain-loader.cjs');
 const { ToolGuard, validatePythonCode, checkDestructivePattern } = require('./luna-tool-guard.cjs');
 const { ResponseStreamParser, safeJsonParse, isBalancedBraces } = require('./response-stream-parser.cjs');
 const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cjs');
+const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const lunaConfig = require('./config/luna-config');
 const {
   checkJsxBalanced,
@@ -4384,7 +4385,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               const autoFixResult = autoFix(content, ext);
               if (autoFixResult.changed) {
                 // Re-escreve o arquivo com a correção
-                fs.writeFileSync(writtenPath, autoFixResult.fixed, 'utf8');
+                atomicWriteFileSync(writtenPath, autoFixResult.fixed);
                 content = autoFixResult.fixed; // usa conteúdo corrigido nas próximas validações
                 // Adiciona ao resultado para Kimi saber o que foi corrigido
                 const fixText = `🔧 Auto-fix aplicado em ${path.basename(writtenPath)}:\n${autoFixResult.fixes.map(f => `  - ${f}`).join('\n')}`;

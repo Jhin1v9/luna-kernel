@@ -1,5 +1,6 @@
 // wave3-guard-tools.test.cjs — Wave 3 regression tests
 // Fix A: readFile binary detection + 2MB byte cap (lib/text-file.cjs + luna-tools.cjs)
+// Fix B: atomic writeFile via tmp+rename (lib/atomic-write.cjs + luna-tools.cjs + luna-soul.cjs)
 // Run: node --test packages/kernel/tests/wave3-guard-tools.test.cjs
 'use strict';
 
@@ -10,7 +11,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { looksBinary } = require('../lib/text-file.cjs');
-const { readFile } = require('../luna-tools.cjs');
+const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
+const { readFile, writeFile, replaceInFile } = require('../luna-tools.cjs');
 
 // ── Fix A1: looksBinary (pure unit tests) ────────────────────────────────────
 
@@ -92,4 +94,110 @@ test('A2: readFile on a small text file keeps the numbered output unchanged', ()
     assert.strictEqual(result.linesRead, 3);
     assert.strictEqual(result.content, '   1 │ hello\n   2 │ world\n   3 │ ');
   });
+});
+
+// ── Fix B: atomic writes (tmp + rename) ──────────────────────────────────────
+
+function tmpLeftovers(dir) {
+  return fs.readdirSync(dir).filter((name) => name.startsWith('.luna-tmp-'));
+}
+
+test('B1: atomicWriteFileSync creates a file with exact content and no tmp leftover', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'out.txt');
+    atomicWriteFileSync(file, 'conteúdo com acentuação\nsegunda linha\n');
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'conteúdo com acentuação\nsegunda linha\n');
+    assert.deepStrictEqual(tmpLeftovers(dir), [], 'no .luna-tmp-* files may be left behind');
+  });
+});
+
+test('B1: atomicWriteFileSync overwrites an existing file atomically (full replace)', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'out.txt');
+    fs.writeFileSync(file, 'old content that is longer than the new one\n', 'utf8');
+    atomicWriteFileSync(file, 'new\n');
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'new\n', 'content must be fully replaced, not partially overwritten');
+    assert.deepStrictEqual(tmpLeftovers(dir), []);
+  });
+});
+
+test('B1: atomicWriteFileSync writes Buffer content byte-exactly', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'blob.bin');
+    const buf = Buffer.from([0x00, 0x01, 0xfe, 0xff, 0x7f]);
+    atomicWriteFileSync(file, buf);
+    assert.deepStrictEqual(fs.readFileSync(file), buf);
+    assert.deepStrictEqual(tmpLeftovers(dir), []);
+  });
+});
+
+test('B1: atomicWriteFileSync throws on failure and cleans up the tmp file', () => {
+  withTmpDir((dir) => {
+    const missing = path.join(dir, 'no-such-dir', 'out.txt');
+    assert.throws(() => atomicWriteFileSync(missing, 'x'), 'must throw when the target dir does not exist');
+    assert.deepStrictEqual(tmpLeftovers(dir), [], 'tmp file must be unlinked on the error path');
+    assert.strictEqual(fs.existsSync(path.join(dir, 'no-such-dir')), false, 'target dir must not be created');
+  });
+});
+
+test('B1: atomicWriteFileSync leaves no partial file when rename fails (rename error injection)', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'target.txt');
+    fs.writeFileSync(file, 'original\n', 'utf8');
+    const originalRename = fs.renameSync;
+    fs.renameSync = () => { throw new Error('injected rename failure'); };
+    try {
+      assert.throws(() => atomicWriteFileSync(file, 'corrupted\n'), /injected rename failure/);
+    } finally {
+      fs.renameSync = originalRename;
+    }
+    // The crash must NOT have touched the destination — readers see the old
+    // complete file, never a half-written one.
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'original\n');
+    assert.deepStrictEqual(tmpLeftovers(dir), [], 'tmp file must be cleaned up after the rename failure');
+  });
+});
+
+test('B2: writeFile tool writes atomically (exact content, no tmp leftover)', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'tool-out.txt');
+    const result = writeFile(file, 'via writeFile tool\n');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'via writeFile tool\n');
+    assert.deepStrictEqual(tmpLeftovers(dir), []);
+  });
+});
+
+test('B2: writeFile tool base64 branch writes exact bytes', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'tool-blob.bin');
+    const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]);
+    const result = writeFile(file, buf.toString('base64'), { encoding: 'base64' });
+    assert.strictEqual(result.success, true);
+    assert.deepStrictEqual(fs.readFileSync(file), buf);
+    assert.deepStrictEqual(tmpLeftovers(dir), []);
+  });
+});
+
+test('B2: replaceInFile tool writes atomically (exact content, no tmp leftover)', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'tool-edit.txt');
+    fs.writeFileSync(file, 'foo bar baz\n', 'utf8');
+    const result = replaceInFile(file, 'bar', 'qux');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'foo qux baz\n');
+    assert.deepStrictEqual(tmpLeftovers(dir), []);
+  });
+});
+
+test('B3: luna-tools.cjs no longer writes writeFile results directly', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  assert.ok(!src.includes('fs.writeFileSync(resolved, finalContent)'), 'writeFile must use atomicWriteFileSync');
+  assert.ok(!src.includes("fs.writeFileSync(resolved, content, 'utf8')"), 'replaceInFile must use atomicWriteFileSync');
+});
+
+test('B3: luna-soul.cjs auto-fix rewrite is atomic', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-soul.cjs'), 'utf8');
+  assert.ok(!src.includes('fs.writeFileSync(writtenPath'), 'soul auto-fix must not write directly');
+  assert.ok(src.includes('atomicWriteFileSync(writtenPath'), 'soul auto-fix must use atomicWriteFileSync');
 });
