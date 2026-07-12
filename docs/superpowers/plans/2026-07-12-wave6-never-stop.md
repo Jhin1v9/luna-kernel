@@ -406,7 +406,7 @@ test('W6e: ToolCard renders result warnings', () => {
 
 **Why (B#3):** completion requires UI not-generating (unreliable on DeepSeek) with a 5-cycle byte-identical backstop that cursor blink/code-block chrome can prevent forever → tools never delivered, no done. DeepSeek-only branch; Kimi hot path untouched.
 
-- [ ] **T12.1. Failing tests**
+- [x] **T12.1. Failing tests**
 
 ```js
 test('W6-T12: force-complete decision fires after cap with stable length', () => {
@@ -425,11 +425,11 @@ test('W6-T12: generic block wires the force-complete helper', () => {
 });
 ```
 
-- [ ] **T12.2. Implement**
+- [x] **T12.2. Implement**
 
 Extract pure helper `_shouldForceGenericComplete({firstSeenAt, lastLengthChangeAt, uiGenerating}, now)` → `now - firstSeenAt > 45_000 && now - lastLengthChangeAt > 10_000`. In `_pollThinkingAndResponse` (`:6041-6084`): record `session._genericFirstSeenAt` on first non-empty response and `session._genericLastLengthChangeAt` on length change; when the helper fires, set `uiState.isGenerating = false` and log a warn. Tools flow through the existing enqueue at `:6077-6083`; the soul drain + done proceed normally. Export the helper for tests.
 
-- [ ] **T12.3. Verify + commit** — wave2 + full regression (203→205). `fix(bridge): DeepSeek force-complete cap (45s + 10s length-stable) - tools delivered even when UI completion heuristics never fire`.
+- [x] **T12.3. Verify + commit** — wave2 + full regression (203→205). `fix(bridge): DeepSeek force-complete cap (45s + 10s length-stable) - tools delivered even when UI completion heuristics never fire`.
 
 ---
 

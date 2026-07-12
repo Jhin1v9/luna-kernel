@@ -306,6 +306,20 @@ function _preEscapeJsonStringNewlines(str) {
   return out;
 }
 
+/**
+ * W6-T12: Pure decision helper — should a generic provider (DeepSeek etc.)
+ * force-complete the response even while the UI still reports "generating"?
+ * Fires when the response has been visible for >45s AND its text length has
+ * been stable for >10s. Backstop for UI completion heuristics that never fire
+ * (cursor blink / code-block chrome can keep isGenerating=true forever, which
+ * starves tool delivery and makes Luna "stop out of nowhere").
+ */
+function _shouldForceGenericComplete({ firstSeenAt, lastLengthChangeAt, uiGenerating }, now) {
+  if (!uiGenerating) return false;
+  if (!firstSeenAt || !lastLengthChangeAt) return false;
+  return (now - firstSeenAt > 45_000) && (now - lastLengthChangeAt > 10_000);
+}
+
 function extractResponseFromCompleteJson(text) {
   if (!text) return null;
   // v10.24-fix: Strip DOM-extracted code block headers before parsing
@@ -6131,6 +6145,13 @@ class KimiBridge {
       // Generic provider fallback for DeepSeek and future providers
       if (provider !== 'kimi') {
         const generic = await this._genericProviderExtraction(page, provider);
+        // W6-T12: reset force-complete tracking between turns — when no
+        // response is visible the previous turn's timers must not leak forward.
+        if (session && !generic.response) {
+          session._genericFirstSeenAt = null;
+          session._genericLastLengthChangeAt = null;
+          session._genericLastLength = 0;
+        }
         if (generic.response || (generic.detectedTools && generic.detectedTools.length > 0)) {
           let uiState = await this._detectUiState(page, provider);
           // v10.27-fix: DeepSeek's send button is disabled when the input is empty,
@@ -6143,6 +6164,15 @@ class KimiBridge {
               session._responseStableCycles = 0;
             }
             session._lastPollResponse = generic.response;
+            // W6-T12: track first-seen time and length stability for the
+            // force-complete cap consulted below.
+            if (generic.response && generic.response.length > 0) {
+              if (!session._genericFirstSeenAt) session._genericFirstSeenAt = Date.now();
+              if (session._genericLastLength !== generic.response.length) {
+                session._genericLastLengthChangeAt = Date.now();
+                session._genericLastLength = generic.response.length;
+              }
+            }
             // v10.34-fix: Require more stable cycles for DeepSeek to avoid partial responses.
             // Quality over speed: only declare completion when we are confident.
             if (session._responseStableCycles >= 5) {
@@ -6162,6 +6192,18 @@ class KimiBridge {
           // v10.34-fix: Do NOT stream partial responses for non-Kimi providers.
           // Wait until generation is complete, then return the full cleaned response
           // so JSON tool blocks are parsed and executed correctly.
+          // W6-T12: force-complete cap — independent of UI heuristics. If the
+          // response has been visible for >45s and its length stable for >10s,
+          // complete even when _detectUiState still says "generating" (DeepSeek
+          // cursor blink can keep that true forever, starving tool delivery).
+          if (session && _shouldForceGenericComplete({
+            firstSeenAt: session._genericFirstSeenAt,
+            lastLengthChangeAt: session._genericLastLengthChangeAt,
+            uiGenerating: uiState.isGenerating,
+          }, Date.now())) {
+            uiState.isGenerating = false;
+            log.warn(`[_poll] generic-provider: force-complete cap reached (45s seen + 10s length-stable) — completing despite UI still generating`);
+          }
           if (uiState.isGenerating) {
             return { thinking: '', response: '', canSteer: uiState.canSteer, isGenerating: true, source: generic.source };
           }
@@ -8503,4 +8545,6 @@ module.exports = {
   // (verified: no `this` usage in its body), so a prototype-level wrapper is safe.
   extractResponseFromCompleteJson,
   _extractJsonToolCalls: (text) => KimiBridge.prototype._extractJsonToolCalls.call(null, text),
+  // W6-T12: pure helper exported for unit tests.
+  _shouldForceGenericComplete,
 };

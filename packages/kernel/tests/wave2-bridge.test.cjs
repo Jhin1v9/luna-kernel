@@ -523,3 +523,32 @@ test('W6-T9b: _extractJsonToolCalls Strategy 2 matches the script key', () => {
   assert.ok(tools[0].params.code.includes('echo oi'),
     'executeScript params.code must carry the script body');
 });
+
+// ── W6-T12: DeepSeek force-complete cap ──
+// UI completion heuristics (cursor blink etc.) can keep isGenerating=true
+// forever on generic providers. A pure cap must force completion after 45s
+// visible + 10s length-stable so tools are still delivered.
+
+test('W6-T12a: force-complete decision fires after cap with stable length', () => {
+  const { _shouldForceGenericComplete } = require(BRIDGE_PATH);
+  const now = Date.now();
+  assert.strictEqual(_shouldForceGenericComplete({ firstSeenAt: now - 50_000, lastLengthChangeAt: now - 12_000, uiGenerating: true }, now), true,
+    'past cap + length-stable 10s must force-complete even while UI says generating');
+  assert.strictEqual(_shouldForceGenericComplete({ firstSeenAt: now - 10_000, lastLengthChangeAt: now - 12_000, uiGenerating: true }, now), false,
+    'before the 45s cap must not force');
+  assert.strictEqual(_shouldForceGenericComplete({ firstSeenAt: now - 50_000, lastLengthChangeAt: now - 2_000, uiGenerating: true }, now), false,
+    'still-growing text (< 10s length-stable) must not force');
+  assert.strictEqual(_shouldForceGenericComplete({ firstSeenAt: now - 50_000, lastLengthChangeAt: now - 12_000, uiGenerating: false }, now), false,
+    'must not force when the UI already reports not-generating');
+});
+
+test('W6-T12b: generic-provider block wires the force-complete helper', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  // Anchor on the turn-tracking field: its first occurrence IS the generic
+  // block wiring ('detectedTools' would anchor the dom-structure in-page code).
+  const window = sliceAround(src, '_genericFirstSeenAt', 8000);
+  assert.ok(window.includes('_shouldForceGenericComplete'),
+    'generic completion must consult the force-complete helper');
+  assert.ok(window.includes('generic-provider'),
+    'slice must sit inside the generic-provider block');
+});
