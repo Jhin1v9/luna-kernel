@@ -14,6 +14,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const { clampExecTimeout } = require('./lib/exec-timeout.cjs');
+const { buildToolSchemas } = require('./lib/tool-registry.cjs');
 const path = require('path');
 
 // ── Config ──
@@ -148,68 +149,15 @@ class IdempotencyStore {
 }
 
 // ── 4. Schema Validation ──
-const TOOL_SCHEMAS = {
-  readFile: {
-    required: ['path'],
-    types: { path: 'string', line_offset: 'number', n_lines: 'number' },
-    pathMustExist: true,
-  },
-  writeFile: {
-    required: ['path', 'content'],
-    types: { path: 'string', content: 'string' },
-    pathMustBeAbsolute: true,
-    pathMustNotContain: ['..', '~'],
-  },
-  replaceInFile: {
-    required: ['path', 'old', 'new'],
-    types: { path: 'string', old: 'string', new: 'string' },
-    pathMustBeAbsolute: true,
-  },
-  appendFile: {
-    required: ['path', 'content'],
-    types: { path: 'string', content: 'string' },
-  },
-  deleteFile: {
-    required: ['path'],
-    types: { path: 'string' },
-  },
-  executeShell: {
-    required: ['command'],
-    types: { command: 'string' },
-    forbiddenPatterns: [/^\s*rm\s+-rf\s+\//, /^\s*mkfs/, /^\s*dd\s+if=/, /^\s*:\(\)\{\s*:\|:\s*&\s*\};:/],
-  },
-  // v3.3: Kimi native tools — schema entries for guard validation
-  ipython: {
-    required: ['code'],
-    types: { code: 'string' },
-  },
-  browser: {
-    required: ['url'],
-    types: { url: 'string' },
-  },
-  computer: {
-    required: ['action'],
-    types: { action: 'string', x: 'number', y: 'number', text: 'string' },
-  },
-  glob: {
-    required: ['pattern'],
-    types: { pattern: 'string' },
-  },
-  grep: {
-    required: ['pattern'],
-    types: { pattern: 'string', path: 'string', type: 'string' },
-  },
-  validateProject: {
-    required: ['path'],
-    types: { path: 'string' },
-    pathMustBeAbsolute: true,
-  },
-};
+// Wave 5: schemas live in the single tool registry (lib/tool-registry.cjs).
+// TOOL_SCHEMAS is DERIVED from it — identical content to the pre-Wave-5 inline
+// map, proven by the Phase 0 characterization net (wave5-tool-registry.test.cjs).
+const TOOL_SCHEMAS = buildToolSchemas();
 
 // Wave 3 (Fix H): tools sem schema estrito validam contra um default permissivo
-// (fail-open, warn-once) em vez de derrubar a tool call. Cobertura completa dos
-// ~111 tools restantes é trabalho da Wave 5 (registry gerado de
-// docs/luna-tools-registry.json vira a fonte dos schemas).
+// (fail-open, warn-once) em vez de derrubar a tool call. Wave 5: os schemas
+// migraram para lib/tool-registry.cjs (fonte única); tools sem entry de schema
+// seguem no fail-open até ganharem schemas no registry.
 const DEFAULT_SCHEMA = { required: [], types: {} };
 
 function validateToolCall(toolName, params) {

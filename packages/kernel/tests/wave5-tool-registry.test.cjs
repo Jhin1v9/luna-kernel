@@ -235,3 +235,15 @@ test('T2: registry meta is a superset of the 18 harvested ToolCard entries', () 
     assert.strictEqual(TOOL_REGISTRY[name]?.meta?.color, color, `${name}: color must match ToolCard`);
   }
 });
+
+// ── T3: guard consumes schemas from the registry ─────────────────────────────
+
+test('T3: guard derives TOOL_SCHEMAS from the registry (inline literal deleted)', () => {
+  const src = fs.readFileSync(GUARD, 'utf8');
+  assert.ok(src.includes("require('./lib/tool-registry.cjs')"), 'guard must require the registry');
+  assert.ok(!src.includes('const TOOL_SCHEMAS = {'), 'the inline schema literal must be gone');
+  assert.ok(src.includes('const TOOL_SCHEMAS = buildToolSchemas();'), 'schemas must be derived from the registry');
+  const { TOOL_SCHEMAS } = require('../luna-tool-guard.cjs');
+  const { buildToolSchemas } = require('../lib/tool-registry.cjs');
+  assert.deepStrictEqual(TOOL_SCHEMAS, buildToolSchemas(), 'exported TOOL_SCHEMAS must be the registry-derived map');
+});
