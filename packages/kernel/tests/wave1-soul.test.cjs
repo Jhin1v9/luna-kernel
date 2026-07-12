@@ -334,3 +334,20 @@ test('W6-T9c: _tryExtractRawToolJson classifies raw JSON responses', () => {
   assert.ok(window.includes('Object.assign(parsed, rawToolJson)'),
     're-dispatch must mutate parsed in place');
 });
+
+// ── W6-T11: soul dispatches setVisibleMode/getVisibleMode ────────────────────
+// Both tools are exported by luna-tools.cjs but the dispatch switch had no
+// cases for them → "Ferramenta desconhecida". Source-pin the cases AND that
+// they actually dispatch (not just mention the names).
+
+test('W6e-a: soul dispatches setVisibleMode/getVisibleMode', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  assert.ok(src.includes("case 'setVisibleMode'") && src.includes("case 'getVisibleMode'"),
+    'dispatch cases must exist in the lunaTools.* switch');
+  const idx = src.indexOf("case 'setVisibleMode'");
+  const window = src.slice(idx, idx + 800);
+  assert.ok(window.includes('lunaTools.setVisibleMode'),
+    'setVisibleMode case must call lunaTools.setVisibleMode (dispatch, not just a mention)');
+  assert.ok(window.includes('getVisibleMode'),
+    'the dispatch window must also read back getVisibleMode');
+});

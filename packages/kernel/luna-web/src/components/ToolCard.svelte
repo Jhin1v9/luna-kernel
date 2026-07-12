@@ -105,6 +105,10 @@
     </details>
   {/if}
 
+  {#if result?.warning}
+    <div class="tool-warning">{result.warning}</div>
+  {/if}
+
   {#if result?.error}
     <div class="error-message">{result.error}</div>
   {/if}
@@ -443,6 +447,16 @@
   @keyframes pulse-live {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
+  }
+  .tool-warning {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: rgba(245, 158, 11, 0.1);
+    border-radius: 6px;
+    color: #fbbf24;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    word-break: break-word;
   }
   .error-message {
     margin-top: 8px;

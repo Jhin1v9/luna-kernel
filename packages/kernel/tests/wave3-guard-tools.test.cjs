@@ -1229,3 +1229,17 @@ test('W6-T10d: luna-tools consumes the resolver (no hardcoded gnome-terminal spa
   assert.ok(!src.includes("spawn('gnome-terminal'"), 'hardcoded gnome-terminal spawn must be gone');
   assert.ok(!src.includes("execSync('which gnome-terminal')"), 'per-call which must be gone');
 });
+
+// ── W6-T11: invisible-fallback results carry a visible warning ───────────────
+// All three degradation paths (resolver-null, spawn-error, ENOENT-no-log) must
+// annotate the fallback result so the user learns visible mode didn't open.
+
+test('W6e-b: fallback results carry a visible warning', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  assert.ok(src.includes('visibleFallback'), 'fallbacks must annotate the result');
+  assert.ok(src.includes('modo invisível'), 'PT-BR warning text must be present');
+  const count = (src.match(/fallback\.warning = /g) || []).length;
+  assert.ok(count >= 3, `all three fallback sites must set the warning (found ${count})`);
+  const flagCount = (src.match(/fallback\.visibleFallback = true/g) || []).length;
+  assert.ok(flagCount >= 3, `all three fallback sites must set visibleFallback (found ${flagCount})`);
+});

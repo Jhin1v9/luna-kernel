@@ -267,7 +267,7 @@ test('T4: committed toolMeta.generated.js is byte-identical to a fresh render (n
     'generated file is stale — regenerate with: node scripts/gen-tool-meta.cjs');
 });
 
-test('T4: generated maps match the pre-Wave-5 ToolCard maps exactly (behavior-neutral)', () => {
+test('T4: generated maps match the pre-Wave-5 ToolCard maps exactly (behavior-neutral; W6-T11 added the visible-mode entries)', () => {
   const { TOOL_COLORS, TOOL_ICONS } = require('../luna-web/src/lib/toolMeta.generated.js');
   assert.deepStrictEqual(TOOL_COLORS, {
     writeFile: '#3b82f6', readFile: '#22c55e', executeShell: '#a855f7',
@@ -277,6 +277,7 @@ test('T4: generated maps match the pre-Wave-5 ToolCard maps exactly (behavior-ne
     dashboardCreateLead: '#ec4899', dashboardListLeads: '#ec4899',
     dashboardGetFinanceSummary: '#ec4899', replaceInFile: '#06b6d4',
     ipython: '#f59e0b', web_search: '#f97316', browser: '#3b82f6',
+    setVisibleMode: '#22c55e', getVisibleMode: '#94a3b8',
   });
   assert.deepStrictEqual(TOOL_ICONS, {
     writeFile: '📄', readFile: '👁', executeShell: '⚡',
@@ -286,6 +287,7 @@ test('T4: generated maps match the pre-Wave-5 ToolCard maps exactly (behavior-ne
     dashboardCreateLead: '👤', dashboardListLeads: '👥',
     dashboardGetFinanceSummary: '💰', replaceInFile: '✏️',
     ipython: '🐍', web_search: '🌐', browser: '🌍',
+    setVisibleMode: '👁', getVisibleMode: '🙈',
   });
 });
 

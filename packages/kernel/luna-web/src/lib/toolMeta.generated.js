@@ -18,6 +18,8 @@ export const TOOL_COLORS = {
   dashboardCreateLead: "#ec4899",
   dashboardListLeads: "#ec4899",
   dashboardGetFinanceSummary: "#ec4899",
+  setVisibleMode: "#22c55e",
+  getVisibleMode: "#94a3b8",
   ipython: "#f59e0b",
 };
 
@@ -39,5 +41,7 @@ export const TOOL_ICONS = {
   dashboardCreateLead: "👤",
   dashboardListLeads: "👥",
   dashboardGetFinanceSummary: "💰",
+  setVisibleMode: "👁",
+  getVisibleMode: "🙈",
   ipython: "🐍",
 };

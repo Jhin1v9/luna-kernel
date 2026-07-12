@@ -456,3 +456,15 @@ test('T9: action_progress rows skip per-event persistence (perf follow-up)', () 
   assert.ok(src.includes("persist: ev.type !== 'action_progress'"), 'progress chunks must skip per-chunk session persistence');
   assert.ok(src.includes('if (!persist) return;'), 'addMessageToSession must honor the persist flag');
 });
+
+// ── W6-T11: ToolCard renders result warnings ─────────────────────────────────
+// Visible-mode fallbacks annotate the tool result with `warning` (W6e-b);
+// the card must surface it next to the error block.
+
+test('W6e-c: ToolCard renders result warnings', () => {
+  const TOOL_CARD = path.join(REPO, 'packages/kernel/luna-web/src/components/ToolCard.svelte');
+  const src = fs.readFileSync(TOOL_CARD, 'utf8');
+  assert.ok(src.includes('result?.warning') || src.includes('result.warning'),
+    'ToolCard must show warnings from the tool result');
+  assert.ok(src.includes('tool-warning'), 'ToolCard must style the warning block');
+});

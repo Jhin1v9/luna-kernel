@@ -461,10 +461,10 @@ const TOOL_REGISTRY = {
     meta: { icon: null, color: null, label: null },
   },
   "setVisibleMode": {
-    meta: { icon: null, color: null, label: null },
+    meta: { icon: "👁", color: "#22c55e", label: null },
   },
   "getVisibleMode": {
-    meta: { icon: null, color: null, label: null },
+    meta: { icon: "🙈", color: "#94a3b8", label: null },
   },
   "lunaSelfUpdate": {
     meta: { icon: null, color: null, label: null },

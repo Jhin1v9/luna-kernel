@@ -4468,6 +4468,13 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'getCurrentDirectory': return lunaTools.getCurrentDirectory();
               case 'openDebugTerminal': return lunaTools.openDebugTerminal(p);
               case 'think': return lunaTools.think(p.thought || p.reasoning || p.text);
+              case 'setVisibleMode': {
+                // W6-T11 review: honor common LLM boolean spellings — a string
+                // "false" or numeric 0 must not flip visible mode ON.
+                lunaTools.setVisibleMode(p.enabled !== false && p.enabled !== 'false' && p.enabled !== 0);
+                return { success: true, visibleMode: lunaTools.getVisibleMode() };
+              }
+              case 'getVisibleMode': return { success: true, visibleMode: lunaTools.getVisibleMode() };
               case 'dashboardCreateTask': return lunaTools.dashboardCreateTask(p);
               case 'dashboardListTasks': return lunaTools.dashboardListTasks(p);
               case 'dashboardUpdateTask': return lunaTools.dashboardUpdateTask(p);

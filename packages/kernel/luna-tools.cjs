@@ -876,8 +876,12 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
     if (!term) {
       try { fs.unlinkSync(scriptFile); } catch {}
       try { fs.unlinkSync(tmpFile); } catch {}
-      // W6-T10: resolver-null fallback (warning annotation lands in W6-T11)
-      executeShell(command, { ...opts, visible: false }, onProgress).then(resolve);
+      // W6-T10: resolver-null fallback; W6-T11: annotate so the user sees the degradation
+      executeShell(command, { ...opts, visible: false }, onProgress).then((fallback) => {
+        fallback.warning = '⚠️ Terminal visível não abriu — executado em modo invisível';
+        fallback.visibleFallback = true;
+        resolve(fallback);
+      });
       return;
     }
     const child = spawn(term.bin, _argvFor(term.style, term.bin, scriptFile, term.extra).slice(1), {
@@ -912,6 +916,8 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
       // fallback to invisible shell execution so the command still runs.
       console.warn(`[executeShellVisible] Terminal spawn failed: ${err.message}. Falling back to invisible shell.`);
       const fallback = await executeShell(command, { ...opts, visible: false }, onProgress);
+      fallback.warning = '⚠️ Terminal visível não abriu — executado em modo invisível';
+      fallback.visibleFallback = true;
       resolve(fallback);
     });
 
@@ -947,6 +953,8 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
           if (e && e.code === 'ENOENT') {
             console.warn('[executeShellVisible] Terminal produced no log — falling back to invisible shell.');
             const fallback = await executeShell(command, { ...opts, visible: false }, onProgress);
+            fallback.warning = '⚠️ Terminal visível não abriu — executado em modo invisível';
+            fallback.visibleFallback = true;
             return resolve(fallback);
           }
           const { reason, suggestion } = _classifyShellError(command, e.message, 1, false, opts.timeout || 60);

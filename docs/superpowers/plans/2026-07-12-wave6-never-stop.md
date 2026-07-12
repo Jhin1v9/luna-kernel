@@ -370,7 +370,7 @@ New module per investigation C: `TERMINAL_CANDIDATES` (x-terminal-emulator[e] �
 
 **Why (C-Q3/Q4):** `setVisibleMode`/`getVisibleMode` are exported but fall into "ferramenta desconhecida" in the soul switch; the user never learns when visible mode degrades.
 
-- [ ] **T11.1. Failing tests**
+- [x] **T11.1. Failing tests**
 
 ```js
 test('W6e: soul dispatches setVisibleMode/getVisibleMode', async () => {
@@ -388,7 +388,7 @@ test('W6e: ToolCard renders result warnings', () => {
 });
 ```
 
-- [ ] **T11.2. Implement**
+- [x] **T11.2. Implement**
 
 1. Soul cases: `case 'setVisibleMode': return ok({ visibleMode: (lunaTools.setVisibleMode(p.enabled !== false), lunaTools.getVisibleMode()) });` + `case 'getVisibleMode': return ok({ visibleMode: lunaTools.getVisibleMode() });` (match the real dispatch idiom at `:4287-4588` — read neighbors first).
 2. Registry: add both tools (meta icons 👁/🙈-style; no schema — fail-open is fine); update the wave5 coverage exclusion list (`wave5-tool-registry.test.cjs:185-186`) if it diffs against exports.
@@ -396,7 +396,7 @@ test('W6e: ToolCard renders result warnings', () => {
 4. ToolCard: `{#if result?.warning}<div class="tool-warning">{result.warning}</div>}` + minimal style.
 5. Rebuild dist (`corepack pnpm build` in luna-web) and commit dist.
 
-- [ ] **T11.3. Verify + commit** — wave1 + wave3 + wave4 + wave5 + build + full regression (200→203). `feat(soul,frontend): visible-mode tools dispatchable + fallback warning surfaced in ToolCard`.
+- [x] **T11.3. Verify + commit** — wave1 + wave3 + wave4 + wave5 + build + full regression (200→203). `feat(soul,frontend): visible-mode tools dispatchable + fallback warning surfaced in ToolCard`. (verified 203/203 2026-07-12; commit deferred — adversarial review follows)
 
 ---
 
