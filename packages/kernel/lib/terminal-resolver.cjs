@@ -15,7 +15,8 @@ const path = require('path');
 
 // Ordered candidates — Debian alternatives first, then GNOME family, then others.
 // style drives argv construction in _argvFor:
-//   dashdash → bin --wait -- bash scriptFile  (gnome-terminal family)
+//   dashdash → bin --wait -- bash scriptFile  (gnome-terminal family, REAL binaries)
+//   xterm    → bin -e "bash scriptFile"       (gnome-terminal.wrapper — see W7-T3 below)
 //   e        → bin -e bash scriptFile         (xterm/konsole/alacritty family)
 //   plain    → bin bash scriptFile            (kitty: no exec flag)
 const TERMINAL_CANDIDATES = [
@@ -33,12 +34,19 @@ const TERMINAL_CANDIDATES = [
 // W6-T10 review: the chosen bin is often a SYMLINK (Debian alternatives) whose
 // real binary decides blocking semantics — and executeShellVisible detects
 // completion via the terminal process' close event. gnome-terminal family
-// forks without --wait (→ force dashdash style), konsole forks without
-// --nofork (→ inject it), otherwise `close` fires immediately and the command
-// double-executes (visible terminal + invisible fallback) or fabricates success.
+// forks without --wait (→ force dashdash style on REAL binaries), konsole
+// forks without --nofork (→ inject it), otherwise `close` fires immediately
+// and the command double-executes (visible terminal + invisible fallback) or
+// fabricates success.
+// W7-T3 (2026-07-12, verified live): the Debian perl gnome-terminal.wrapper
+// SILENTLY DROPS `-- bash script` argv (its arg parser ignores unknown
+// tokens) → empty --wait window that never closes, no log, invisible fallback
+// double-executes. It honors the xterm convention instead: a SINGLE string
+// after -e (`-e 'bash script'`; the wrapper adds --wait itself) → style xterm.
 const REAL_BIN_OVERRIDES = {
   'gnome-terminal': { style: 'dashdash' },
-  'gnome-terminal.wrapper': { style: 'dashdash' },
+  'gnome-terminal.real': { style: 'dashdash' },
+  'gnome-terminal.wrapper': { style: 'xterm' },
   'kgx': { style: 'dashdash' },
   'gnome-console': { style: 'dashdash' },
   'konsole': { extra: ['--nofork'] },
@@ -119,6 +127,9 @@ function resolveTerminal(env = process.env) {
 /** argv templates per style (exported for tests + spawn sites). */
 function _argvFor(style, bin, scriptFile, extra = []) {
   if (style === 'dashdash') return [bin, ...extra, '--wait', '--', 'bash', scriptFile];
+  // xterm style: the command is ONE string arg after -e (xterm convention;
+  // required by the Debian gnome-terminal.wrapper, which adds --wait itself).
+  if (style === 'xterm') return [bin, ...extra, '-e', `bash ${scriptFile}`];
   if (style === 'plain') return [bin, ...extra, 'bash', scriptFile];
   return [bin, ...extra, '-e', 'bash', scriptFile];
 }

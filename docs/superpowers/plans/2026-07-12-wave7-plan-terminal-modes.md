@@ -54,11 +54,11 @@
 
 ## Task 3 — Terminal: correct argv style + invisible by default
 
-- [ ] (a) `packages/kernel/lib/terminal-resolver.cjs` — realpath basename `gnome-terminal.wrapper` → new style `'xterm'`: `_argvFor('xterm', bin, scriptFile)` = `[bin, '-e', \`bash ${scriptFile}\`]` (single string arg, xterm convention; wrapper adds `--wait` itself). Keep dashdash for direct `kgx`/`gnome-console` binaries; konsole keeps `--nofork`. Verified live on this host 2026-07-12: `-e` style opens→runs→closes, wrapper exits 0, log written.
-- [ ] (b) `luna-tools.cjs:971` — `let visibleMode = false;` (opt-in via setVisibleMode tool/UI toggle; update comment: default invisible, visible only on explicit request).
+- [x] (a) `packages/kernel/lib/terminal-resolver.cjs` — realpath basename `gnome-terminal.wrapper` → new style `'xterm'`: `_argvFor('xterm', bin, scriptFile)` = `[bin, '-e', \`bash ${scriptFile}\`]` (single string arg, xterm convention; wrapper adds `--wait` itself). Keep dashdash for direct `kgx`/`gnome-console` binaries; konsole keeps `--nofork`. Verified live on this host 2026-07-12: `-e` style opens→runs→closes, wrapper exits 0, log written.
+- [x] (b) `luna-tools.cjs:971` — `let visibleMode = false;` (opt-in via setVisibleMode tool/UI toggle; update comment: default invisible, visible only on explicit request).
 - [ ] (c) Fecho: kill orphan `--wait` wrappers from the bug (pids 216953/216966 and any other empty Luna-spawned terminals) and report.
-- [ ] Tests (+2 → 210): resolver maps gnome-terminal.wrapper realpath → style 'xterm' (unit, stub realpath if needed per existing test patterns); `_argvFor('xterm', …)` returns `[bin,'-e','bash <file>']`; source-slice: `visibleMode = false` default in luna-tools.
-- [ ] Commit: `fix(tools): visible terminal uses xterm-style -e argv + invisible by default - no more orphan empty windows`.
+- [x] Tests (+3 → 217): resolver maps gnome-terminal.wrapper realpath → style 'xterm' (unit with a stubbed symlink tree); `_argvFor('xterm', …)` returns `[bin,'-e','bash <file>']`; source-slice: `visibleMode = false` default in luna-tools.
+- [x] Commit: `fix(tools): visible terminal uses xterm-style -e argv + invisible by default - no more orphan empty windows`.
 
 ## Task 4 — Bridge: typed message not submitted (Enter never fires)
 

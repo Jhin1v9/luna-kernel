@@ -1193,14 +1193,19 @@ test('W6-T10b: _argvFor builds argv per terminal style', () => {
   assert.ok(src.includes('REAL_BIN_OVERRIDES'), 'resolver must apply per-real-binary overrides');
   assert.ok(src.includes("'--nofork'"), 'konsole must get --nofork (it forks by default)');
   // Host-pinned: on this host x-terminal-emulator → gnome-terminal.wrapper, so
-  // the resolved style must be dashdash (wrapper passes --wait). Guarded so
-  // other hosts (x-terminal-emulator → xterm, etc.) don't fail the suite.
+  // the resolved style must be xterm (W7-T3: the perl wrapper swallows
+  // `-- bash script`; the single-string `-e 'bash script'` convention works).
+  // Real gnome-terminal binaries keep dashdash. Guarded so other hosts
+  // (x-terminal-emulator → xterm, etc.) don't fail the suite.
   const r = resolveTerminal({ PATH: process.env.PATH });
   if (r) {
     try {
       const real = path.basename(fs.realpathSync(require('child_process').execSync(
         `command -v ${r.bin}`, { encoding: 'utf8' }).trim()));
-      if (['gnome-terminal', 'gnome-terminal.wrapper', 'kgx', 'gnome-console'].includes(real)) {
+      if (real === 'gnome-terminal.wrapper') {
+        assert.strictEqual(r.style, 'xterm', `${r.bin} → gnome-terminal.wrapper must resolve to xterm style (W7-T3)`);
+      }
+      if (['gnome-terminal', 'gnome-terminal.real', 'kgx', 'gnome-console'].includes(real)) {
         assert.strictEqual(r.style, 'dashdash', `${r.bin} → ${real} must resolve to dashdash style`);
       }
       if (real === 'konsole') {
@@ -1242,4 +1247,40 @@ test('W6e-b: fallback results carry a visible warning', () => {
   assert.ok(count >= 3, `all three fallback sites must set the warning (found ${count})`);
   const flagCount = (src.match(/fallback\.visibleFallback = true/g) || []).length;
   assert.ok(flagCount >= 3, `all three fallback sites must set visibleFallback (found ${flagCount})`);
+});
+
+// ── W7-T3: visible terminal — xterm-style argv + invisible by default ──────
+// Live bug 2026-07-12: x-terminal-emulator → gnome-terminal.wrapper (Debian
+// perl wrapper) SILENTLY DROPS `-- bash script` argv → empty --wait window
+// that never closes, no log, and the invisible fallback double-executes. The
+// wrapper honors the xterm convention instead (ONE string after -e; it adds
+// --wait itself). And visibleMode must default to false (opt-in) — under PM2
+// `!detectHeadless()` was true, so every tool opened an uninvited window.
+
+test('W7-T3a: resolver maps a gnome-terminal.wrapper realpath to xterm style', () => {
+  withTmpDir((dir) => {
+    // Debian-style layout: a PATH-visible name whose REALPATH basename is
+    // gnome-terminal.wrapper (the perl wrapper that drops `-- bash script`).
+    const wrapper = path.join(dir, 'gnome-terminal.wrapper');
+    fs.writeFileSync(wrapper, '#!/bin/sh\n');
+    fs.symlinkSync(wrapper, path.join(dir, 'fake-terminal'));
+    const r = resolveTerminal({ TERMINAL: 'fake-terminal', PATH: dir });
+    assert.ok(r, 'must resolve the stub terminal');
+    assert.strictEqual(r.style, 'xterm', 'gnome-terminal.wrapper realpath must resolve to xterm style, not dashdash');
+  });
+});
+
+test('W7-T3b: _argvFor xterm style passes the command as ONE string after -e', () => {
+  assert.deepStrictEqual(_argvFor('xterm', 'x-terminal-emulator', '/tmp/s.sh'),
+    ['x-terminal-emulator', '-e', 'bash /tmp/s.sh']);
+  // The Debian wrapper adds --wait itself and swallows `--`; neither may appear.
+  const argv = _argvFor('xterm', 'bin', '/s.sh');
+  assert.ok(!argv.includes('--wait'), 'xterm style must not add --wait (the wrapper adds it)');
+  assert.ok(!argv.includes('--'), 'xterm style must not add -- (the wrapper swallows it)');
+});
+
+test('W7-T3c: luna-tools defaults visibleMode to false (visible is opt-in)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  assert.ok(/let visibleMode = false;/.test(src), 'visibleMode must default to false');
+  assert.ok(!src.includes('let visibleMode = !detectHeadless()'), 'detectHeadless-based default must be gone');
 });

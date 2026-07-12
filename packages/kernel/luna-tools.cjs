@@ -968,7 +968,12 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
 // v10.2-fix: Global visible mode — all commands open in terminal by default
 // v10.29-fix: Default to invisible on headless/VPS environments so commands
 // still execute instead of failing when no terminal emulator is resolvable.
-let visibleMode = !detectHeadless();
+// W7-T3 (2026-07-12): default to INVISIBLE, always. Visible mode is opt-in
+// via the setVisibleMode tool / UI toggle — W6-T10 made detectHeadless see
+// the display under PM2, so `!detectHeadless()` opened an uninvited window
+// for EVERY tool call. The visible path itself now works for real (xterm-style
+// argv, lib/terminal-resolver.cjs) when the user explicitly turns it on.
+let visibleMode = false;
 
 function setVisibleMode(mode) { visibleMode = mode; }
 function getVisibleMode() { return visibleMode; }
