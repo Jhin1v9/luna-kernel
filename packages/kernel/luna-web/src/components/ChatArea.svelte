@@ -79,7 +79,9 @@
     const contentHash = hashContent(cleanText.trim());
     if (flushedContentHashes.has(contentHash)) {
       console.log('[flushResponseBuffer] Duplicate content hash detected, skipping');
-      if (forceText !== null) responseBuffer = '';
+      // Wave 1 Fix C1: content is already rendered — clear the buffer on the
+      // delta path too, so a replayed prefix can't be re-appended by later deltas.
+      responseBuffer = '';
       return;
     }
     // Also check if any recent assistant message has this exact content
@@ -91,7 +93,7 @@
     });
     if (isDuplicate) {
       console.log('[flushResponseBuffer] Content already exists in recent assistant message, skipping');
-      if (forceText !== null) responseBuffer = '';
+      responseBuffer = ''; // Wave 1 Fix C1: same hardening as the hash guard above
       return;
     }
 
