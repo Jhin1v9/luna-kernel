@@ -8,11 +8,8 @@
 
 ### Soul (`luna-soul.cjs`)
 
-- [ ] 🟠 **Master prompt + persona + memories loaded then DISCARDED** — config template lacks `{{masterPrompt}}`/`{{personaContent}}`/`{{memoryContext}}` placeholders (`:310-325`); `LUNA_MASTER_PROMPT.md` (full tools table + exact JSON examples) never reaches the model. (owner-reported symptom #1)
-- [ ] 🟠 **Follow-up/toolLoop templates have NO JSON examples** (`:3766-3784`) — model invents formats mid-conversation, especially after newChat/compaction. (owner-reported symptom #1)
-- [ ] 🔴 **Silent exits — Luna stops responding** (owner-reported symptom #4), 9 confirmed paths; main: empty bridge response → CHAT `done` with empty string (`:2654-2658` + bridge `:7806`); `context_limit`/cancel return without `done` (`:2524`, `:2588`); bridge retry exhaustion falls through without error (`:2389`); `_waitPromisesWithDrain` infinite poll when a tool hangs (`:3958-3977`); dedup-cache ping-pong loop (`:1631-1651` + `MAX_LOOPS = MAX_SAFE_INTEGER :2365`).
-- [ ] 🟠 **Auto-continue triggers on pure response** (owner-reported symptom #5) — DOM poller scans response text for tool JSON ANYWHERE (bridge `:7786-7799`): a response that QUOTES a tool example gets executed for real; META/SUGGEST/LOAD_SKILL/UPDATE_MEMORY never set `output` (`:3528-3547`) → fall into `[CHECK]` auto-continue (`:2792-2799`).
-- [ ] 🟠 **Telegram persona path broken** — duplicated segments (`:4991`), `existsSync` fails silently → empty persona.
+- [ ] 🔴 **Silent exits — Luna stops responding** (owner-reported symptom #4) — PARTIALLY FIXED in Wave 1 (see Resolved). Remaining paths: bridge retry exhaustion falls through without error (`:2389`); `_waitPromisesWithDrain` infinite poll when a tool hangs (`:3958-3977`); dedup-cache ping-pong loop (`:1631-1651` + `MAX_LOOPS = MAX_SAFE_INTEGER :2365`).
+- [ ] 🟠 **Auto-continue triggers on pure response** (owner-reported symptom #5) — DOM poller scans response text for tool JSON ANYWHERE (bridge `:7786-7799`): a response that QUOTES a tool example gets executed for real; META/SUGGEST/LOAD_SKILL/UPDATE_MEMORY never set `output` (`:3528-3547`) → fall into `[CHECK]` auto-continue (`:2792-2799`). (Soul-side phantom guard hardened in Wave 1; bridge part remains.)
 - [ ] 🟡 **`invalidatePromptCache` never called** (`:117-127`) — prompt edits via UI never take effect until process restart.
 - [ ] 🟡 **Workspace `'luna-cli'` hardcoded in follow-up context** (`:3756-3757`) — multi-user isolation violation; same root cause makes the tool guard null for web/Telegram (see Tools section).
 - [ ] 🟡 **`_executedActionCache` grows unbounded** (`:1624`) — lazy per-key expiry only.
@@ -34,8 +31,7 @@
 
 ### Frontend (`luna-web`)
 
-- [ ] 🟠 **Tool cards render only partially** (owner-reported symptom #2) — 4 confirmed causes: backend dedup drops repeated `action_*` (`luna-chat-routes.js:498-503`, key lacks params/instanceId); `toolInstanceId` dropped in transport (`:506-517`, `:655-676`); `'ev-' + Date.now()` id collisions in the same ms (`:507`); failed tools never get `action_end` → card stuck "running" (frontend `TOOL_TIMEOUT_MS` is dead code).
-- [ ] 🔴 **Append bug — quadratic text duplication** (owner-reported symptom #3, primary cause) — `ChatArea.svelte:117-136`: buffer never cleared on the append path → each delta re-appends the whole buffer; settles only on `done` forceText replace.
+- [ ] 🟠 **Tool cards: failed tools stuck "running"** (owner-reported symptom #2, last remaining cause) — failed tools never get `action_end` → card stuck "running"; frontend `TOOL_TIMEOUT_MS` is dead code. (Transport causes fixed in Wave 1 — see Resolved.)
 - [ ] 🟠 **`setInterval` leak per tool** (`ChatArea.svelte:514-525`) — 100ms interval runs forever when `action_end` never arrives; map reset on reconnect without clearing old intervals (`:945`).
 - [ ] 🟠 **Zombie SSE reconnect** — backoff `setTimeout` not stored/cancellable (`api.js:159`); fires `connect()` after `disconnect()`, resets `isIntentionallyClosed`; `new SSEManager()` per reconnect discards the old one with pending timer (`ChatArea.svelte:948-949`).
 - [ ] 🟡 **`/api/chat/ack` never called** — backend eventLedger (cap 200) never cleared; every reconnect replays old events, relying on frontend dedup.
@@ -46,7 +42,6 @@
 - [ ] 🟡 **`window.fetch` monkey-patch reloads page on any 401** (`api.js:429-448`) — loses stream/state without warning.
 - [ ] 🟡 **Debug logs in production** — `console.log` with `new Error().stack` on every send (`ChatArea.svelte:1043, 1132`); `[SSE]` per event (`:364`).
 - [ ] 🟡 **Resize listener never removed** (`OrbBackground.svelte:139`).
-- [ ] 🟠 **Transport drops error/system event text** (found in Wave 1 quality review) — live path computes content as `ev.text || ev.fullResponse || ''` (`luna-chat-routes.js:496`), but the soul emits `{type:'error', error:...}` and `{type:'system', message:...}` → `msg.content` is `''`, SSE `eventData.error` never set, frontend renders "Erro desconhecido" / empty system bubble. Affects the new A4 PT-BR empty-response message and the pre-existing STREAM_CANCELLED message. Fix in Fix B: read `ev.error || ev.message` for these types.
 
 ### Tools / Guard (`luna-tools.cjs`, `luna-tool-guard.cjs`, `luna-code-validator.cjs`)
 
@@ -65,7 +60,16 @@
 
 ## Resolved
 
-(none tracked yet — resolved bugs moved here by luna-brain-sync reference the fixing commit)
+### Wave 1 (2026-07-11/12) — flow quick wins
+
+- [x] 🟠 **Master prompt discarded** — now injected into the system prompt, appended LAST so its exact JSON examples land at the end; the 20k cap applies only to the pre-master portion so the examples survive large brain context. (`11f0ce2`, `20a7b91`; tests `wave1-soul.test.cjs` A1/A1b)
+- [x] 🟠 **Follow-up/toolLoop templates without JSON examples** — exact `{"response": ...}` / `{"tool": ...}` examples appended to both templates. (`11f0ce2`; test A2)
+- [x] 🔴 **Silent exits (3 of the confirmed paths)** — `done` now emitted on context_limit, STREAM_CANCELLED, and empty-response (which also emits error + PT-BR system message). (`11f0ce2`) Remaining paths still open above.
+- [x] 🟠 **Telegram persona path broken** — fixed to `path.join(lunaKernel, 'personas', 'telegram-assistant.json')` + console.warn on miss. (`11f0ce2`)
+- [x] 🟠 **Phantom-tool guard too eager** — guard now fires only when the response came through a valid `{"response": ...}` JSON wrapper (oracle: plain non-array object with string `.response`). (`11f0ce2`, `8af1912`; test A3)
+- [x] 🟠 **Tool cards transport causes (3 of 4)** — dedup key includes `toolInstanceId || id` for action_* events; `toolInstanceId` persisted and forwarded on both SSE paths; event ids now `ev-${Date.now()}-${seq}` collision-free. (`62c4c96`, `838b758`; tests `wave1-chat-routes.test.cjs`)
+- [x] 🟠 **Transport dropped error/system event text** — content extracted from `ev.error || ev.message || ...`; SSE payloads match ChatArea handlers. (`62c4c96`)
+- [x] 🔴 **Append bug — quadratic text duplication** — `responseBuffer` cleared after every successful flush (and on duplicate-guard paths); dist rebuilt. (`0f5023d`, `4a781f8`, `1195fd6`)
 
 ---
 
