@@ -25,6 +25,7 @@ const http = require('http');
 const lunaConfig = require('./config/luna-config');
 const { looksBinary } = require('./lib/text-file.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
+const { clampExecTimeout } = require('./lib/exec-timeout.cjs');
 
 // v10.28-fix: Centralize runtime paths via LUNA_HOME. Auto-create dirs so the
 // Luna never fails with ENOENT on temp files across different PCs/VPS.
@@ -122,7 +123,7 @@ function safeExec(cmd, opts = {}) {
     const output = execSync(cmd, {
       encoding: 'utf8',
       cwd: opts.cwd || process.cwd(),
-      timeout: opts.timeout || 0, // v8.5-fix: no default timeout
+      timeout: clampExecTimeout(opts.timeout), // seconds in, ms out; default 60s, cap 600s
       maxBuffer: opts.maxBuffer || 1024 * 1024,
       stdio: ['pipe', 'pipe', 'ignore'],
     });
@@ -351,7 +352,7 @@ function executeScript(code, opts = {}) {
     fs.chmodSync(scriptPath, 0o755);
 
     // Executa o script
-    const result = safeExec(`${config.executor} "${scriptPath}"`, { cwd, timeout });
+    const result = safeExec(`${config.executor} "${scriptPath}"`, { cwd, timeout: timeout / 1000 });
 
     // Limpa arquivo temporário (não bloqueante)
     try { fs.unlinkSync(scriptPath); } catch {}
@@ -591,7 +592,7 @@ function searchFiles(pattern, opts = {}) {
     } else {
       cmd = `grep -rn --color=never -C ${opts.context || opts['-C'] || 2} --exclude-dir={node_modules,.git,dist,build,coverage,venv,.venv,__pycache__} --exclude={*.lock,*.log,*.min.*} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     }
-    const result = safeExec(cmd, { timeout: opts.timeout || 0 }); // v8.5-fix: no default timeout
+    const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
       if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [] });
       return err(result.error || result.stderr);
@@ -622,7 +623,7 @@ function grep(pattern, opts = {}) {
     } else {
       cmd = `grep -rn --color=never ${includeGlob} -C ${opts['-C'] || opts.context || 2} --exclude-dir={node_modules,.git,dist,build} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     }
-    const result = safeExec(cmd, { timeout: opts.timeout || 0 }); // v8.5-fix: no default timeout
+    const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
       if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [] });
       return err(result.error || result.stderr);
@@ -1026,7 +1027,7 @@ function runTests(opts = {}) {
   const cwd = resolvePath(opts.cwd || '.');
   // User can override with explicit command
   if (opts.command) {
-    const result = safeExec(opts.command, { cwd, timeout: (opts.timeout || 120) * 1000 });
+    const result = safeExec(opts.command, { cwd, timeout: opts.timeout || 120 });
     return ok({ framework: 'custom', command: opts.command, ...result });
   }
   // Detect test framework
@@ -1051,7 +1052,7 @@ function runTests(opts = {}) {
   else if (hasGradle) cmd = 'gradle test';
   else return err('Nenhum framework de teste detectado. Use opts.command para especificar um comando customizado.');
 
-  const result = safeExec(cmd, { cwd, timeout: (opts.timeout || 120) * 1000 });
+  const result = safeExec(cmd, { cwd, timeout: opts.timeout || 120 });
   return ok({
     framework: hasPackageJson ? (cmd.startsWith('pnpm') ? 'pnpm' : cmd.startsWith('yarn') ? 'yarn' : 'npm') : hasPytest ? 'pytest' : hasCargo ? 'cargo' : hasGo ? 'go' : hasMaven ? 'maven' : 'gradle',
     command: cmd,
@@ -1085,7 +1086,7 @@ function checkSyntax(filePath, opts = {}) {
       return ok({ path: resolved, note: `Nenhum checker disponível para extensão ${ext}`, valid: true });
   }
 
-  const result = safeExec(cmd, { timeout: 15000 });
+  const result = safeExec(cmd, { timeout: 15 });
   return ok({
     path: resolved,
     language: ext.slice(1),
@@ -1108,7 +1109,7 @@ function installPackages(packages, opts = {}) {
   else if (hasCargo) cmd = `cargo add ${pkgList}`;
   else return err('Nenhum gerenciador de pacotes detectado (npm, pip, cargo)');
 
-  const result = safeExec(cmd, { cwd, timeout: (opts.timeout || 300) * 1000 });
+  const result = safeExec(cmd, { cwd, timeout: opts.timeout || 300 });
   return ok({ manager: hasPackageJson ? 'npm' : hasRequirements ? 'pip' : 'cargo', packages: pkgList, ...result });
 }
 
@@ -1414,7 +1415,7 @@ async function dashboardApi(path, method = 'GET', body = null) {
     const token = getInternalApiToken();
     if (token) opts.headers['Authorization'] = `Bearer ${token}`;
     if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(`${DASHBOARD_BASE}${path}`, opts);
+    const res = await fetch(`${DASHBOARD_BASE}${path}`, { ...opts, signal: AbortSignal.timeout(15000) });
     if (!res.ok) {
       const bodyText = await res.text().catch(() => '');
       return err(`Dashboard API ${path}: ${res.status} ${res.statusText}${bodyText ? ' — ' + bodyText.slice(0, 200) : ''}`);

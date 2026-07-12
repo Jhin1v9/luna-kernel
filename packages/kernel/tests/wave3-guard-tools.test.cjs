@@ -2,6 +2,7 @@
 // Fix A: readFile binary detection + 2MB byte cap (lib/text-file.cjs + luna-tools.cjs)
 // Fix B: atomic writeFile via tmp+rename (lib/atomic-write.cjs + luna-tools.cjs + luna-soul.cjs)
 // Fix C: IdempotencyStore TTL + mark-on-success + success:true on skip (luna-tool-guard.cjs)
+// Fix D: safeExec default 60s/600s cap + dashboardApi 15s abort (lib/exec-timeout.cjs + luna-tools.cjs)
 // Run: node --test packages/kernel/tests/wave3-guard-tools.test.cjs
 'use strict';
 
@@ -295,4 +296,46 @@ test('C4: soul auto-commit gate excludes skipped results (content assertion)', (
     window.includes('result.success && !result.skipped'),
     'auto-commit gate must exclude idempotency-skipped results'
   );
+});
+
+// ── Fix D: safeExec default/cap + dashboardApi abort ─────────────────────────
+
+const { clampExecTimeout } = require('../lib/exec-timeout.cjs');
+const { runTests } = require('../luna-tools.cjs');
+
+test('D1: clampExecTimeout falls back to 60s default on null/0/negative/garbage', () => {
+  for (const bad of [undefined, null, 0, -5, 'abc', NaN, Infinity]) {
+    assert.strictEqual(clampExecTimeout(bad), 60000, `clampExecTimeout(${bad}) must be 60000`);
+  }
+});
+
+test('D1: clampExecTimeout converts seconds to ms and caps at 600s', () => {
+  assert.strictEqual(clampExecTimeout(5), 5000);
+  assert.strictEqual(clampExecTimeout(120), 120000);
+  assert.strictEqual(clampExecTimeout(99999), 600000, 'values above the cap must clamp to 600000ms');
+  assert.strictEqual(clampExecTimeout(5, 10, 30), 5000, 'custom default/max must be honored');
+  assert.strictEqual(clampExecTimeout(undefined, 10, 30), 10000);
+  assert.strictEqual(clampExecTimeout(99, 10, 30), 30000);
+});
+
+test('D2: safeExec no longer defaults to an unlimited timeout (content assertion)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  const fnIdx = src.indexOf('function safeExec(');
+  assert.ok(fnIdx !== -1, 'safeExec must exist');
+  const body = src.slice(fnIdx, fnIdx + 600);
+  assert.ok(!body.includes('timeout: opts.timeout || 0'), 'safeExec must not keep the v8.5 unlimited default');
+  assert.ok(body.includes('timeout: clampExecTimeout(opts.timeout)'), 'safeExec must clamp via clampExecTimeout');
+});
+
+test('D2: a short-timeout exec of sleep actually terminates (no 30s hang)', () => {
+  const start = Date.now();
+  const result = runTests({ command: 'sleep 30', timeout: 1 });
+  const elapsed = Date.now() - start;
+  assert.strictEqual(result.success, false, 'killed command must report success:false');
+  assert.ok(elapsed < 5000, `must abort near the 1s timeout, not wait for sleep 30 (took ${elapsed}ms)`);
+});
+
+test('D3: dashboardApi fetch carries a 15s AbortSignal (content assertion)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  assert.ok(src.includes('AbortSignal.timeout(15000)'), 'dashboardApi fetch must use AbortSignal.timeout(15000)');
 });
