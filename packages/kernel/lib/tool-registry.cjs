@@ -509,7 +509,11 @@ const TOOL_REGISTRY = {
 function buildToolSchemas() {
   const schemas = {};
   for (const [name, entry] of Object.entries(TOOL_REGISTRY)) {
-    if (entry.schema) schemas[name] = entry.schema;
+    // Shallow-frozen copy: consumers (the guard) must never mutate a schema and
+    // thereby corrupt the shared registry entry. Nested objects stay shared by
+    // reference on purpose — deep-freezing would break RegExp instances in
+    // forbiddenPatterns and buys nothing since all consumers are read-only.
+    if (entry.schema) schemas[name] = Object.freeze({ ...entry.schema });
   }
   return schemas;
 }
