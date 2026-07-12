@@ -1,5 +1,9 @@
 <script>
   import { formatDuration } from '../utils.js';
+  // Wave 5: icon/color maps are GENERATED from the backend tool registry
+  // (packages/kernel/lib/tool-registry.cjs → scripts/gen-tool-meta.cjs).
+  // Never hand-edit toolMeta.generated.js — update the registry and regenerate.
+  import { TOOL_COLORS, TOOL_ICONS } from '../lib/toolMeta.generated.js';
 
   export let tool = '';
   export let params = {};
@@ -7,26 +11,6 @@
   export let duration = 0;
   export let status = 'running'; // v9.4: external status from parent
   export let liveOutput = ''; // v9.5: real-time streaming output
-
-  const TOOL_COLORS = {
-    writeFile: '#3b82f6', readFile: '#22c55e', executeShell: '#a855f7',
-    searchWeb: '#f97316', searchFiles: '#f97316', gitStatus: '#6b7280',
-    gitDiff: '#6b7280', gitLog: '#6b7280', gitCommit: '#6b7280',
-    dashboardCreateTask: '#ec4899', dashboardListTasks: '#ec4899',
-    dashboardCreateLead: '#ec4899', dashboardListLeads: '#ec4899',
-    dashboardGetFinanceSummary: '#ec4899', replaceInFile: '#06b6d4',
-    ipython: '#f59e0b', web_search: '#f97316', browser: '#3b82f6',
-  };
-
-  const TOOL_ICONS = {
-    writeFile: '📄', readFile: '👁', executeShell: '⚡',
-    searchWeb: '🌐', searchFiles: '🔍', gitStatus: '🌿',
-    gitDiff: '📊', gitLog: '📜', gitCommit: '💾',
-    dashboardCreateTask: '📋', dashboardListTasks: '📋',
-    dashboardCreateLead: '👤', dashboardListLeads: '👥',
-    dashboardGetFinanceSummary: '💰', replaceInFile: '✏️',
-    ipython: '🐍', web_search: '🌐', browser: '🌍',
-  };
 
   $: displayStatus = status || (result ? (result.success !== false ? 'completed' : 'failed') : 'running');
   $: color = TOOL_COLORS[tool] || '#6b7280';

@@ -247,3 +247,44 @@ test('T3: guard derives TOOL_SCHEMAS from the registry (inline literal deleted)'
   const { buildToolSchemas } = require('../lib/tool-registry.cjs');
   assert.deepStrictEqual(TOOL_SCHEMAS, buildToolSchemas(), 'exported TOOL_SCHEMAS must be the registry-derived map');
 });
+
+// ── T4: frontend metadata codegen ────────────────────────────────────────────
+
+test('T4: committed toolMeta.generated.js is byte-identical to a fresh render (no drift)', () => {
+  const { render } = require(path.join(REPO, 'scripts/gen-tool-meta.cjs'));
+  const committed = fs.readFileSync(
+    path.join(REPO, 'packages/kernel/luna-web/src/lib/toolMeta.generated.js'), 'utf8');
+  assert.strictEqual(committed, render(),
+    'generated file is stale — regenerate with: node scripts/gen-tool-meta.cjs');
+});
+
+test('T4: generated maps match the pre-Wave-5 ToolCard maps exactly (behavior-neutral)', () => {
+  const { TOOL_COLORS, TOOL_ICONS } = require('../luna-web/src/lib/toolMeta.generated.js');
+  assert.deepStrictEqual(TOOL_COLORS, {
+    writeFile: '#3b82f6', readFile: '#22c55e', executeShell: '#a855f7',
+    searchWeb: '#f97316', searchFiles: '#f97316', gitStatus: '#6b7280',
+    gitDiff: '#6b7280', gitLog: '#6b7280', gitCommit: '#6b7280',
+    dashboardCreateTask: '#ec4899', dashboardListTasks: '#ec4899',
+    dashboardCreateLead: '#ec4899', dashboardListLeads: '#ec4899',
+    dashboardGetFinanceSummary: '#ec4899', replaceInFile: '#06b6d4',
+    ipython: '#f59e0b', web_search: '#f97316', browser: '#3b82f6',
+  });
+  assert.deepStrictEqual(TOOL_ICONS, {
+    writeFile: '📄', readFile: '👁', executeShell: '⚡',
+    searchWeb: '🌐', searchFiles: '🔍', gitStatus: '🌿',
+    gitDiff: '📊', gitLog: '📜', gitCommit: '💾',
+    dashboardCreateTask: '📋', dashboardListTasks: '📋',
+    dashboardCreateLead: '👤', dashboardListLeads: '👥',
+    dashboardGetFinanceSummary: '💰', replaceInFile: '✏️',
+    ipython: '🐍', web_search: '🌐', browser: '🌍',
+  });
+});
+
+test('T4: ToolCard imports the generated module (hand-maintained maps deleted)', () => {
+  const src = fs.readFileSync(TOOL_CARD, 'utf8');
+  assert.ok(src.includes("from '../lib/toolMeta.generated.js'"), 'ToolCard must import the generated module');
+  assert.ok(!src.includes('const TOOL_COLORS = {'), 'inline TOOL_COLORS map must be gone');
+  assert.ok(!src.includes('const TOOL_ICONS = {'), 'inline TOOL_ICONS map must be gone');
+  assert.ok(src.includes("TOOL_COLORS[tool] || '#6b7280'"), 'color fallback must be preserved');
+  assert.ok(src.includes("TOOL_ICONS[tool] || '🔧'"), 'icon fallback must be preserved');
+});
