@@ -112,9 +112,12 @@ class CircuitBreaker {
 }
 
 // ── 3. Idempotency Keys ──
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+
 class IdempotencyStore {
-  constructor() {
-    this.keys = new Set(); // idempotencyKey -> boolean
+  constructor(nowFn = Date.now) {
+    this.keys = new Map(); // idempotencyKey -> timestamp
+    this.nowFn = nowFn;
   }
 
   generateKey(toolName, params) {
@@ -126,11 +129,16 @@ class IdempotencyStore {
   }
 
   isProcessed(key) {
-    return this.keys.has(key);
+    if (!this.keys.has(key)) return false;
+    if (this.nowFn() - this.keys.get(key) >= IDEMPOTENCY_TTL_MS) {
+      this.keys.delete(key); // expired: allow a legitimate re-execution
+      return false;
+    }
+    return true;
   }
 
   markProcessed(key) {
-    this.keys.add(key);
+    this.keys.set(key, this.nowFn());
   }
 
   clear() {
@@ -425,7 +433,7 @@ class ToolGuard {
     const idemKey = this.idempotency.generateKey(toolName, params);
     if (this.idempotency.isProcessed(idemKey) && options.idempotent !== false) {
       console.log(`[tool-guard] Idempotency: skipping duplicate ${label}`);
-      return { skipped: true, reason: 'already processed', idempotencyKey: idemKey };
+      return { success: true, skipped: true, reason: 'already processed', idempotencyKey: idemKey, message: 'Operação idêntica já executada recentemente (idempotência).' };
     }
 
     // 6. Checksum antes de editar
@@ -452,8 +460,11 @@ class ToolGuard {
     // 2. Record circuit
     this.circuit.record(toolName, params);
 
-    // 3. Mark idempotency
-    this.idempotency.markProcessed(idemKey);
+    // 3. Mark idempotency — only on success: a failed result ({success:false})
+    // must stay retryable instead of being silently "skipped" forever.
+    if (result && result.success !== false) {
+      this.idempotency.markProcessed(idemKey);
+    }
 
     // 6. Update checksum após editar
     if (['writeFile', 'replaceInFile', 'appendFile'].includes(toolName)) {

@@ -1,6 +1,7 @@
 // wave3-guard-tools.test.cjs — Wave 3 regression tests
 // Fix A: readFile binary detection + 2MB byte cap (lib/text-file.cjs + luna-tools.cjs)
 // Fix B: atomic writeFile via tmp+rename (lib/atomic-write.cjs + luna-tools.cjs + luna-soul.cjs)
+// Fix C: IdempotencyStore TTL + mark-on-success + success:true on skip (luna-tool-guard.cjs)
 // Run: node --test packages/kernel/tests/wave3-guard-tools.test.cjs
 'use strict';
 
@@ -13,6 +14,7 @@ const path = require('node:path');
 const { looksBinary } = require('../lib/text-file.cjs');
 const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
 const { readFile, writeFile, replaceInFile } = require('../luna-tools.cjs');
+const { ToolGuard, IdempotencyStore } = require('../luna-tool-guard.cjs');
 
 // ── Fix A1: looksBinary (pure unit tests) ────────────────────────────────────
 
@@ -229,4 +231,54 @@ test('B4b: atomicWriteFileSync on a new file uses default mode', () => {
     // Default mode = 0o666 & ~umask — just assert it exists and is a file.
     assert.ok(fs.statSync(target).isFile());
   });
+});
+
+// ── Fix C: IdempotencyStore TTL + mark-on-success + skip result shape ────────
+
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+
+test('C1: IdempotencyStore expires entries after the TTL (injected clock)', () => {
+  let now = 1000;
+  const store = new IdempotencyStore(() => now);
+  const key = store.generateKey('writeFile', { path: '/tmp/x', content: 'y' });
+
+  assert.strictEqual(store.isProcessed(key), false, 'unseen key must not be processed');
+  store.markProcessed(key);
+  assert.strictEqual(store.isProcessed(key), true, 'just-marked key must be processed');
+
+  now += IDEMPOTENCY_TTL_MS - 1; // advance < TTL
+  assert.strictEqual(store.isProcessed(key), true, 'key within TTL must still be processed');
+
+  now += 1; // advance to exactly TTL
+  assert.strictEqual(store.isProcessed(key), false, 'key at/after TTL must be expired');
+  assert.strictEqual(store.isProcessed(key), false, 'expired key must stay deleted');
+});
+
+test('C2: ToolGuard.execute does NOT mark a failed result — retry re-executes', async () => {
+  const guard = new ToolGuard(process.cwd());
+  let calls = 0;
+  const toolFn = async () => { calls++; return { success: false, error: 'boom' }; };
+
+  const first = await guard.execute('executeShell', { command: 'echo ok' }, toolFn);
+  const second = await guard.execute('executeShell', { command: 'echo ok' }, toolFn);
+
+  assert.strictEqual(calls, 2, 'failed toolFn must be executed BOTH times (no silent skip)');
+  assert.strictEqual(first.skipped, undefined);
+  assert.strictEqual(second.skipped, undefined, 'second call must NOT be idempotency-skipped');
+  assert.strictEqual(second.success, false);
+});
+
+test('C3: ToolGuard.execute skips a duplicate SUCCESS with success:true on the skip result', async () => {
+  const guard = new ToolGuard(process.cwd());
+  let calls = 0;
+  const toolFn = async () => { calls++; return { success: true, output: 'done' }; };
+
+  const first = await guard.execute('executeShell', { command: 'echo ok' }, toolFn);
+  const second = await guard.execute('executeShell', { command: 'echo ok' }, toolFn);
+
+  assert.strictEqual(calls, 1, 'successful toolFn must execute only once');
+  assert.strictEqual(first.success, true);
+  assert.strictEqual(second.skipped, true, 'duplicate success must be idempotency-skipped');
+  assert.strictEqual(second.success, true, 'skip result must carry success:true (a no-op success, not a failure)');
+  assert.strictEqual(second.reason, 'already processed');
 });
