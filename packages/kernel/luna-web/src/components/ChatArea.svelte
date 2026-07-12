@@ -5,6 +5,7 @@
   import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { evictOldestEntries } from '../lib/evictSet.js';
+  import { createToolTimerRegistry } from '../lib/toolTimers.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
   import MessagesList from './MessagesList.svelte';
@@ -22,8 +23,9 @@
   let thinkingId = null;
   let lastConnectedSessionId = null;
   let toolStartTimes = new Map(); // toolName -> startTimestamp
-  let toolTimeoutTimers = new Map(); // toolName -> timeout timer id
   const TOOL_TIMEOUT_MS = 60000; // 60s timeout for any tool
+  const toolTimers = createToolTimerRegistry(); // Wave 4 bugs 1+2: UI tickers + stuck-tool watchdogs
+  const timedOutToolIds = new Set(); // cards failed by the watchdog — action_end must not double-decrement
   let processedEventIds = new Set(); // v4.2: Track processed SSE event IDs to prevent duplicates
   let userMessageAdded = false; // v5.6-fix: Ensure user message is in store before assistant responses
   let streamingSafetyTimer = null; // v5.7-fix: Detect SSE inactivity (NOT thinking time)
@@ -33,7 +35,6 @@
   const SSE_INACTIVITY_MS = 600000; // v8.2-fix: 10 min — user explicitly wants to wait for long operations
   let flushedContentHashes = new Set(); // v9.1-fix: Track flushed content hashes to prevent duplicate assistant messages
   let pendingToolCount = 0; // v9.3-fix: Track only CURRENT turn's tools, not full history
-  let runningToolTimers = new Map(); // v9.4-fix: toolId -> { intervalId, startTime } for real-time execution timer
   const progressBuffers = new Map(); // v9.5: tool -> { chunks[], raf } for rAF batching of action_progress
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
 
@@ -507,20 +508,36 @@
           timestamp: new Date().toISOString()
         }]);
         
-        // v9.4-fix: Start real-time execution timer
-        const timerStart = Date.now();
-        const intervalId = setInterval(() => {
-          const elapsed = ((Date.now() - timerStart) / 1000).toFixed(1);
-          mascotMessage.set(`${event.tool || 'Tool'}... ${elapsed}s`);
-          messages.update(msgs => {
-            const toolMsg = msgs.find(m => m.id === toolId);
-            if (toolMsg && toolMsg.status === 'running') {
-              return msgs.map(m => m.id === toolId ? { ...m, duration: parseFloat(elapsed) } : m);
+        // Wave 4 bugs 1+2: UI ticker + watchdog. If action_end never arrives the
+        // card is marked failed instead of spinning "running" forever.
+        toolTimers.start(toolId, {
+          timeoutMs: TOOL_TIMEOUT_MS,
+          onTick: (elapsedSec) => {
+            const elapsed = elapsedSec.toFixed(1);
+            mascotMessage.set(`${event.tool || 'Tool'}... ${elapsed}s`);
+            messages.update(msgs => {
+              const toolMsg = msgs.find(m => m.id === toolId);
+              if (toolMsg && toolMsg.status === 'running') {
+                return msgs.map(m => m.id === toolId ? { ...m, duration: parseFloat(elapsed) } : m);
+              }
+              return msgs;
+            });
+          },
+          onTimeout: (timedOutToolId) => {
+            timedOutToolIds.add(timedOutToolId);
+            messages.update(msgs => msgs.map(m =>
+              m.id === timedOutToolId && m.status === 'running'
+                ? { ...m, status: 'failed', result: { success: false, error: `Tool expirou após ${TOOL_TIMEOUT_MS / 1000}s sem resposta do servidor.` } }
+                : m
+            ));
+            pendingToolCount = Math.max(0, pendingToolCount - 1);
+            if (pendingToolCount <= 0) {
+              mascotState.set('idle');
+              mascotMessage.set('O que mais posso fazer?');
+              isStreaming.set(false);
             }
-            return msgs;
-          });
-        }, 100);
-        runningToolTimers.set(toolId, { intervalId, startTime: timerStart });
+          },
+        });
         break;
       }
       case 'action_progress': {
@@ -548,15 +565,10 @@
         }
         let duration = 0;
         if (lastTool) {
-          const timerInfo = runningToolTimers.get(lastTool.id);
-          if (timerInfo) {
-            clearInterval(timerInfo.intervalId);
-            runningToolTimers.delete(lastTool.id);
-            duration = ((Date.now() - timerInfo.startTime) / 1000).toFixed(1);
-          } else {
-            // Fallback to backend duration if available
-            duration = event.result?._meta?.duration ? (event.result._meta.duration / 1000).toFixed(1) : 0;
-          }
+          const elapsed = toolTimers.stop(lastTool.id); // cancels interval AND watchdog
+          duration = elapsed !== null
+            ? elapsed.toFixed(1)
+            : (event.result?._meta?.duration ? (event.result._meta.duration / 1000).toFixed(1) : 0);
         }
         toolStartTimes.delete(event.tool);
         // v9.5: Flush any pending progress buffer immediately so final output is complete
@@ -577,7 +589,11 @@
         });
         
         // v9.3-fix: Decrement and check ONLY current turn's tools
-        pendingToolCount = Math.max(0, pendingToolCount - 1);
+        // Wave 4: a watchdog-timed-out card already decremented the count.
+        const wasTimedOut = lastTool ? timedOutToolIds.delete(lastTool.id) : false;
+        if (!wasTimedOut) {
+          pendingToolCount = Math.max(0, pendingToolCount - 1);
+        }
         if (pendingToolCount <= 0) {
           mascotState.set('idle');
           mascotMessage.set('O que mais posso fazer?');
@@ -936,8 +952,8 @@
     // v10.24-fix: Do NOT clear toolInstanceMap here. If action_end arrives after
     // a reconnect, we still need the mapping. It is cleaned by action_end.
     toolStartTimes = new Map();
-    toolTimeoutTimers = new Map();
-    runningToolTimers = new Map();
+    toolTimers.clearAll(); // Wave 4 bug 2: cancel intervals AND watchdogs from the previous connection
+    timedOutToolIds.clear();
     progressBuffers.clear();
     flushedContentHashes.clear();
     // Wave 4 bug 3: reuse the manager — disconnect() now cancels every pending
@@ -1442,10 +1458,7 @@
   }
 
   onDestroy(() => {
-    for (const { intervalId } of runningToolTimers.values()) {
-      clearInterval(intervalId);
-    }
-    runningToolTimers.clear();
+    toolTimers.clearAll();
     sseManager.disconnect();
     stopHeartbeat();
     mascotState.set('sleep');

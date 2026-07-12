@@ -278,3 +278,90 @@ test('T6 (bug 5): same-session reconnect after connection loss preserves lastMes
     m.disconnect();
   }
 });
+
+// ── T7: tool timer registry ──────────────────────────────────────────────────
+
+const { createToolTimerRegistry } = require('../luna-web/src/lib/toolTimers.js');
+
+function fakeClock() {
+  let now = 0, seq = 0;
+  const intervals = new Map();
+  const timeouts = new Map();
+  return {
+    nowFn: () => now,
+    setIntervalFn: (cb, ms) => { const id = ++seq; intervals.set(id, { cb, ms }); return id; },
+    clearIntervalFn: (id) => intervals.delete(id),
+    setTimeoutFn: (cb, ms) => { const id = ++seq; timeouts.set(id, { cb, ms, at: now + ms }); return id; },
+    clearTimeoutFn: (id) => timeouts.delete(id),
+    tick(ms) {
+      // Deterministic by design: each armed interval fires ONCE per tick() call
+      // (not once per simulated period); due timeouts fire when now passes them.
+      now += ms;
+      for (const { cb } of intervals.values()) cb();
+      for (const [id, t] of [...timeouts]) {
+        if (t.at <= now) { timeouts.delete(id); t.cb(); }
+      }
+    },
+    pendingIntervals: () => intervals.size,
+    pendingTimeouts: () => timeouts.size,
+  };
+}
+
+test('T7 (bug 2): start arms one interval + one timeout; stop cancels both and returns elapsed', () => {
+  const c = fakeClock();
+  const reg = createToolTimerRegistry(c);
+  const ticks = [];
+  reg.start('tool-1', { onTick: (s) => ticks.push(s), onTimeout: () => {}, intervalMs: 100, timeoutMs: 60000 });
+  assert.strictEqual(c.pendingIntervals(), 1);
+  assert.strictEqual(c.pendingTimeouts(), 1);
+  c.tick(100);
+  assert.strictEqual(ticks.length, 1, 'interval fires onTick');
+  const elapsed = reg.stop('tool-1');
+  assert.ok(Math.abs(elapsed - 0.1) < 1e-9, 'stop returns elapsed seconds');
+  assert.strictEqual(c.pendingIntervals(), 0, 'bug 2: interval must be cleared');
+  assert.strictEqual(c.pendingTimeouts(), 0);
+});
+
+test('T7 (bug 1): timeout marks the tool once and kills its interval', () => {
+  const c = fakeClock();
+  const reg = createToolTimerRegistry(c);
+  let timedOut = null, ticks = 0;
+  reg.start('tool-9', { onTick: () => ticks++, onTimeout: (id) => { timedOut = id; }, intervalMs: 100, timeoutMs: 60000 });
+  c.tick(60000); // fake clock: fires each armed interval once, then due timeouts
+  assert.strictEqual(timedOut, 'tool-9', 'watchdog must fire at TOOL_TIMEOUT_MS');
+  assert.strictEqual(c.pendingIntervals(), 0, 'bug 2: the UI interval dies with the timeout');
+  const ticksAtTimeout = ticks;
+  c.tick(60000);
+  assert.strictEqual(ticks, ticksAtTimeout, 'no further ticks after the timeout');
+  assert.strictEqual(reg.has('tool-9'), false);
+});
+
+test('T7 (bug 2): clearAll cancels every interval and timeout (reconnect path)', () => {
+  const c = fakeClock();
+  const reg = createToolTimerRegistry(c);
+  reg.start('a', { onTick() {}, onTimeout() {} });
+  reg.start('b', { onTick() {}, onTimeout() {} });
+  reg.clearAll();
+  assert.strictEqual(c.pendingIntervals(), 0);
+  assert.strictEqual(c.pendingTimeouts(), 0);
+  c.tick(60000); // nothing may fire afterwards
+  assert.strictEqual(reg.size, 0);
+});
+
+test('T7: starting the same toolId twice never stacks timers', () => {
+  const c = fakeClock();
+  const reg = createToolTimerRegistry(c);
+  reg.start('x', { onTick() {}, onTimeout() {} });
+  reg.start('x', { onTick() {}, onTimeout() {} });
+  assert.strictEqual(c.pendingIntervals(), 1);
+  assert.strictEqual(c.pendingTimeouts(), 1);
+});
+
+test('T7: ChatArea wires the registry into action_start, action_end, reconnect and destroy', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  assert.ok(src.includes('createToolTimerRegistry'), 'registry must be imported and instantiated');
+  assert.ok(!src.includes('runningToolTimers'), 'old interval map must be gone');
+  assert.ok(!src.includes('toolTimeoutTimers = new Map'), 'old dead timeout map must be gone');
+  assert.ok(src.includes('toolTimers.clearAll()'), 'reconnect/destroy must cancel all timers');
+  assert.ok(src.includes('onTimeout'), 'bug 1: a timeout handler must mark the tool failed');
+});
