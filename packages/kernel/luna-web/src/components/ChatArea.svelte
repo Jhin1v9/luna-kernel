@@ -131,9 +131,13 @@
       }
     }
 
-    if (forceText !== null) {
-      responseBuffer = '';
-    }
+    // Wave 1 Fix C1: clear the buffer after EVERY successful flush, not just
+    // the forceText path. Previously each delta re-appended the ENTIRE
+    // cumulative buffer (d1 + d1d2 + d1d2d3 — quadratic text duplication that
+    // only settled when done replaced the content). Incomplete JSON blocks are
+    // safe: the flush is gated by hasIncompleteJsonBlock at the call site, so
+    // a partial tool block never reaches this point.
+    responseBuffer = '';
   }
 
   // v9.2-fix: Detect incomplete JSON blocks to prevent leaking raw tool JSON
