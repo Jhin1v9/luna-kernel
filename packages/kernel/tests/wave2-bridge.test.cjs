@@ -411,8 +411,9 @@ test('W6-T1: new-assistant wait loop is bounded and cancellable', () => {
   assert.notStrictEqual(streamIdx, -1, 'sendMessageStream must exist');
   const loopIdx = src.indexOf("querySelectorAll('.segment-assistant')", streamIdx);
   assert.notStrictEqual(loopIdx, -1, 'new-assistant loop must exist');
-  const window = src.slice(Math.max(0, loopIdx - 500), loopIdx + 3000);
-  assert.ok(window.includes('NEW_ASSISTANT_TIMEOUT_MS'), 'loop must have a timeout constant');
-  assert.ok(window.includes('stopConsuming'), 'loop must check the cancel flag');
-  assert.ok(/NO_ASSISTANT_DETECTED|STREAM_CANCELLED/.test(window), 'loop must throw a visible error on expiry/cancel');
+  const window = src.slice(Math.max(0, loopIdx - 1500), loopIdx + 1500);
+  assert.ok(window.includes('NEW_ASSISTANT_TIMEOUT_MS = 120_000'), 'loop must have a timeout constant');
+  assert.ok(window.includes('Date.now() > newAssistantDeadline'), 'loop must check the deadline');
+  assert.ok(window.includes('NO_ASSISTANT_DETECTED'), 'loop must throw a visible error on expiry');
+  assert.ok(window.includes("if (stopConsuming) throw new Error('STREAM_CANCELLED')"), 'loop body must break on cancel');
 });
