@@ -255,6 +255,23 @@ export async function cancelStream(sessionId) {
   });
 }
 
+// Wave 4 bug 4: acknowledge delivered SSE events so the backend event ledger
+// (cap 200) is pruned instead of replaying every event on each reconnect.
+// Best-effort: failures are swallowed — the ledger cap + frontend dedup is
+// the safety net.
+export async function ackEvents(sessionId, eventIds) {
+  if (!sessionId || !Array.isArray(eventIds) || eventIds.length === 0) return;
+  try {
+    await fetch('/api/chat/ack', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ sessionId, eventIds })
+    });
+  } catch {
+    // best-effort — the next reconnect's replay is handled by frontend dedup
+  }
+}
+
 // v10.16: Manual context compaction — triggered by user via /compact command or button
 export async function compactSession(sessionId, userId = 'luna-default', onEvent) {
   const res = await fetch('/api/luna/compact', {

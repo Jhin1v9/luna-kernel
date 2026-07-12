@@ -2,10 +2,11 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { isStreaming, currentMode, currentProvider, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
-  import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
+  import { sendMessage, cancelStream, ackEvents, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { evictOldestEntries } from '../lib/evictSet.js';
   import { createToolTimerRegistry } from '../lib/toolTimers.js';
+  import { createAckBatcher } from '../lib/ackBatcher.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
   import MessagesList from './MessagesList.svelte';
@@ -26,6 +27,8 @@
   const TOOL_TIMEOUT_MS = 60000; // 60s timeout for any tool
   const toolTimers = createToolTimerRegistry(); // Wave 4 bugs 1+2: UI tickers + stuck-tool watchdogs
   const timedOutToolIds = new Set(); // cards failed by the watchdog — action_end must not double-decrement
+  // Wave 4 bug 4: batched acks for backend-ledger events
+  const ackBatcher = createAckBatcher((ids) => { if (sessionId) ackEvents(sessionId, ids); });
   let processedEventIds = new Set(); // v4.2: Track processed SSE event IDs to prevent duplicates
   let userMessageAdded = false; // v5.6-fix: Ensure user message is in store before assistant responses
   let streamingSafetyTimer = null; // v5.7-fix: Detect SSE inactivity (NOT thinking time)
@@ -318,6 +321,10 @@
   function handleEvent(event) {
     if (!event) return;
     if (event.sessionId && event.sessionId !== sessionId) return;
+
+    // Wave 4 bug 4: ack on RECEIPT (processed or deduped — both prove delivery).
+    // Only backend ledger id shapes are acked; local synthetic ids are skipped.
+    if (event.id && /^(ev|done|err)-\d/.test(event.id)) ackBatcher.push(event.id);
 
     // v8.5-fix: Ignore fallback polling events while actively streaming
     if (event.source === 'fallback' && $isStreaming) {
@@ -946,6 +953,7 @@
     thinkingId = null;
     responseBuffer = ''; // v9.5-fix: Clear buffer on session switch/reconnect
     processedEventIds.clear(); // v4.2: Clear dedup set on reconnect
+    ackBatcher.reset(); // pending ids belong to the previous connection's session
     // v10.16-fix: Clear cross-session state to prevent stale tool/ACK bleeds
     currentMessageId = null;
     userMessageAdded = false;
@@ -1461,6 +1469,7 @@
 
   onDestroy(() => {
     toolTimers.clearAll();
+    ackBatcher.flush(); // Wave 4 bug 4: last best-effort ack while sessionId is still set
     sseManager.disconnect();
     stopHeartbeat();
     mascotState.set('sleep');

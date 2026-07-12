@@ -368,3 +368,56 @@ test('T7: ChatArea wires the registry into action_start, action_end, reconnect a
   assert.ok(src.includes('timedOutToolIds'), 'timedOutToolIds guard must exist');
   assert.ok(src.includes('const wasTimedOut = lastTool ? timedOutToolIds.delete(lastTool.id) : false;'), 'late action_end must consult the guard');
 });
+
+// ── T8: ack batcher + ackEvents caller ───────────────────────────────────────
+
+const { createAckBatcher } = require('../luna-web/src/lib/ackBatcher.js');
+
+test('T8: batcher coalesces ids and flushes on the interval', () => {
+  const t = fakeTimer();
+  const batches = [];
+  const b = createAckBatcher((ids) => batches.push(ids), { intervalMs: 1000, maxBatch: 100, ...t });
+  b.push('ev-1'); b.push('ev-2'); b.push(null); b.push(undefined);
+  assert.strictEqual(batches.length, 0, 'nothing sent before the interval');
+  t.fireNext();
+  assert.deepStrictEqual(batches, [['ev-1', 'ev-2']], 'one batch, falsy ids dropped');
+  assert.strictEqual(b.size, 0);
+});
+
+test('T8: batcher flushes immediately at maxBatch and reset() drops pending', () => {
+  const t = fakeTimer();
+  const batches = [];
+  const b = createAckBatcher((ids) => batches.push(ids), { intervalMs: 1000, maxBatch: 3, ...t });
+  b.push('a'); b.push('b'); b.push('c');
+  assert.deepStrictEqual(batches, [['a', 'b', 'c']], 'maxBatch triggers an immediate flush');
+  assert.strictEqual(t.pendingCount(), 0, 'no dangling timer after the immediate flush');
+  b.push('d'); b.reset();
+  t.fireNext = () => { throw new Error('reset must cancel the armed timer'); };
+  assert.strictEqual(b.size, 0);
+});
+
+test('T8: ackEvents POSTs {sessionId, eventIds} to /api/chat/ack and never throws', async () => {
+  const api = require('../luna-web/src/api.js');
+  let captured = null;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => { captured = { url, opts }; return { status: 200, json: async () => ({ ok: true }) }; };
+  try {
+    await api.ackEvents('sess-1', ['ev-1', 'ev-2']);
+    assert.strictEqual(captured.url, '/api/chat/ack');
+    assert.strictEqual(captured.opts.method, 'POST');
+    assert.deepStrictEqual(JSON.parse(captured.opts.body), { sessionId: 'sess-1', eventIds: ['ev-1', 'ev-2'] });
+    globalThis.fetch = async () => { throw new Error('backend down'); };
+    await api.ackEvents('sess-1', ['ev-3']); // must resolve, not reject
+    await api.ackEvents(null, ['ev-3']);     // no session: no-op
+    await api.ackEvents('sess-1', []);       // empty batch: no-op
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('T8: ChatArea acks backend-ledger event ids and resets the batcher on reconnect', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  assert.ok(src.includes('createAckBatcher'), 'batcher must be instantiated');
+  assert.ok(src.includes('ackBatcher.push(event.id)'), 'received events must be acked');
+  assert.ok(src.includes('ackBatcher.reset()'), 'session switch must drop pending ids from the old session');
+});
