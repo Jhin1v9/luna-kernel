@@ -12,6 +12,9 @@ const db = require('./db');
 const JSZip = require('jszip');
 const { resolveJwtSecret } = require('./config-validator');
 
+// Wave 1 Fix B1: tool-instance-aware event dedup
+const { makeEventDedupKey } = require('./lib/chat-event-dedup.cjs');
+
 // v11.0: Centralized kernel resolution via shared resolver
 const { LUNA_KERNEL_DIR } = require('./lib/resolve-luna.cjs');
 const config = require(path.join(LUNA_KERNEL_DIR, 'config', 'luna-config'));
@@ -25,6 +28,8 @@ const SOUL_PATH = path.join(LUNA_DIR, 'luna-soul.cjs');
 const ENV_PATH = path.join(LUNA_DIR, '.env');
 let lunaSoul = null;
 let lunaReady = false;
+// Wave 1 Fix B3: module-level sequence so event ids never collide on Date.now()
+let eventSeq = 0;
 
 async function getLunaSoul() {
   if (lunaSoul && lunaReady) return lunaSoul;
@@ -489,14 +494,18 @@ router.post('/api/chat', async (req, res) => {
 
       if (['response_delta', 'response_detected', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta', 'login_required', 'system', 'context_limit', 'compact_start', 'compact_progress', 'compact_end', 'compact_error', 'assistant', 'plan_start', 'plan_step', 'plan_complete', 'plan_error', 'mode_detected', 'action_progress'].includes(ev.type)) {
         // v4.0-fix: For 'done' events, capture the final response from ev.result.response or ev.response
+        // Wave 1 Fix B5: 'error'/'system' events carry text in ev.error/ev.message, not ev.text
         const content = ev.type === 'done'
           ? (ev.result?.response || ev.response || ev.text || ev.fullResponse || '')
           : ev.type === 'assistant'
             ? (ev.response || ev.text || ev.fullResponse || '')
-            : (ev.text || ev.fullResponse || '');
+            : (ev.type === 'error' || ev.type === 'system')
+              ? (ev.error || ev.message || ev.text || ev.fullResponse || '')
+              : (ev.text || ev.fullResponse || '');
 
         // v5.4-fix: Skip duplicate non-final events (same type + content within 5s window)
-        const dedupKey = `${ev.type}:${content.slice(0, 200)}:${ev.tool || ''}`;
+        // Wave 1 Fix B1: action_* events dedup by toolInstanceId, not (empty) content
+        const dedupKey = makeEventDedupKey(ev, content);
         if (ev.type !== 'done' && emittedEventHashes.has(dedupKey)) {
           continue;
         }
@@ -504,12 +513,13 @@ router.post('/api/chat', async (req, res) => {
 
         // v6.1-fix: Attach messageId so frontend can validate against stale events
         addMessageToSession(session.id, {
-          id: 'ev-' + Date.now(),
+          id: 'ev-' + Date.now() + '-' + (++eventSeq), // Wave 1 Fix B3: unique ids
           role: 'assistant',
           type: ev.type,
           content: content,
           fullThinking: ev.fullThinking || undefined,
           tool: ev.tool,
+          toolInstanceId: ev.toolInstanceId || undefined, // Wave 1 Fix B2
           params: ev.params,
           result: ev.result,
           messageId: messageId,
@@ -623,7 +633,9 @@ router.get('/api/chat/stream', async (req, res) => {
         if (msg.params) eventData.params = msg.params;
         if (msg.result) eventData.result = msg.result;
         if (msg.messageId) eventData.messageId = msg.messageId;
+        if (msg.toolInstanceId) eventData.toolInstanceId = msg.toolInstanceId; // Wave 1 Fix B2
         if (msg.type === 'error') eventData.error = msg.content;
+        if (msg.type === 'system') eventData.message = msg.content; // Wave 1 Fix B5
         if (msg.role === 'user') {
           eventData.content = msg.content;
           if (msg.files && msg.files.length > 0) eventData.files = msg.files;
@@ -667,7 +679,9 @@ router.get('/api/chat/stream', async (req, res) => {
       if (msg.params) eventData.params = msg.params;
       if (msg.result) eventData.result = msg.result;
       if (msg.messageId) eventData.messageId = msg.messageId;
+      if (msg.toolInstanceId) eventData.toolInstanceId = msg.toolInstanceId; // Wave 1 Fix B2
       if (msg.type === 'error') eventData.error = msg.content;
+      if (msg.type === 'system') eventData.message = msg.content; // Wave 1 Fix B5
       if (msg.role === 'user') {
         eventData.content = msg.content;
         if (msg.files && msg.files.length > 0) eventData.files = msg.files;
