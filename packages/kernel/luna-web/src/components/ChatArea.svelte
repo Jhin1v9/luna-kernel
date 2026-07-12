@@ -325,14 +325,12 @@
     // v6.1-fix: If the event has a messageId that doesn't match the current message,
     // it's a stale event from a previous message — ignore it.
     if (event.messageId && currentMessageId && event.messageId !== currentMessageId) {
-      console.log('[SSE] Ignoring stale event from previous message:', event.type, event.messageId);
       return;
     }
 
     // v5.6-fix: Ignore response events until user message is confirmed in store
     const isResponseEvent = ['assistant', 'thinking', 'response_detected', 'partial', 'done', 'tool', 'action_start', 'action_end', 'action_progress'].includes(event.type);
     if (isResponseEvent && !userMessageAdded) {
-      console.log('[SSE] Delaying response event until user message is added:', event.type);
       // v9.0-fix: Retry with exponential backoff, max 10 attempts
       event._retryCount = (event._retryCount || 0) + 1;
       if (event._retryCount <= 10) {
@@ -356,7 +354,6 @@
       dedupKey = getEventHash(event);
     }
     if (processedEventIds.has(dedupKey)) {
-      console.log('[SSE] Deduplicated:', event.type, event.tool || '', event.id || '');
       return;
     }
     processedEventIds.add(dedupKey);
@@ -365,9 +362,6 @@
       const iter = processedEventIds.values();
       processedEventIds.delete(iter.next().value);
     }
-
-    // v4.0-debug: Log every SSE event for debugging
-    console.log('[SSE]', event.type, event.text ? event.text.substring(0, 80) : '', event.tool || '');
 
     // v3.6-fix: Also deduplicate by backend event ID
     if (event.id) {
@@ -635,7 +629,6 @@
         // v10.28-fix: Ensure compaction UI is released even if compact_end was missed.
         compactState.set({ active: false, phase: 0, message: '', steps: [] });
         const finalResponse = event.result?.response || event.response || event.text;
-        console.log('[done] finalResponse length:', finalResponse?.length, 'content:', finalResponse?.substring(0, 100));
 
         // v8.5-fix: prevent duplicate final message if response_done already handled it
         // v10.16-fix: Also check for existing assistant message with same messageId
@@ -656,13 +649,12 @@
         const needsReplace = finalResponse && existingContent && existingContent !== finalResponse.trim();
 
         if (alreadyHasDone && !needsReplace) {
-          console.log('[DEBUG-LUNA] done event text already rendered — skipping duplicate message but releasing input');
+          // v10.25-fix: text already rendered — skip duplicate message; input is still released below
         } else {
           if (needsReplace && targetMsgId) {
             messages.update(msgs =>
               msgs.map(m => m.id === targetMsgId ? { ...m, content: finalResponse } : m)
             );
-            console.log('[done] Replaced leaked wrapper content with clean finalResponse');
           } else if (finalResponse && currentAssistantId) {
             responseBuffer = finalResponse;
             flushResponseBuffer(finalResponse);
@@ -683,7 +675,6 @@
             console.warn('[done] Tools stuck for >5min — forcing pendingToolCount = 0');
             pendingToolCount = 0;
           } else {
-            console.log('[done] Tools ainda em execução — mantendo isStreaming=true até action_end chegar');
             mascotState.set('working');
             mascotMessage.set('Finalizando tools...');
           }
@@ -1046,7 +1037,6 @@
   });
 
   async function handleSend(msg, files) {
-    console.log('[handleSend] START', { msg: msg.slice(0,80), active: get(planModeState).active, status: get(planModeState).status, isStreaming: get(isStreaming), stack: new Error().stack?.split('\n').slice(2,5).join(' | ') });
     if (!msg.trim()) return;
 
     // v6.1-fix: Abort any active stream from a previous message before starting
@@ -1135,7 +1125,6 @@
     try {
       playSound('messageSent');
 
-      console.log('[handleSend] branches', { isSlash: isSlashCommand(msg), msg: msg.slice(0,80), activeGet: get(planModeState).active, statusGet: get(planModeState).status, activeDollar: $planModeState.active, statusDollar: $planModeState.status });
       // v5.0: Slash commands — ALL messages starting with / go to Luna directly, NOT Kimi
       if (isSlashCommand(msg)) {
         const cmd = msg.split(' ')[0];
