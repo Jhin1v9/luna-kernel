@@ -166,10 +166,17 @@ test('W6-T4: retry-exhaustion error is followed by done', () => {
 
 test('W6-T4: _buildContext calls inside the stream catch are guarded', () => {
   const src = fs.readFileSync(SOUL, 'utf8');
-  const window = sliceAround(src, 'Stream error:', 2500);
-  const bcIdx = window.indexOf('_buildContext');
-  if (bcIdx !== -1) {
-    assert.ok(/try\s*\{/.test(window.slice(Math.max(0, bcIdx - 300), bcIdx)),
-      '_buildContext in catch scope must be try-guarded');
-  }
+  // Guard 1: crash-recovery autocontinue rebuild (anchor just before it).
+  // Match `this._buildContext` (the call), not bare `_buildContext` (appears in comments).
+  const streamErrWindow = sliceAround(src, 'Stream error:', 2500);
+  const bcIdx = streamErrWindow.indexOf('this._buildContext');
+  assert.ok(bcIdx !== -1, '_buildContext call must exist near the Stream error anchor — anchor drifted?');
+  assert.ok(/try\s*\{/.test(streamErrWindow.slice(Math.max(0, bcIdx - 300), bcIdx)),
+    '_buildContext in crash-recovery scope must be try-guarded');
+  // Guard 2: STREAM_CANCELLED branch rebuild (~40 lines after the first occurrence).
+  const cancelWindow = sliceAround(src, 'STREAM_CANCELLED', 8000);
+  const cancelBcIdx = cancelWindow.indexOf('this._buildContext');
+  assert.ok(cancelBcIdx !== -1, '_buildContext must exist in the STREAM_CANCELLED branch — anchor drifted?');
+  assert.ok(/try\s*\{/.test(cancelWindow.slice(Math.max(0, cancelBcIdx - 300), cancelBcIdx)),
+    '_buildContext in the STREAM_CANCELLED branch must be try-guarded');
 });

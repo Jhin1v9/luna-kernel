@@ -2642,6 +2642,7 @@ class LunaSoul extends EventEmitter {
           } catch (recoveryErr) {
             log.error(`[CRASH-RECOVERY] Recovery failed: ${recoveryErr.message}`);
             yield { type: 'error', error: `❌ Falha ao recuperar após crash: ${recoveryErr.message}`, sessionId };
+            yield { type: 'done', result: { success: false, error: recoveryErr.message, sessionId }, sessionId };
             return;
           }
 
