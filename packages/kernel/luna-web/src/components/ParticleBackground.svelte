@@ -15,8 +15,6 @@
     assignOrbits,
     orbitPosition,
     clearOrbits,
-    initClusters,
-    updateClusters,
     ShootingStar,
     drawAtmosphericBg,
     buildDynamicLines,
@@ -59,10 +57,6 @@
   let modeTransitionSpeed = 0.015;
   let streamingActive = false;
   let isLoading = false;        // true when thinking + streaming
-
-  // ─── Clusters (swarm mode) ─────────────────────────────────
-  let clusters = [];
-  let clustersInitialized = false;
 
   // ─── Shooting stars ────────────────────────────────────────
   let shootingStars = [];
@@ -110,10 +104,6 @@
     allStars = [...stars, ...bgStarsMid, ...bgStarsNear];
 
     buildDynamicLines(allStars);
-
-    // Initialize clusters for swarm mode
-    clusters = initClusters(stars, 4, w, h);
-    clustersInitialized = true;
   }
 
   function rebuildDynamicLines() {
@@ -149,9 +139,6 @@
       // Setup mode-specific initial states
       if (targetMode === 'thinking-loading' || targetMode === 'voice-processing') {
         assignOrbits(stars, w / 2, h / 2, 0.32);
-      } else if (targetMode === 'swarm' && !clustersInitialized) {
-        clusters = initClusters(stars, 4, w, h);
-        clustersInitialized = true;
       }
 
       if (targetMode !== 'thinking-loading' && targetMode !== 'voice-processing') {
@@ -194,29 +181,6 @@
         if (tx > w + 50) tx -= w + 100;
         if (tx < -50) tx += w + 100;
         return { x: tx, y: ty };
-      }
-
-      case 'agent': {
-        const t = timeMs * 0.001;
-        const waveX = Math.sin(t * s.twinkleSpeed + s.phase) * 12;
-        const waveY = Math.cos(t * s.twinkleSpeed * 0.7 + s.phase) * 8;
-        const driftX = s.driftBaseVx * 0.5;
-        const driftY = s.driftBaseVy * 0.5;
-        return {
-          x: s.homeX + waveX + driftX,
-          y: s.homeY + waveY + driftY,
-        };
-      }
-
-      case 'swarm': {
-        if (s.clusterId >= 0 && clusters[s.clusterId]) {
-          const c = clusters[s.clusterId];
-          return {
-            x: c.x + s.clusterOffsetX,
-            y: c.y + s.clusterOffsetY,
-          };
-        }
-        return { x: s.homeX, y: s.homeY };
       }
 
       case 'tool': {
@@ -559,10 +523,6 @@
     updateModeState();
     updateStars(now);
 
-    if (targetMode === 'swarm') {
-      updateClusters(clusters, w, h, dt);
-    }
-
     updateShootingStars();
 
     draw();
@@ -594,9 +554,6 @@
     if (targetMode === 'thinking-loading') {
       assignOrbits(stars, w / 2, h / 2, 0.32);
     }
-
-    // Re-init clusters
-    clusters = initClusters(stars, 4, w, h);
 
     rebuildDynamicLines();
   }

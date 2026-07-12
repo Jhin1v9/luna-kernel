@@ -2851,7 +2851,7 @@ class LunaSoul extends EventEmitter {
       // feed their results back to Kimi — even in thinking/instant mode.
       // This fixes the bug where tools execute but Kimi never receives the result.
       // v8.4-fix: RESPONSE-only (CHAT) must ALWAYS stop and let the user respond,
-      // regardless of mode (agent/swarm/thinking/instant). Only loop for ACTION/PLAN.
+      // regardless of mode (thinking/instant). Only loop for ACTION/PLAN.
       if ((parsed.mode === 'CHAT' || parsed.mode === 'DONE') && (domActionResults.length === 0 || allCached)) {
         if (allCached) {
           console.log('[soul] all DOM results were cached replays — stopping as pure chat');

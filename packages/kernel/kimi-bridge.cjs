@@ -70,8 +70,6 @@ function getModeUrls(providerName) {
     return {
       instant: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
       thinking: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
-      agent: 'https://www.kimi.com/agent?lang=en',
-      swarm: 'https://www.kimi.com/agent-swarm?lang=en',
     };
   }
 }
@@ -2729,9 +2727,6 @@ class KimiBridge {
    */
   async _detectActualMode(page) {
     try {
-      const url = page.url();
-      if (url.includes('www.kimi.com/agent-swarm')) return 'swarm';
-      if (url.includes('www.kimi.com/agent')) return 'agent';
       const label = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 5000 });
       if (label.includes('Instant')) return 'instant';
       if (label.includes('Thinking')) return 'thinking';
@@ -2883,44 +2878,12 @@ class KimiBridge {
   /**
    * Set Kimi mode for a user's page.
    * For 'instant'/'thinking': clicks the Kimi mode selector.
-   * For 'agent'/'swarm': navigates to kimi.com/agent or kimi.com/agent-swarm.
    */
   async setMode(userId, mode, providerArg = null) {
     const provider = this._resolveProvider(userId, providerArg);
     const page = await this._getOrCreateUserPage(userId, provider);
     const session = this.userSessions.get(userId);
     session.provider = provider;
-
-    // Agent / Swarm modes are Kimi-specific
-    if (mode === 'agent' || mode === 'swarm') {
-      if (provider !== 'kimi') {
-        log.warn(`Mode ${mode} is not supported for provider ${provider}`);
-        return session.mode || 'instant';
-      }
-      const targetUrl = getModeUrls(provider)[mode];
-      const currentUrl = page.url();
-      if (currentUrl.includes(targetUrl.replace('https://', ''))) {
-        this._log(`Already on ${mode} page`);
-        session.mode = mode;
-        this.store.setUser(userId, { mode, provider });
-        return mode;
-      }
-
-      log.info(`Switching user ${hashUserId(userId)} to ${mode} mode (navigating to ${targetUrl})...`);
-      try {
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await page.waitForTimeout(3000);
-        session.chatUrl = page.url();
-        this._saveChatUrl(userId, session.chatUrl, { mode, provider });
-        session.mode = mode;
-        this.store.setUser(userId, { mode, provider });
-        log.success(`Mode switched to ${mode} for user ${hashUserId(userId)}`);
-        return mode;
-      } catch (e) {
-        log.warn(`Mode switch to ${mode} failed: ${e.message}. Continuing with current mode.`);
-        return session.mode || 'instant';
-      }
-    }
 
     // Instant / Thinking modes: use the Kimi mode selector dropdown (Kimi only)
     if (provider !== 'kimi') {
@@ -3912,28 +3875,8 @@ class KimiBridge {
       // Verify session
       await this._verifySession(page);
 
-      // Agent / Swarm modes require navigating to their dedicated URLs (Kimi only)
-      // and should always open a fresh context (ignore session.chatUrl)
-      const isAgentOrSwarm = options.mode === 'agent' || options.mode === 'swarm';
-
-      if (isAgentOrSwarm) {
-        if (resolvedProvider !== 'kimi') {
-          log.warn(`Mode ${options.mode} is not supported for provider ${resolvedProvider}`);
-        } else {
-          const targetUrl = getModeUrls(resolvedProvider)[options.mode];
-          const currentUrl = page.url();
-          if (!currentUrl.includes(targetUrl.replace('https://', ''))) {
-            log.info(`Navigating to ${options.mode} URL: ${targetUrl}`);
-            await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            await page.waitForTimeout(3000);
-            session.chatUrl = page.url();
-            this._saveChatUrl(userId, session.chatUrl, { mode: options.mode, provider: resolvedProvider });
-          }
-        }
-      }
-
-      // Handle newChat option (only for instant/thinking modes)
-      if (options.newChat && !isAgentOrSwarm) {
+      // Handle newChat option
+      if (options.newChat) {
         const pageContext = page.context();
         const pagesBefore = new Set(pageContext.pages());
         const openedUrl = await this._openNewChat(page, resolvedProvider);
@@ -3966,17 +3909,15 @@ class KimiBridge {
 
       // v3.4: Verify we're on the correct chat URL. If newChat was used or
       // the page was redirected, ensure we navigate to the right conversation.
-      // Skip for agent/swarm — they have their own URLs.
       const currentUrl = page.url();
-      if (!isAgentOrSwarm && session.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
+      if (session.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
         log.info(`URL mismatch: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
         await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
         await page.waitForTimeout(1500);
       }
 
-      // Set mode if specified (for instant/thinking this clicks the dropdown;
-      // for agent/swarm this is already handled above by URL navigation)
-      if (options.mode && !isAgentOrSwarm) {
+      // Set mode if specified (clicks the dropdown for instant/thinking)
+      if (options.mode) {
         await this.setMode(userId, options.mode, resolvedProvider);
       }
 
@@ -4114,10 +4055,6 @@ class KimiBridge {
   async sendMessageNoWait(userId, text, options = {}) {
     if (!text || !text.trim()) {
       throw new Error('Message text is required');
-    }
-
-    if (options.mode && ['agent', 'swarm'].includes(options.mode)) {
-      throw new Error(`sendMessageNoWait does not support ${options.mode} mode`);
     }
 
     const page = await this._getOrCreateUserPage(userId);

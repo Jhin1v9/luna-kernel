@@ -1304,7 +1304,7 @@
         else if (slashDef.handler === 'changeMode') {
           isStreaming.set(false);
           const mode = args[0];
-          if (['instant', 'thinking', 'agent', 'swarm'].includes(mode)) {
+          if (['instant', 'thinking'].includes(mode)) {
             currentMode.set(mode);
             messages.update(msgs => [...msgs, {
               id: 'sys-' + Date.now(),
@@ -1316,7 +1316,7 @@
             messages.update(msgs => [...msgs, {
               id: 'sys-' + Date.now(),
               type: 'system',
-              content: '⚡ Modos disponiveis: instant (⭐ Recomendado), thinking, agent, swarm',
+              content: '⚡ Modos disponiveis: instant (⭐ Recomendado), thinking',
               timestamp: new Date().toISOString()
             }]);
           }

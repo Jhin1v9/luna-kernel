@@ -51,8 +51,6 @@ export const currentSession = derived(
 export const MODE_COLORS = {
   instant:  { primary: '#06b6d4', glow: 'rgba(6,182,212,0.3)',  border: 'rgba(6,182,212,0.15)',  name: 'Instant' },
   thinking: { primary: '#a855f7', glow: 'rgba(168,85,247,0.3)', border: 'rgba(168,85,247,0.15)', name: 'Thinking' },
-  agent:    { primary: '#f59e0b', glow: 'rgba(245,158,11,0.3)', border: 'rgba(245,158,11,0.15)', name: 'Agent' },
-  swarm:    { primary: '#4ade80', glow: 'rgba(74,222,128,0.3)', border: 'rgba(74,222,128,0.15)', name: 'Swarm' },
 };
 
 // ── Mascote Luna ──

@@ -95,12 +95,10 @@ Three layers exist in `kimi-bridge.cjs` (Layers 2–4 were removed in v8.5):
 
 ## Modes
 
-`instant`, `thinking`, `agent`, `swarm`. **agent/swarm are Kimi-only** — `setMode`
-(kimi-bridge.cjs:2824–2829) rejects them for any other provider. instant/thinking switch
+`instant`, `thinking` (agent/swarm removed in Wave 7, 2026-07-12). instant/thinking switch
 via the Kimi UI mode selector (Kimi only); for DeepSeek the mode is stored but no UI
 switch happens. Mode URLs come from `provider-configs/*.json`
-(e.g. kimi instant: `https://www.kimi.com/en?chat_enter_method=new_chat`; agent:
-`https://www.kimi.com/agent?lang=en`; swarm: `https://www.kimi.com/agent-swarm?lang=en`),
+(e.g. kimi instant/thinking: `https://www.kimi.com/en?chat_enter_method=new_chat`),
 with fallbacks in `packages/kernel/config/luna-config.js` (`KIMI.modeUrls`) and `kimi-bridge.cjs:69`.
 
 ## Compaction

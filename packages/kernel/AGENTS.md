@@ -138,7 +138,7 @@ User → Luna Web (Svelte) → luna-server (Node) → luna-soul.cjs → kimi-bri
 - `response_detected` or `done` arrives
 
 ### Thinking vs Instant Mode
-- **THINKING/AGENT/SWARM:** Shows ThinkingBubble while processing
+- **THINKING:** Shows ThinkingBubble while processing
 - **INSTANT:** Shows TypingIndicator (dots animation), no thinking text
 
 ### Tool Action Format

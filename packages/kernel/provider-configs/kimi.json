@@ -4,9 +4,7 @@
   "baseUrl": "https://www.kimi.com",
   "modeUrls": {
     "instant": "https://www.kimi.com/en?chat_enter_method=new_chat",
-    "thinking": "https://www.kimi.com/en?chat_enter_method=new_chat",
-    "agent": "https://www.kimi.com/agent?lang=en",
-    "swarm": "https://www.kimi.com/agent-swarm?lang=en"
+    "thinking": "https://www.kimi.com/en?chat_enter_method=new_chat"
   },
   "selectors": {
     "input": ".chat-input-editor, textarea, [contenteditable='true']",

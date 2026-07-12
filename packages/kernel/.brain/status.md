@@ -12,7 +12,7 @@ Luna is an autonomous "mirror" agent: reasoning happens inside the Kimi or DeepS
 - **Manual context compaction** — `POST /api/luna/compact` in `apps/dashboard/luna-chat-routes.js:1913` (mounted by `luna-server.js`); `packages/kernel/luna-api-server.cjs` is only a legacy stub that simulates it. All automatic triggers were removed (decision 2026-07-04).
 - **Telegram pipeline** — `_telegramPipeline` in `luna-soul.cjs`: intent classification → dashboard tool registry → telegram-assistant persona formatting. Runs as the `luna-telegram-adapter` pm2 process (owner's PC only).
 - **Plan mode ("Detective Mode")** — multi-turn read-only investigation loop in the backend, ending in an Approve/Reject/Revise plan card.
-- **Multi-provider** — Kimi + DeepSeek via `packages/kernel/provider-configs/*.json` (agent/swarm modes are Kimi-only).
+- **Multi-provider** — Kimi + DeepSeek via `packages/kernel/provider-configs/*.json` (modes: instant/thinking; agent/swarm removed in Wave 7).
 - **Dashboard audit log + trash** — commit c51561e: `/api/audit-log`, `/audit-log/trash`, `/audit-log/undo-last`, `/audit-log/restore/:id`, with undo/restore available from Telegram.
 - **Living-memory automation** — `.githooks/post-commit` runs `scripts/luna-brain-sync.sh` after each commit to update `.brain/` (commit 71a5740, hardened in 81d0158).
 

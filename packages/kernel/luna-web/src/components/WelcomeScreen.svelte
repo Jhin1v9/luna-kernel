@@ -147,13 +147,6 @@
           <span>Raciocínio passo a passo</span>
         </div>
       </div>
-      <div class="tip-card">
-        <span class="tip-icon">🤖</span>
-        <div class="tip-text">
-          <strong>Modo Agent</strong>
-          <span>Executa ações no seu PC</span>
-        </div>
-      </div>
     </div>
   </div>
 </div>

@@ -99,8 +99,6 @@ const KIMI = {
   modeUrls: {
     instant: 'https://www.kimi.com',
     thinking: 'https://www.kimi.com',
-    agent: 'https://www.kimi.com/agent',
-    swarm: 'https://www.kimi.com/agent-swarm',
   },
 };
 

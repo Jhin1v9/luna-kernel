@@ -1,6 +1,6 @@
 /**
  * Utilitários de animação para o sistema de estrelas.
- * Easing, interpolação de cor, estado de estrelas, órbitas, clusters e shooting stars.
+ * Easing, interpolação de cor, estado de estrelas, órbitas e shooting stars.
  */
 
 // ═══════════════════════════════════════════════════════════
@@ -56,8 +56,6 @@ export function easeOutElastic(t) {
 export const MODE_COLORS = {
   instant:          [6, 182, 212],   // #06b6d4 cyan
   thinking:         [168, 85, 247],  // #a855f7 purple
-  agent:            [245, 158, 11],  // #f59e0b amber
-  swarm:            [74, 222, 128],  // #4ade80 green
   tool:             [59, 130, 246],  // #3b82f6 blue
   'voice-listening': [239, 68, 68],   // #ef4444 red
   'voice-processing': [245, 158, 11], // #f59e0b amber
@@ -66,8 +64,6 @@ export const MODE_COLORS = {
 export const MODE_BG_TINTS = {
   instant:           [10, 26, 46],    // dark cyan
   thinking:          [26, 10, 46],    // dark purple
-  agent:             [46, 26, 10],    // dark amber
-  swarm:             [10, 46, 26],    // dark green
   tool:              [10, 18, 46],    // dark blue
   'voice-listening':  [46, 10, 10],    // dark red
   'voice-processing': [46, 26, 10],    // dark amber
@@ -76,8 +72,6 @@ export const MODE_BG_TINTS = {
 export const MODE_SHIFT_INTENSITY = {
   instant:           0.70,
   thinking:          0.30,
-  agent:             0.40,
-  swarm:             0.50,
   tool:              0.85,
   'voice-listening':  0.60,
   'voice-processing': 0.45,
@@ -86,8 +80,6 @@ export const MODE_SHIFT_INTENSITY = {
 export const MODE_BEHAVIOR = {
   instant:            { twinkleMult: 2.8, brightnessMult: 1.55, drift: true,  speed: 3.0, starBurst: true },
   thinking:           { twinkleMult: 1.0, brightnessMult: 1.00, drift: false, speed: 0 },
-  agent:              { twinkleMult: 1.1, brightnessMult: 1.05, drift: true,  speed: 0.6 },
-  swarm:              { twinkleMult: 1.9, brightnessMult: 1.20, drift: true,  speed: 1.2 },
   tool:               { twinkleMult: 1.3, brightnessMult: 1.15, drift: false, speed: 0 },
   'voice-listening':  { twinkleMult: 2.2, brightnessMult: 1.35, drift: false, speed: 0 },
   'voice-processing': { twinkleMult: 1.4, brightnessMult: 1.10, drift: false, speed: 0 },
@@ -130,16 +122,11 @@ export function createStarState(starData, canvasW, canvasH) {
     orbitCenterY: 0,
     orbitActive: false,
 
-    // Deriva (modos instant, agent, swarm)
+    // Deriva (modo instant)
     driftVx: 0,
     driftVy: 0,
     driftBaseVx: 0,
     driftBaseVy: 0,
-
-    // Cluster (modo swarm)
-    clusterId: -1,
-    clusterOffsetX: 0,
-    clusterOffsetY: 0,
 
     // Aparência
     baseColor: [...rgb],
@@ -259,70 +246,6 @@ export function orbitPosition(s, timeMs) {
 export function clearOrbits(stars) {
   stars.forEach(s => {
     s.orbitActive = false;
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-//  Cluster System (swarm mode)
-// ═══════════════════════════════════════════════════════════
-
-export function initClusters(stars, clusterCount = 4, w, h) {
-  const clusters = [];
-  for (let i = 0; i < clusterCount; i++) {
-    clusters.push({
-      x: Math.random() * w,
-      y: Math.random() * h,
-      vx: (Math.random() - 0.5) * 0.3,
-      vy: (Math.random() - 0.5) * 0.3,
-      targetX: Math.random() * w,
-      targetY: Math.random() * h,
-      changeTimer: Math.random() * 5000 + 3000,
-    });
-  }
-
-  stars.forEach((s, idx) => {
-    s.clusterId = idx % clusterCount;
-    s.clusterOffsetX = (Math.random() - 0.5) * 120;
-    s.clusterOffsetY = (Math.random() - 0.5) * 120;
-  });
-
-  return clusters;
-}
-
-export function updateClusters(clusters, w, h, dt) {
-  clusters.forEach(c => {
-    c.changeTimer -= dt;
-    if (c.changeTimer <= 0) {
-      c.targetX = Math.random() * w;
-      c.targetY = Math.random() * h;
-      c.changeTimer = Math.random() * 8000 + 5000;
-    }
-
-    // Move em direção ao target
-    const dx = c.targetX - c.x;
-    const dy = c.targetY - c.y;
-    c.vx += dx * 0.00002;
-    c.vy += dy * 0.00002;
-
-    // Damping
-    c.vx *= 0.995;
-    c.vy *= 0.995;
-
-    // Speed limit
-    const speed = Math.sqrt(c.vx * c.vx + c.vy * c.vy);
-    if (speed > 0.4) {
-      c.vx = (c.vx / speed) * 0.4;
-      c.vy = (c.vy / speed) * 0.4;
-    }
-
-    c.x += c.vx;
-    c.y += c.vy;
-
-    // Wrap around edges
-    if (c.x < -100) c.x = w + 100;
-    if (c.x > w + 100) c.x = -100;
-    if (c.y < -100) c.y = h + 100;
-    if (c.y > h + 100) c.y = -100;
   });
 }
 

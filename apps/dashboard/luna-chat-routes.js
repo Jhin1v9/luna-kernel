@@ -478,7 +478,7 @@ router.post('/api/chat', async (req, res) => {
     const stream = luna.processMessageStream(finalMessage, {
       sessionId: session.id,
       userId: 'web-' + session.id,
-      mode: ['instant', 'thinking', 'agent', 'swarm'].includes(mode) ? mode : 'instant',
+      mode: ['instant', 'thinking'].includes(mode) ? mode : 'instant',
       persona: session.persona || 'default',
       provider: session.provider || 'kimi',
       files: finalFiles,

@@ -15,8 +15,6 @@ try {
 const KIMI_MODE_URLS = config?.KIMI?.modeUrls || {
   instant: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
   thinking: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
-  agent: 'https://www.kimi.com/agent?lang=en',
-  swarm: 'https://www.kimi.com/agent-swarm?lang=en',
 };
 
 const MAX_TEXT_TYPE_LENGTH = parseInt(process.env.KIMI_MAX_TYPE_LENGTH, 10)
@@ -134,23 +132,8 @@ class MessageSender {
 
     await this.bridge._verifySession(page);
 
-    const isAgentOrSwarm = options.mode === 'agent' || options.mode === 'swarm';
-
-    // Agent / Swarm modes require navigating to their dedicated URLs
-    if (isAgentOrSwarm) {
-      const targetUrl = KIMI_MODE_URLS[options.mode];
-      const currentUrl = page.url();
-      if (targetUrl && !currentUrl.includes(targetUrl.replace('https://', ''))) {
-        this.log.info(`Navigating to ${options.mode} URL: ${targetUrl}`);
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await page.waitForTimeout(3000);
-        session.chatUrl = page.url();
-        this.bridge._saveChatUrl(userId, session.chatUrl, { mode: options.mode });
-      }
-    }
-
-    // Handle newChat option (only for instant/thinking modes)
-    if (options.newChat && !isAgentOrSwarm) {
+    // Handle newChat option
+    if (options.newChat) {
       await page.goto('https://www.kimi.com/?chat_enter_method=new_chat&lang=en', { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(2000);
       if (session) {
@@ -159,16 +142,16 @@ class MessageSender {
       }
     }
 
-    // URL mismatch check (skip for agent/swarm)
+    // URL mismatch check
     const currentUrl = page.url();
-    if (!isAgentOrSwarm && session?.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
+    if (session?.chatUrl && !currentUrl.includes(session.chatUrl.split('?')[0].split('/').pop())) {
       this.log.info(`URL mismatch: current=${currentUrl}, expected=${session.chatUrl} — navigating to correct chat`);
       await page.goto(session.chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
       await page.waitForTimeout(1500);
     }
 
     // Set mode if specified
-    if (options.mode && !isAgentOrSwarm) {
+    if (options.mode) {
       await this.bridge.setMode(userId, options.mode);
     }
 

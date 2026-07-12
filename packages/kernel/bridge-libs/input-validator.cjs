@@ -48,7 +48,7 @@ class InputValidator {
   }
 
   static mode(mode) {
-    const valid = ['instant', 'thinking', 'agent', 'swarm'];
+    const valid = ['instant', 'thinking'];
     if (mode && !valid.includes(mode)) {
       throw new Error(`mode must be one of: ${valid.join(', ')}`);
     }

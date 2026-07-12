@@ -489,8 +489,6 @@
               <h4>Modos de resposta</h4>
               <p><strong>⭐ thinking</strong> — A Luna pensa antes de responder (mais preciso)</p>
               <p><strong>⚡ instant</strong> — Resposta rapida sem thinking <span class="badge-recommended">Recomendado</span></p>
-              <p><strong>🤖 agent</strong> — Modo agente com multi-step actions</p>
-              <p><strong>🐝 swarm</strong> — Multi-agente coordenado</p>
               <h4>Self-Host e Compartilhamento</h4>
               <p>Va em <strong>Configuracoes → Self-Host Local</strong> para baixar a Luna completa e rodar no seu PC.</p>
               <p><strong>👨‍👦 Compartilhar com a familia:</strong> Baixe o pacote, copie o ZIP para outro PC, descompacte, rode <code>npm install</code> e <code>node luna-server.js</code>. Pronto — todos usam a mesma conta e tokens!</p>

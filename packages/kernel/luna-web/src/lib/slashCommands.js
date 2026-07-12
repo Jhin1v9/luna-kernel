@@ -19,7 +19,7 @@ export const SLASH_COMMANDS = [
   { cmd: '/nova',        desc: 'Nova sessao',                        icon: '✨', category: 'System', handler: 'newSession' },
   { cmd: '/turnoff',     desc: 'Desligar agente (fecha Chrome)',     icon: '🌙', category: 'System', handler: 'turnOffAgent' },
   { cmd: '/ajuda',       desc: 'Mostrar ajuda',                      icon: '❓', category: 'System', handler: 'help' },
-  { cmd: '/modo',        desc: 'Trocar modo (instant/thinking/agent/swarm)', icon: '⚡', category: 'System', handler: 'changeMode' },
+  { cmd: '/modo',        desc: 'Trocar modo (instant/thinking)', icon: '⚡', category: 'System', handler: 'changeMode' },
   { cmd: '/refresh',     desc: 'Reconectar e limpar estado do agente', icon: '🔄', category: 'System', handler: 'refreshAgent' },
   { cmd: '/fullrefresh', desc: 'Refresh + continuar ultima acao',     icon: '🔁', category: 'System', handler: 'fullRefreshAgent' },
 

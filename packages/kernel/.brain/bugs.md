@@ -18,7 +18,6 @@
 - [ ] 🟠 **Tools lost: extension fallback regex can't parse nested params** (`injected.js:92-93`) — non-greedy `\{[\s\S]*?\}` stops at first `}`; no jsonrepair in the extension.
 - [ ] 🟡 **JSON wrapper accumulator misses mid-text wrappers** (`:7556`) — only fires when delta starts with `{`; raw JSON leaks to chat.
 - [ ] 🟡 **Parser duplication** — 3–5 copies of tool-JSON parsing across bridge/extension/observer with divergent capabilities (refactor target).
-- [ ] 🟠 **Cross-user filter unverified in agent/swarm mode** (found in Wave 2 Fix C review) — agent-mode URLs (`/agent`, `/agent-swarm`) may not navigate to a per-thread path; if two users run agent sessions with the same normalized URL, the tab-URL filter (Wave 2 Fix C) cross-matches. Needs one live URL observation; if confirmed, correlate by `tabId` (already buffered at `luna-extension-handler.cjs:149`) instead of URL. Also: new-chat landing window (bare `kimi.com` before SPA navigation) has the same narrow exposure.
 
 ### Frontend (`luna-web`)
 
@@ -47,7 +46,7 @@
 
 - [x] 🟠 **ReferenceError: `session` out of scope** — declaration hoisted to the top of `pollWithTimeout`'s try; `empty-wait` branch and log throttle live again. (`0a6fff3`; tests `wave2-bridge.test.cjs` A1/A1b)
 - [x] 🟠 **Parent+child selector duplication** — `.markdown-container` dropped from `textContent` in `injected.js` + `kimi-dom-observer.js`; extension VERSION bumped to 2.1.1-wave2 (owner must reload the extension). (`a248677`, `337fb3e`; tests B1/B1b)
-- [x] 🔴 **Cross-user event theft** — `_consumeExtensionEvents(expectedUrl)` filters buffers by normalized tab URL; non-matching events stay buffered; fail-closed on ambiguity. (`be52a5c`, `542c824`; tests C1a–C2). Agent/swarm mode caveat tracked separately (open).
+- [x] 🔴 **Cross-user event theft** — `_consumeExtensionEvents(expectedUrl)` filters buffers by normalized tab URL; non-matching events stay buffered; fail-closed on ambiguity. (`be52a5c`, `542c824`; tests C1a–C2). Agent/swarm mode caveat resolved-obsolete in Wave 7 (modes removed).
 - [x] 🟠 **DOM poller never stops / stale events** — poller stopped in `sendMessageStream` finally before `processing=false`; queue + completion state purged right after Enter; premature `completion_candidate` ignored via `lib/stream-completion-guard.cjs`. (`ae12ff6`, `8a0f2bf`, `84be75a`; tests D1–D3)
 - [x] 🔴 **Duplicated/triplicated text during streaming** — per-source response cursors with cross-source prefix guard (`lib/stream-text-cursor.cjs`) replace the single shared `lastResponse` diff; wired into Phase 0 seed, `state_change`, `response_delta`. Passed adversarial fuzz (200 randomized multi-source rounds, zero duplicated characters). (`0150d4f`; tests E1a–E1f). Known residual: a legit mid-stream regeneration freezes the stream until the turn-end done-replace (strictly better than the old corrupted output).
 
@@ -93,6 +92,10 @@
 - [x] 🟠 **`{"script"}` format swallowed** — bridge `_preEscapeJsonStringNewlines` walker recovers scripts mangled by DOM text extraction; `extractResponseFromCompleteJson` + Strategy 2 regex accept `"(?:tool|script)"`; soul `_tryExtractRawToolJson` re-dispatch backstop — intent-JSON broken or with a tool/script key but no payload yields a friendly PT-BR message, valid non-tool JSON is never swallowed (`8b45c8a`; W6-T9).
 - [x] 🟠 **Visible terminal broken / dependent on inherited env** — new `lib/terminal-resolver.cjs`: `resolveTerminal(env)` ($TERMINAL first, full-path lookup, realpath-aware argv overrides: gnome-terminal wrapper/kgx/gnome-console → `--wait --`, konsole → `--nofork`), `enrichSessionEnv()` fills XDG_RUNTIME_DIR/DBUS/WAYLAND/DISPLAY/XAUTHORITY only when missing; consumed by detectHeadless/spawn/gate/openDebugTerminal (`21a71cb`; W6-T10). Soul dispatches `setVisibleMode`/`getVisibleMode` with strict enabled check; the 3 fallback sites in luna-tools annotate `fallback.warning` surfaced as a warning strip in ToolCard (`bf9784e`; W6-T11). Known wart: closing the terminal window early yields partial output (pre-existing); marker-based completion deferred to Wave 7.
 - [x] 🟠 **DeepSeek tools may never be delivered** — force-complete cap: `_shouldForceGenericComplete` (45s since first sight + 10s length-stable, only while uiGenerating) forces completion + `canSteer = true` so the completion vote reaches 4/4; per-turn tracking reset at the post-Enter boundary (review fix — the v10.35 "previous answer still visible" condition no longer degrades the cap to 10s) (`d28aade`, `1d55d36`; W6-T12). Residual accepted: a cursor blink that changes the extracted text LENGTH keeps the cap inert (needs a width-immune stability signal, Wave 7).
+
+### Wave 7 (2026-07-12)
+
+- [x] 🟠 **Cross-user filter unverified in agent/swarm mode** — OBSOLETE: modes removed in Wave 7 — no longer applicable. (Was Open; agent/swarm modes and their dedicated Kimi URLs deleted.)
 
 ---
 
