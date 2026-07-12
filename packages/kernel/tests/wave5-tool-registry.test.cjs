@@ -1,7 +1,7 @@
 // wave5-tool-registry.test.cjs — Wave 5 regression tests (tool registry, modularization Phase 0+1)
-// T1/P0: characterization net — pins CURRENT guard schema behavior (accept/reject matrix for all 12
-//        schemas + alias normalization + fail-open + checksum drift). Three CARVE-OUT blocks pin
-//        current buggy behavior and are flipped in Task 5 (P0-2 → 5a, P0-3 → 5c, P0-11 → 5b).
+// T1/P0: characterization net — pins guard schema behavior (accept/reject matrix for all 12
+//        schemas + alias normalization + fail-open + checksum drift). The three Phase-0 CARVE-OUT
+//        blocks were RESOLVED in Task 5 (P0-2 → 5a, P0-3 → 5c, P0-11 → 5b) and now pin the fixed behavior.
 // T2: tool registry completeness + schema-shape validity (lib/tool-registry.cjs)
 // T3: guard consumes schemas from the registry (zero behavior change — this net is the proof)
 // T4: frontend metadata codegen — drift test + behavior-equivalence + ToolCard switch
@@ -40,25 +40,30 @@ test('P0-1: readFile — path required (string), numeric offsets, pathMustExist 
   rejects('readFile', { path: '/etc/hostname', line_offset: '10' }, /"line_offset" deve ser number/);
 });
 
-test('P0-2: writeFile — path+content required, absolute enforced, .. and ~ rejected [CARVE-OUT 5a]', () => {
+test('P0-2: writeFile — path+content required, absolute enforced, .. and ~ ACCEPTED (5a resolved)', () => {
   assert.strictEqual(validateToolCall('writeFile', { path: '/abs/x', content: 'c' }), true);
   rejects('writeFile', { path: '/abs/x' }, /campo obrigatório "content"/);
   rejects('writeFile', { path: 'rel/x', content: 'c' }, /deve ser absoluto/);
   rejects('writeFile', { path: '/abs/x', content: 42 }, /"content" deve ser string/);
-  // CARVE-OUT (Task 5a): CURRENT behavior — pathMustNotContain: ['..','~'] rejects the raw
-  // strings even though the soul realpath guard handles them correctly. Task 5a flips these
-  // two rejects to strictEqual(..., true).
-  rejects('writeFile', { path: '/abs/../sibling', content: 'c' }, /contém padrão proibido/);
-  rejects('writeFile', { path: '/abs/~user/x', content: 'c' }, /contém padrão proibido/);
+  // 5a RESOLVED: writeFile schema no longer rejects '..' or '~' — the soul's
+  // realpath path-guard (lib/path-guard.cjs) is the traversal authority.
+  assert.strictEqual(validateToolCall('writeFile', { path: '/abs/../sibling', content: 'c' }), true);
+  assert.strictEqual(validateToolCall('writeFile', { path: '/abs/~user/x', content: 'c' }), true);
+  // The absolute-path check is untouched: '~'-prefixed paths were always rejected
+  // by pathMustBeAbsolute BEFORE pathMustNotContain ever fired.
+  rejects('writeFile', { path: '~/notes.md', content: 'c' }, /deve ser absoluto/);
 });
 
-test('P0-3: replaceInFile — path/old/new required + absolute; oldStr/newStr rejected [CARVE-OUT 5c]', () => {
+test('P0-3: replaceInFile — path/old/new required + absolute; oldStr/newStr ACCEPTED (5c resolved)', () => {
   assert.strictEqual(validateToolCall('replaceInFile', { path: '/abs/x', old: 'a', new: 'b' }), true);
   rejects('replaceInFile', { path: '/abs/x', new: 'b' }, /campo obrigatório "old"/);
   rejects('replaceInFile', { path: 'rel', old: 'a', new: 'b' }, /deve ser absoluto/);
-  // CARVE-OUT (Task 5c): CURRENT behavior — the dispatch accepts p.old||p.oldStr /
-  // p.new||p.newStr (luna-soul.cjs:4291) but the schema requires old/new literally.
-  rejects('replaceInFile', { path: '/abs/x', oldStr: 'a', newStr: 'b' }, /campo obrigatório "old"/);
+  // 5c RESOLVED: schema accepts the oldStr/newStr aliases the dispatch already took.
+  assert.strictEqual(validateToolCall('replaceInFile', { path: '/abs/x', oldStr: 'a', newStr: 'b' }), true);
+  assert.strictEqual(validateToolCall('replaceInFile', { path: '/abs/x', old: 'a', newStr: 'b' }), true, 'mixed aliases normalize');
+  rejects('replaceInFile', { path: '/abs/x', oldStr: 42, newStr: 'b' }, /"old" deve ser string/,
+    'type check applies to the normalized alias value');
+  rejects('replaceInFile', { path: '/abs/x' }, /campo obrigatório "old"/);
 });
 
 test('P0-4: appendFile/deleteFile — required fields only; relative paths ALLOWED (no absolute constraint)', () => {
@@ -130,18 +135,22 @@ test('P0-10: checksum drift IS detected when params.path is used (positive contr
   }
 });
 
-test('P0-11: checksum drift verify/record reads params.path ONLY — filePath alias bypasses it TODAY [CARVE-OUT 5b]', async () => {
-  const guard = new ToolGuard(os.tmpdir());
-  const target = path.join(os.tmpdir(), `luna-p0-drift-alias-${process.pid}.txt`);
-  fs.writeFileSync(target, 'v1');
+test('P0-11: checksum drift verify/record resolves the filePath/file aliases (5b resolved)', async () => {
+  const toolFn = async () => ({ success: true });
+  const target = path.join(os.tmpdir(), `luna-t5-drift-${process.pid}.txt`);
   try {
-    const toolFn = async () => ({ success: true });
-    await guard.execute('writeFile', { filePath: target, content: 'a' }, toolFn);
+    // filePath alias
+    const guard1 = new ToolGuard(os.tmpdir());
+    fs.writeFileSync(target, 'v1');
+    await guard1.execute('writeFile', { filePath: target, content: 'a' }, toolFn);
     fs.writeFileSync(target, 'v2-external');
-    // CURRENT (buggy): verify(params.path === undefined) finds no entry → ok:true → no FILE_DRIFT.
-    // Task 5b flips this to assert.rejects(..., /Drift detectado/).
-    const res = await guard.execute('writeFile', { filePath: target, content: 'b' }, toolFn);
-    assert.strictEqual(res.success, true, 'current behavior: drift via the filePath alias is NOT detected');
+    await assert.rejects(() => guard1.execute('writeFile', { filePath: target, content: 'b' }, toolFn), /Drift detectado/);
+    // file alias (appendFile goes through the record path too)
+    const guard2 = new ToolGuard(os.tmpdir());
+    fs.writeFileSync(target, 'v3');
+    await guard2.execute('appendFile', { file: target, content: 'a' }, toolFn);
+    fs.writeFileSync(target, 'v4-external');
+    await assert.rejects(() => guard2.execute('appendFile', { file: target, content: 'b' }, toolFn), /Drift detectado/);
   } finally {
     try { fs.unlinkSync(target); } catch {}
   }

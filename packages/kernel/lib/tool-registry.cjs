@@ -45,7 +45,9 @@ const TOOL_REGISTRY = {
         content: "string",
       },
       pathMustBeAbsolute: true,
-      pathMustNotContain: ["..", "~"],
+      // Wave 5 (5a): pathMustNotContain ["..","~"] removed — the soul's realpath
+      // path-guard (lib/path-guard.cjs) is the traversal authority; the schema
+      // no longer double-polices raw '..'/'~' in the path value.
     },
     meta: { icon: "📄", color: "#3b82f6", label: null },
   },

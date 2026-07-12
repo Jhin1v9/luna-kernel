@@ -177,6 +177,13 @@ function validateToolCall(toolName, params) {
     if (p.filePath !== undefined && p.filePath !== null) p.path = p.filePath;
     else if (p.file !== undefined && p.file !== null) p.path = p.file;
   }
+  // Wave 5 (5c): replaceInFile dispatch accepts oldStr/newStr aliases
+  // (luna-soul.cjs: p.old || p.oldStr, p.new || p.newStr) — normalize before
+  // the required/type checks so the schema and the dispatch agree.
+  if (toolName === 'replaceInFile') {
+    if (p.old === undefined && p.oldStr !== undefined) p.old = p.oldStr;
+    if (p.new === undefined && p.newStr !== undefined) p.new = p.newStr;
+  }
   const pathValue = p.path || p.filePath || p.source || p.from;
 
   // Check required fields
@@ -444,10 +451,13 @@ class ToolGuard {
     }
 
     // 6. Checksum antes de editar
+    // Wave 5 (5b): resolve through the same path aliases the dispatch accepts —
+    // params.filePath / params.file bypassed drift verify AND record entirely.
+    const driftPath = params.path || params.filePath || params.file;
     if (['writeFile', 'replaceInFile', 'appendFile', 'deleteFile'].includes(toolName)) {
-      const check = this.checksums.verify(params.path);
+      const check = this.checksums.verify(driftPath);
       if (!check.ok) {
-        const err = new Error(`Drift detectado em "${params.path}": ${check.reason}. O arquivo foi modificado externamente. Abortando para evitar perda de dados.`);
+        const err = new Error(`Drift detectado em "${driftPath}": ${check.reason}. O arquivo foi modificado externamente. Abortando para evitar perda de dados.`);
         err.code = 'FILE_DRIFT';
         throw err;
       }
@@ -469,9 +479,9 @@ class ToolGuard {
       this.idempotency.markProcessed(idemKey);
     }
 
-    // 6. Update checksum após editar
+    // 6. Update checksum após editar (Wave 5: same alias resolution as the verify above)
     if (['writeFile', 'replaceInFile', 'appendFile'].includes(toolName)) {
-      this.checksums.record(params.path);
+      this.checksums.record(driftPath);
     }
 
     return result;

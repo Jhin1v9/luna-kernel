@@ -952,11 +952,12 @@ test('H1: writeFile alias is still ENFORCED — relative filePath throws', () =>
   );
 });
 
-test('H1: pathMustNotContain also applies to the resolved alias value', () => {
-  assert.throws(
-    () => validateToolCall('writeFile', { filePath: '/abs/../escape', content: 'c' }),
-    /padrão proibido/
-  );
+// Wave 5 (Task 5a): writeFile pathMustNotContain was REMOVED from the registry
+// schema — soul's realpath path-guard owns traversal safety; the schema no
+// longer rejects raw '..'/'~' in the path value.
+test('H1: writeFile schema accepts .. and ~ in the alias value (path guard owns traversal)', () => {
+  assert.strictEqual(validateToolCall('writeFile', { filePath: '/abs/../escape', content: 'c' }), true);
+  assert.strictEqual(validateToolCall('writeFile', { path: '/abs/~user/x', content: 'c' }), true);
 });
 
 // H3: idempotency escopada a tools mutating — reads idênticos NUNCA são
