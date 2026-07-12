@@ -111,3 +111,28 @@ test('A3: wrapper oracle distinguishes valid JSON response from plain-text fallb
   assert.strictEqual(parseTagResponse(plain).mode, 'CHAT', 'plain text falls back to CHAT');
   assert.strictEqual(isValidResponseWrapper(plain), false, 'plain text must NOT be a valid wrapper');
 });
+
+// W6-T2: _waitPromisesWithDrain must be bounded — a tool promise that never
+// settles (stuck CDP call, blocking computer-use) must not hang the turn
+// forever. After the drain timeout, each pending tool is force-resolved with
+// a visible action_end failure and the generator returns.
+test('W6-T2: _waitPromisesWithDrain force-resolves hung tools after the drain timeout', { timeout: 5000 }, async () => {
+  const { LunaSoul } = require('../luna-soul.cjs');
+  const soul = new LunaSoul({});
+  soul._drainTimeoutMs = 300; // test override so the suite stays fast
+  const eventBus = { queue: [], push(ev) { this.queue.push(ev); } };
+  const never = new Promise(() => {});
+  // Pending collection is an array of bare Promise objects (the real shape:
+  // domActionPromises / result.pendingPromises). Push sites annotate them
+  // with _toolName / _domResult so the timeout event can name the tool.
+  const domResult = { tool: 'stuckTool', result: null };
+  never._toolName = 'stuckTool';
+  never._domResult = domResult;
+  const pending = [never];
+  const events = [];
+  for await (const ev of soul._waitPromisesWithDrain(pending, eventBus, 'sess-t2')) events.push(ev);
+  assert.ok(events.some(e => e.type === 'action_end' && /expirou|timeout|timed out/i.test(JSON.stringify(e))),
+    'a hung tool must end with a visible action_end failure, got: ' + JSON.stringify(events));
+  assert.ok(domResult.result && domResult.result.success === false,
+    'domResult must be filled with the failure payload for downstream loop-back, got: ' + JSON.stringify(domResult.result));
+});

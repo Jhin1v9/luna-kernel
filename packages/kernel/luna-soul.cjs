@@ -2528,6 +2528,9 @@ class LunaSoul extends EventEmitter {
 
               // v10.13: Fire-and-forget execution — push results to eventBus
               const actionPromise = this._executeActionAsync(parsedAction, sessionId, options, toolHash, toolInstanceId, kimiResult, kimiImages, event.source || 'dom_mirror', eventBus, domResult);
+              // W6-T2: annotate so _waitPromisesWithDrain can name the tool on drain timeout
+              actionPromise._toolName = parsedAction.tool;
+              actionPromise._domResult = domResult;
               domActionPromises.push(actionPromise);
 
               break;
@@ -2969,6 +2972,9 @@ REGRAS:
                 eventBus,
                 domResult
               );
+              // W6-T2: annotate so _waitPromisesWithDrain can name the tool on drain timeout
+              actionPromise._toolName = parsedAction.tool;
+              actionPromise._domResult = domResult;
               domActionPromises.push(actionPromise);
               break;
             }
@@ -3449,6 +3455,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
             eventBus.push({ type: 'action_end', tool: parsed.tool, result: errorResult, sessionId });
             return `[Erro: ${actionErr.message}]`;
           });
+          // W6-T2: annotate so _waitPromisesWithDrain can name the tool on drain timeout
+          actionPromise._toolName = parsed.tool;
           pendingPromises.push(actionPromise);
           // placeholder output until promise resolves
           output = output ? `${output}\n\n[Executando ${parsed.tool}...]` : `[Executando ${parsed.tool}...]`;
@@ -3528,6 +3536,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
             eventBus.push({ type: 'plan_complete', sessionId });
             return output;
           })();
+          // W6-T2: annotate so _waitPromisesWithDrain can name the tool on drain timeout
+          planPromise._toolName = 'plan';
           pendingPromises.push(planPromise);
         } else {
           // Legacy blocking path
@@ -4017,10 +4027,32 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     for (const p of pending) {
       p.then(() => pending.delete(p)).catch(() => pending.delete(p));
     }
+    // W6-T2: bound the wait — a tool promise that never settles (stuck CDP
+    // call, blocking computer-use) must not hang the turn forever, leaking
+    // the backend turn with `done` never emitted. No cancel flag is reachable
+    // in this scope (STREAM_CANCELLED surfaces at the stream call sites), so
+    // the timeout is the only escape hatch.
+    const DRAIN_TIMEOUT_MS = this._drainTimeoutMs || 10 * 60 * 1000;
+    const deadline = Date.now() + DRAIN_TIMEOUT_MS;
     while (pending.size > 0) {
       // Drain all available events immediately
       while (eventBus.queue.length > 0) {
         yield eventBus.queue.shift();
+      }
+      if (Date.now() > deadline) {
+        // Force-resolve each still-pending tool with a visible failure so the
+        // turn flows to its normal terminal events instead of hanging.
+        for (const p of pending) {
+          const failure = { success: false, error: 'Tool expirou após 10 min sem resposta (drain timeout).' };
+          eventBus.push({ type: 'action_end', tool: p._toolName || 'pendente', result: failure });
+          // Keep downstream loop-back logic consistent: the placeholder
+          // result object (when annotated) sees the same failure payload.
+          if (p._domResult && typeof p._domResult === 'object') {
+            p._domResult.result = failure;
+          }
+        }
+        pending.clear();
+        break;
       }
       // Wait a short tick before checking again
       await new Promise(r => setTimeout(r, 100));
