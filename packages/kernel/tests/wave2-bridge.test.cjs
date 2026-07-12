@@ -229,3 +229,67 @@ test('C2: handler buffers events with top-level url/tabUrl (shape contract)', ()
     'handler must buffer events with flat top-level url/tabUrl — the bridge filter reads raw.tabUrl || raw.url'
   );
 });
+
+// ── Fix D: DOM poller bounded to stream + premature completion guard ──
+
+const { isPrematureCompletion } = require(path.join(__dirname, '..', 'lib', 'stream-completion-guard.cjs'));
+
+test('D3a: isPrematureCompletion — empty state (nothing streamed yet) is premature', () => {
+  assert.strictEqual(isPrematureCompletion({ lastResponse: '', lastThinking: '' }), true);
+  assert.strictEqual(isPrematureCompletion({ lastResponse: undefined, lastThinking: undefined }), true);
+  assert.strictEqual(isPrematureCompletion({ lastResponse: null, lastThinking: null }), true);
+});
+
+test('D3b: isPrematureCompletion — any response text seen → not premature', () => {
+  assert.strictEqual(isPrematureCompletion({ lastResponse: 'Hello', lastThinking: '' }), false);
+  assert.strictEqual(isPrematureCompletion({ lastResponse: 'Hello', lastThinking: 'hmm' }), false);
+});
+
+test('D3c: isPrematureCompletion — any thinking text seen → not premature', () => {
+  assert.strictEqual(isPrematureCompletion({ lastResponse: '', lastThinking: 'reasoning...' }), false);
+});
+
+/**
+ * Extract the `finally` block of sendMessageStream (the stream-end cleanup).
+ * Brace-matches from the `finally {` that follows the method signature.
+ */
+function extractSendMessageStreamFinally(src) {
+  const methodIdx = src.indexOf('async *sendMessageStream(');
+  assert.notStrictEqual(methodIdx, -1, 'sendMessageStream must exist in kimi-bridge.cjs');
+
+  const finallyIdx = src.indexOf('} finally {', methodIdx);
+  assert.notStrictEqual(finallyIdx, -1, 'sendMessageStream must have a finally block');
+
+  const openBrace = src.indexOf('{', finallyIdx);
+  let depth = 0;
+  for (let i = openBrace; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return src.slice(openBrace, i + 1);
+    }
+  }
+  assert.fail('sendMessageStream finally block braces never balanced');
+}
+
+test('D1: sendMessageStream finally stops the DOM poller BEFORE clearing processing', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const finallyBody = extractSendMessageStreamFinally(src);
+
+  const stopIdx = finallyBody.indexOf('_stopDomPoller');
+  assert.notStrictEqual(stopIdx, -1, 'finally must call _stopDomPoller (poller is now bounded to the active stream)');
+
+  const processingIdx = finallyBody.indexOf('processing = false');
+  assert.notStrictEqual(processingIdx, -1, 'finally must still clear session.processing');
+
+  assert.ok(
+    stopIdx < processingIdx,
+    '_stopDomPoller must run BEFORE session.processing = false so the poller stops while the turn is still marked active'
+  );
+
+  assert.ok(
+    !finallyBody.includes('NÃO paramos o DOM poller'),
+    'v7.0 keep-poller-running comment must be gone — the poller no longer survives the stream'
+  );
+});

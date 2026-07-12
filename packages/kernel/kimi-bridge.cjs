@@ -25,6 +25,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { jsonrepair } = require('jsonrepair');
 const { WebBridgeClient } = require('./webbridge-client.cjs');
+const { isPrematureCompletion } = require('./lib/stream-completion-guard.cjs');
 const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors, getProviderApiPatterns } = require('./provider-loader.cjs');
 
 // Lazy-load turndown — fail gracefully if not installed
@@ -7396,6 +7397,11 @@ class KimiBridge {
       await page.waitForTimeout(500);
       log.info(`[DEBUG-LUNA] Step 6: pressing Enter`);
       await this._pressEnterOnInput(inputLocator);
+      // Wave2-fix: discard everything the poller observed during send-prep —
+      // it describes the PREVIOUS turn's DOM, not this message.
+      queue.events.length = 0;
+      queue.lastReadIndex = 0;
+      if (session) session._completionState = null;
       log.info(`[DEBUG-LUNA] Step 7: Message sent, starting v7.0 stream consumer`);
 
       // v7.7: Keep assistant detection for logging/compatibility, but extraction
@@ -7710,6 +7716,13 @@ class KimiBridge {
             }
 
             case 'completion_candidate': {
+              // Wave2-fix: right after Enter the PREVIOUS turn's response is still
+              // on screen and stable, so the poller can re-fire a stale candidate
+              // before any text of this turn has streamed. Ignore it.
+              if (isPrematureCompletion({ lastResponse, lastThinking })) {
+                log.info(`[sendMessageStream] Ignoring completion candidate — nothing streamed yet this turn (stale)`);
+                break;
+              }
               log.info(`[sendMessageStream] Completion candidate received (signals=${JSON.stringify(ev.signals)})`);
               // v10.35-fix: For non-Kimi providers, a completion candidate can fire during a
               // transient pause while a long JSON wrapper (e.g., writeFile with HTML content) is
@@ -7860,6 +7873,16 @@ class KimiBridge {
         throw err;
       }
     } finally {
+      // Wave2-fix: the DOM poller is now bounded to the active stream.
+      // Previously (v7.0) it kept running between turns and fed stale events
+      // (old-turn completion_candidate / state_change) into the next message.
+      // It is restarted per message at :7249 — _startDomPoller early-returns
+      // only while active, so it restarts cleanly after this stop.
+      try {
+        await this._stopDomPoller(userId);
+      } catch (e) {
+        log.warn(`[sendMessageStream] _stopDomPoller failed: ${e.message}`);
+      }
       if (session) {
         session.processing = false;
         session.softCancelRequested = false; // v7.0: clear soft cancel flag
@@ -7867,8 +7890,6 @@ class KimiBridge {
       }
       this.cancelledStreams.delete(userId);
       this.streamStopFlags.delete(userId);
-      // v7.0: NÃO paramos o DOM poller aqui — ele continua rodando independentemente
-      // O poller só para quando _stopDomPoller é chamado explicitamente ou página fecha
     }
   }
 
