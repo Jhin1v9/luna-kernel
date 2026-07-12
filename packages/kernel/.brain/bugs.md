@@ -41,18 +41,11 @@
 
 ### Tools / Guard (`luna-tools.cjs`, `luna-tool-guard.cjs`, `luna-code-validator.cjs`)
 
-- [ ] 🔴 **Guard schema registry desync** — only ~11 of ~120 tools have schemas (`luna-tool-guard.cjs:142-198`); `validateToolCall` THROWS for the rest → in `luna-cli` sessions most tools fail; in web/Telegram the guard is null (workspace mismatch, `luna-soul.cjs:1687-1693`) → ZERO validation/timeout/idempotency. Worst of both worlds.
-- [ ] 🔴 **Path traversal** — check only covers `params.path` (`luna-soul.cjs:4122-4129`); aliases (`filePath`/`source`/`from`/`to`) bypass; `/tmp` escape hatch; `'..'` substring block is symlink-bypassable.
-- [ ] 🔴 **Command injection** — `executeShellVisible` cwd interpolated in script (`luna-tools.cjs:778`); `searchFiles`/`grep` context param (`:559-592`); `gitLog` n (`:1114`); `installPackages` pkg list (`:1075-1077`); `openDebugTerminal` target (`:1355`); validator tsconfig path (`luna-code-validator.cjs:552-555`).
-- [ ] 🔴 **SSRF** — `fetchURL`/`downloadFile`/`browser`: no host validation, recursive redirects to any Location, no size cap, timeout 0 (`luna-tools.cjs:748-762, 1165-1190, 713-746`); `downloadFile` timeout default 0 = none.
-- [ ] 🟠 **Timeouts that don't kill anything** — `safeExec` default 0 = unlimited (`luna-tools.cjs:123-124`); guard `withTimeout` is only `Promise.race` — never kills child process or aborts request (`luna-tool-guard.cjs:282-292`); `dashboardApi` fetch has no timeout at all (`luna-tools.cjs:1380-1396`).
-- [ ] 🟠 **writeFile not atomic** — direct `writeFileSync` (`luna-tools.cjs:187-189`); no tmp+rename; soul auto-fix rewrites the file a second time (`luna-soul.cjs:4333-4341`) — second corruption window.
-- [ ] 🟠 **readFile: no binary detection, no byte cap** — whole file into memory + split before the 1000-line limit (`luna-tools.cjs:143-173`).
-- [ ] 🟠 **IdempotencyStore: no TTL + marks processed on failure** (`luna-tool-guard.cjs:116-139, 456`) — a failed writeFile can never be legitimately retried (silently "skipped"); skip result `{skipped:true}` lacks `success` field → treated as failure downstream (`luna-soul.cjs:4552`).
-- [ ] 🟡 **replaceInFile creates empty file if missing** (`luna-tools.cjs:239-245`) — surprising fallback.
-- [ ] 🟡 **executeScript dual success semantics** — `ok()` then overwritten with `success: exitCode===0` (`luna-tools.cjs:334`).
-- [ ] 🟡 **runBuildCheck blocks the writeFile path up to 180s** (`luna-soul.cjs:4378-4388`) + screenshot validation — one writeFile can block for minutes, fighting the guard's 30s.
-- [ ] 🟡 **Heuristic validators with false positives** — `checkJsxBalanced` (char-by-char parser, breaks on TS generics) and `checkFileTruncated` (regex brace counting over strings/comments) in `luna-code-validator.cjs:19-169`.
+- [ ] 🟡 **Heuristic validators with false positives** — `checkJsxBalanced` (char-by-char parser, breaks on TS generics) and `checkFileTruncated` (regex brace counting over strings/comments) in `luna-code-validator.cjs:19-169`. Deferred to Wave 5 (needs a real parser).
+- [ ] 🟡 **writeFile schema `pathMustNotContain: ['..','~']` contradicts the path guard** (found in Wave 3 Fix H review) — soul's realpath guard correctly expands `~`/`..`, then the legacy schema rejects the raw string. Narrow window (master prompt trains absolute paths); reconcile in Wave 5.
+- [ ] 🟡 **Checksum drift protection only reads `params.path`** (`luna-tool-guard.cjs:475,518`) — `filePath` alias silently bypasses drift verify/record. Also `replaceInFile` schema requires `old`/`new` while dispatch accepts `oldStr`/`newStr`.
+- [ ] 🟡 **`dashboardCommandRouter` reports `success:true` on inner failure** (`luna-soul.cjs:2138` ff.) — failed dashboard mutations get marked processed (exposed by mark-on-success idempotency).
+- [ ] 🟡 **~15 direct `fs.writeFileSync` sites in `luna-soul.cjs`** (`:1043, :1074, :1115, :1144, :1174-1178, :1245-1334, :3050, :4749, :4847, :4904`) — personas/skills/memory writes still non-atomic (Fix B covered only the tool paths).
 
 ## Resolved
 
@@ -74,6 +67,18 @@
 - [x] 🔴 **Cross-user event theft** — `_consumeExtensionEvents(expectedUrl)` filters buffers by normalized tab URL; non-matching events stay buffered; fail-closed on ambiguity. (`be52a5c`, `542c824`; tests C1a–C2). Agent/swarm mode caveat tracked separately (open).
 - [x] 🟠 **DOM poller never stops / stale events** — poller stopped in `sendMessageStream` finally before `processing=false`; queue + completion state purged right after Enter; premature `completion_candidate` ignored via `lib/stream-completion-guard.cjs`. (`ae12ff6`, `8a0f2bf`, `84be75a`; tests D1–D3)
 - [x] 🔴 **Duplicated/triplicated text during streaming** — per-source response cursors with cross-source prefix guard (`lib/stream-text-cursor.cjs`) replace the single shared `lastResponse` diff; wired into Phase 0 seed, `state_change`, `response_delta`. Passed adversarial fuzz (200 randomized multi-source rounds, zero duplicated characters). (`0150d4f`; tests E1a–E1f). Known residual: a legit mid-stream regeneration freezes the stream until the turn-end done-replace (strictly better than the old corrupted output).
+
+### Wave 3 (2026-07-12) — guard/tools security & correctness
+
+- [x] 🟠 **readFile: no binary detection, no byte cap** — `lib/text-file.cjs` `looksBinary` + 2MB cap with honest truncation note; mode-preserving. (`441fe95`, `86cb3f9`; tests A1/A2)
+- [x] 🟠 **writeFile not atomic** — `lib/atomic-write.cjs` tmp+rename for writeFile/replaceInFile/soul auto-fix, preserving file mode (scripts keep +x). (`2ebe587`, `d947cda`; tests B1–B4)
+- [x] 🟠 **IdempotencyStore: no TTL + marks on failure** — 10min TTL, mark-only-on-success, `success:true` on skips, scoped to mutating tools; auto-commit gate excludes skipped results (no drift bypass). (`2b83aef`, `4bc8e79`, H3 in `0dce8ac`; tests C1–C4)
+- [x] 🟠 **Timeouts that don't kill anything** — safeExec default 60s/600s cap + GNU `timeout` process-GROUP kill (no orphans); dashboardApi 15s AbortSignal. (`6c9270a`, `5fa7259`; tests D1–D3 incl. pgrep death proof)
+- [x] 🔴 **Command injection** — `lib/shell-quote.cjs` (shellQuote/toNonNegInt/assertSafeName) at all 6 sites PLUS the JSON.stringify-in-double-quotes sites the plan wrongly declared safe (searchFiles/grep pattern+cwd+globs, gitCommit message, checkSyntax paths, clipboard fallbacks). (`574b9b3`, `b29bcf0`; tests E1–E4 with live PoCs)
+- [x] 🔴 **Path traversal** — `lib/path-guard.cjs` kernel-faithful symlink resolution (follows symlinks before `..`, verified against the real kernel), all alias keys + cwd + glob static prefixes, scoped to file tools only (dashboard `to`/`from`/`source` unblocked), per-user workspace. (`45d7f4f`, `e1f00a1`, `ef4a435`; tests F1–F5)
+- [x] 🔴 **SSRF** — `lib/url-safety.cjs` default-deny private/loopback/metadata/CGNAT (all IPv4 literal forms, IPv6 incl. v4-compat/NAT64 tails, trailing-dot), per-redirect re-validation, 5MB/100MB caps, 15s timeouts, `LUNA_FETCH_ALLOW_HOSTS` override. (`24c17d8`, `cbf87d4`; tests G1–G5)
+- [x] 🔴 **Guard schema registry desync** — fail-open default schema with warn-once (111 tools unblocked), guard now ACTIVE for web/Telegram via `_ensureToolGuard(options.userId)`; circuit breaker fixed for executeShell (clamp hoisted, skips feed breaker). Full per-tool schema coverage deferred to Wave 5. (`0dce8ac`, `ebe7748`; tests H1–H5)
+- [x] 🟡 **replaceInFile creates empty file / executeScript dual success / runBuildCheck 180s** — error instead of empty file, unified err()/ok() semantics, 60s build cap. (`f0113a5`; tests I1–I3)
 
 ---
 
