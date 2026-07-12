@@ -244,3 +244,19 @@ test('W6-T7: all-cached domActionResults on a CHAT turn stop as pure chat', () =
   assert.ok(/every\(\(?\s*r\s*\)?\s*=>\s*r\.cached\s*===\s*true\)/.test(w),
     'soul must gate on every result carrying cached === true');
 });
+
+// W6-T8: single-writer persistence. response_detected is a live-streaming
+// signal only — _handleChat is the sole persister of the assistant response.
+// With both persisting, every chat reply lands twice in session history.
+test('W6-T8a: response_detected does not persist — _handleChat is the sole writer', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  const idx = src.indexOf("case 'response_detected'");
+  assert.notStrictEqual(idx, -1, "case 'response_detected' must exist — anchor drifted?");
+  const window = sliceAround(src, "case 'response_detected'", 800);
+  assert.ok(window.includes("type: 'response_detected'"),
+    'window must contain the case body (the yield) — anchor drifted?');
+  // Assert the call shape `.appendEvent(` — the W6-T8 comment in the case body
+  // legitimately contains the bare word "appendEvent".
+  assert.ok(!window.includes('.appendEvent('),
+    'response_detected must not call appendEvent (_handleChat is the sole writer)');
+});

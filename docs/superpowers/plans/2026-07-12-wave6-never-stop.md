@@ -247,7 +247,7 @@ test('W6-T6: sendMessageStream records the pre-send assistant marker', () => {
 
 **Why (A-Q4/Q5):** every response is persisted twice (response_detected + _handleChat) → duplicated `assistant:` history lines; routes persist `response_detected` separately from `assistant` → same text twice in UI; `done` exempt from dedup; straggler events after final done keep landing.
 
-- [ ] **T8.1. Failing tests**
+- [x] **T8.1. Failing tests**
 
 ```js
 test('W6-T8: response text has a single persistence writer', () => {
@@ -266,14 +266,14 @@ test('W6-T8: done events are content-deduped in the transport loop', () => {
 });
 ```
 
-- [ ] **T8.2. Implement**
+- [x] **T8.2. Implement**
 
 1. Delete the `appendEvent` in the soul's `response_detected` case (`:2460-2464`) — `_handleChat` is the sole persister.
 2. Routes: stop persisting `response_detected` (the `assistant`/`done` events carry the text).
 3. Routes: dedup `done` by content hash (remove the `ev.type !== 'done'` exemption at `:516`; hash on mode+response).
 4. Routes: once a final `done` is persisted, set `session._streamClosed = true`; the persist loop drops straggler events for a closed stream (except a new user POST, which already cancels + reopens at `:452-465`).
 
-- [ ] **T8.3. Verify + commit** — wave1 + chat-routes + full regression (191→193). `fix(soul,transport): single-writer response persistence + done dedup + stream-closed gate - no more duplicated replies in history or UI`.
+- [x] **T8.3. Verify + commit** — wave1 + chat-routes + full regression (191→193). `fix(soul,transport): single-writer response persistence + done dedup + stream-closed gate - no more duplicated replies in history or UI`.
 
 ---
 

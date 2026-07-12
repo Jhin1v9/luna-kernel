@@ -4,8 +4,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { makeEventDedupKey } = require('../lib/chat-event-dedup.cjs');
+
+const CHAT_ROUTES = path.join(__dirname, '..', 'luna-chat-routes.js');
 
 // B1/B4: two action_start events with the same tool but different
 // toolInstanceId must both survive dedup (distinct keys). Previously the key
@@ -68,4 +72,47 @@ test('B1: action event without toolInstanceId or id collapses (documented)', () 
   const k1 = makeEventDedupKey({ type: 'action_start', tool: 'readFile' }, '');
   const k2 = makeEventDedupKey({ type: 'action_start', tool: 'readFile' }, '');
   assert.strictEqual(k1, k2, 'without any instance id the key degenerates to type:tool:');
+});
+
+// W6-T8: transport-side single-writer persistence + done dedup.
+// (i) The persist loop must never store response_detected separately — the
+//     assistant event from _handleChat and the final done carry the text;
+//     response_delta covers live streaming.
+// (ii) done events go through makeEventDedupKey like everything else (the
+//      ev.type !== 'done' exemption is gone — two identical dones collapse);
+//      action_progress stays exempt because its chunks are an ordered stream.
+test('W6-T8b: persist loop skips response_detected and dedupes done', () => {
+  const src = fs.readFileSync(CHAT_ROUTES, 'utf8');
+
+  // (i) Anchor on the persist-loop addMessageToSession (the one storing
+  // ev.type), then look 3000 chars back where the event whitelist sits.
+  const anchor = 'addMessageToSession(session.id, {';
+  let idx = -1;
+  let from = 0;
+  while ((from = src.indexOf(anchor, from)) !== -1) {
+    if (src.slice(from, from + 400).includes('type: ev.type')) { idx = from; break; }
+    from += anchor.length;
+  }
+  assert.notStrictEqual(idx, -1, 'persist-loop addMessageToSession anchor must exist');
+  const before = src.slice(Math.max(0, idx - 3000), idx);
+  assert.ok(before.includes('for await'), 'window must cover the persist loop — anchor drifted?');
+  assert.ok(!before.includes("'response_detected'"),
+    'persist loop must not persist response_detected separately');
+
+  // (ii) done is content-deduped: no ev.type !== 'done' exemption near the
+  // makeEventDedupKey call site; the action_progress exemption must remain.
+  const keyIdx = src.indexOf('makeEventDedupKey(ev, content)');
+  assert.notStrictEqual(keyIdx, -1, 'makeEventDedupKey call site must exist');
+  const around = src.slice(Math.max(0, keyIdx - 400), keyIdx + 400);
+  assert.ok(!/ev\.type !== 'done'/.test(around), 'done must be content-deduped (exemption removed)');
+  assert.ok(around.includes("ev.type !== 'action_progress'"), 'action_progress exemption must remain');
+
+  // (iii) W6-T8 review follow-up: the finally block must only delete the stream
+  // meta when it still owns it — otherwise POST#1's finally can delete POST#2's
+  // meta and let a third POST run concurrently against the closed gate.
+  const delIdx = src.indexOf('activeStreams.delete(finalSessionId)');
+  assert.notStrictEqual(delIdx, -1, 'activeStreams.delete(finalSessionId) must exist');
+  const delAround = src.slice(Math.max(0, delIdx - 300), delIdx);
+  assert.ok(/activeStreams\.get\(finalSessionId\)\s*===\s*myStreamMeta/.test(delAround),
+    'stream-meta delete must be ownership-guarded');
 });

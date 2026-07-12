@@ -467,6 +467,8 @@ router.post('/api/chat', async (req, res) => {
   const streamToken = (activeStreams.get(session.id)?.token || 0) + 1;
   const myStreamMeta = { cancelled: false, createdAt: Date.now(), messageId, token: streamToken };
   activeStreams.set(session.id, myStreamMeta);
+  // W6-T8: new user message reopens a closed stream
+  session._streamClosed = false;
 
   res.json({ ok: true, sessionId: session.id, status: 'processing' });
 
@@ -490,6 +492,10 @@ router.post('/api/chat', async (req, res) => {
       // a newer stream object if user sent a new message while this one runs.
       if (myStreamMeta.cancelled) break;
 
+      // W6-T8: once the final done is persisted the stream is closed — drop
+      // straggler events (late deltas from the backend) instead of persisting them.
+      if (session._streamClosed) continue;
+
       // v10.35-fix: Ignore response_done intermediate events. LunaSoul emits both
       // response_done and done for the same turn; storing both creates duplicate
       // final messages in session history. The final 'done' event carries the
@@ -498,7 +504,7 @@ router.post('/api/chat', async (req, res) => {
         continue;
       }
 
-      if (['response_delta', 'response_detected', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta', 'login_required', 'system', 'context_limit', 'compact_start', 'compact_progress', 'compact_end', 'compact_error', 'assistant', 'plan_start', 'plan_step', 'plan_complete', 'plan_error', 'mode_detected', 'action_progress'].includes(ev.type)) {
+      if (['response_delta', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta', 'login_required', 'system', 'context_limit', 'compact_start', 'compact_progress', 'compact_end', 'compact_error', 'assistant', 'plan_start', 'plan_step', 'plan_complete', 'plan_error', 'mode_detected', 'action_progress'].includes(ev.type)) {
         // v4.0-fix: For 'done' events, capture the final response from ev.result.response or ev.response
         // Wave 1 Fix B5: 'error'/'system' events carry text in ev.error/ev.message, not ev.text
         const content = ev.type === 'done'
@@ -509,11 +515,12 @@ router.post('/api/chat', async (req, res) => {
               ? (ev.error || ev.message || ev.text || ev.fullResponse || '')
               : (ev.text || ev.fullResponse || '');
 
-        // v5.4-fix: Skip duplicate non-final events (same type + content within a turn)
+        // v5.4-fix: Skip duplicate events (same type + content within a turn).
+        // W6-T8: 'done' is deduped too — two identical dones collapse to one.
         // Wave 1 Fix B1: action_* events dedup by toolInstanceId, not (empty) content
         const dedupKey = makeEventDedupKey(ev, content);
         // Wave 4 bug 6: action_progress chunks are an ordered stream — never dedup them
-        if (ev.type !== 'done' && ev.type !== 'action_progress' && emittedEventHashes.has(dedupKey)) {
+        if (ev.type !== 'action_progress' && emittedEventHashes.has(dedupKey)) {
           continue;
         }
         emittedEventHashes.add(dedupKey);
@@ -533,6 +540,10 @@ router.post('/api/chat', async (req, res) => {
           messageId: messageId,
           timestamp: new Date().toISOString(),
         }, { persist: ev.type !== 'action_progress' }); // Wave 4 review follow-up: chunks ride the next event's persistence
+
+        // W6-T8: close the stream once the final done is persisted — any
+        // straggler events after this are dropped by the gate above.
+        if (ev.type === 'done') session._streamClosed = true;
       }
     }
   } catch (e) {
@@ -568,7 +579,12 @@ router.post('/api/chat', async (req, res) => {
         });
       }
     }
-    activeStreams.delete(finalSessionId);
+    // W6-T8 review: only delete the stream meta if it is still OURS — a newer
+    // POST may have already replaced it, and deleting theirs would let a third
+    // POST run concurrently (its events then hitting the closed gate).
+    if (activeStreams.get(finalSessionId) === myStreamMeta) {
+      activeStreams.delete(finalSessionId);
+    }
   }
 });
 

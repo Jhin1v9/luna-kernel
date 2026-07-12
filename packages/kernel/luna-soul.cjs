@@ -2474,11 +2474,7 @@ class LunaSoul extends EventEmitter {
               let respText = this._stripJsonResponseWrapper(event.response || '');
               if (respText) {
                 yield { type: 'response_detected', text: respText, sessionId };
-                this.sessionManager.appendEvent(sessionId, {
-                  type: 'assistant',
-                  response: respText,
-                  timestamp: new Date().toISOString(),
-                });
+                // W6-T8: persistence lives solely in _handleChat — no appendEvent here
               }
               break;
             }
