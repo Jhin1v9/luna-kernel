@@ -205,35 +205,54 @@ const TOOL_SCHEMAS = {
   },
 };
 
+// Wave 3 (Fix H): tools sem schema estrito validam contra um default permissivo
+// (fail-open, warn-once) em vez de derrubar a tool call. Cobertura completa dos
+// ~111 tools restantes é trabalho da Wave 5 (registry gerado de
+// docs/luna-tools-registry.json vira a fonte dos schemas).
+const DEFAULT_SCHEMA = { required: [], types: {} };
+
 function validateToolCall(toolName, params) {
-  const schema = TOOL_SCHEMAS[toolName];
+  let schema = TOOL_SCHEMAS[toolName];
   if (!schema) {
-    throw new Error(`Schema validation: tool "${toolName}" não existe no schema registry.`);
+    if (!validateToolCall._warned.has(toolName)) {
+      validateToolCall._warned.add(toolName);
+      console.warn(`[tool-guard] Sem schema estrito para "${toolName}" — validação permissiva (Wave 5 cobrirá todos os tools).`);
+    }
+    schema = DEFAULT_SCHEMA;
   }
+
+  // Alias-aware: o dispatch do soul aceita path/filePath/file (e source/from em
+  // move/copy). Normaliza numa cópia para não mutar os params do chamador.
+  const p = { ...params };
+  if ((schema.required || []).includes('path') && (p.path === undefined || p.path === null)) {
+    if (p.filePath !== undefined && p.filePath !== null) p.path = p.filePath;
+    else if (p.file !== undefined && p.file !== null) p.path = p.file;
+  }
+  const pathValue = p.path || p.filePath || p.source || p.from;
 
   // Check required fields
   for (const field of schema.required || []) {
-    if (params[field] === undefined || params[field] === null) {
+    if (p[field] === undefined || p[field] === null) {
       throw new Error(`Schema validation: campo obrigatório "${field}" faltando em "${toolName}".`);
     }
   }
 
   // Check types
   for (const [field, expectedType] of Object.entries(schema.types || {})) {
-    if (params[field] !== undefined && typeof params[field] !== expectedType) {
-      throw new Error(`Schema validation: campo "${field}" deve ser ${expectedType}, recebeu ${typeof params[field]} em "${toolName}".`);
+    if (p[field] !== undefined && typeof p[field] !== expectedType) {
+      throw new Error(`Schema validation: campo "${field}" deve ser ${expectedType}, recebeu ${typeof p[field]} em "${toolName}".`);
     }
   }
 
-  // Check path constraints
-  if (schema.pathMustBeAbsolute && params.path && !path.isAbsolute(params.path)) {
-    throw new Error(`Schema validation: path "${params.path}" deve ser absoluto em "${toolName}".`);
+  // Check path constraints (no valor resolvido via alias, não só em params.path)
+  if (schema.pathMustBeAbsolute && pathValue && !path.isAbsolute(pathValue)) {
+    throw new Error(`Schema validation: path "${pathValue}" deve ser absoluto em "${toolName}".`);
   }
 
   if (schema.pathMustNotContain) {
     for (const forbidden of schema.pathMustNotContain) {
-      if (params.path && params.path.includes(forbidden)) {
-        throw new Error(`Schema validation: path "${params.path}" contém padrão proibido "${forbidden}" em "${toolName}".`);
+      if (pathValue && pathValue.includes(forbidden)) {
+        throw new Error(`Schema validation: path "${pathValue}" contém padrão proibido "${forbidden}" em "${toolName}".`);
       }
     }
   }
@@ -241,14 +260,15 @@ function validateToolCall(toolName, params) {
   // Check forbidden patterns in shell commands
   if (schema.forbiddenPatterns) {
     for (const pattern of schema.forbiddenPatterns) {
-      if (pattern.test(params.command)) {
-        throw new Error(`Schema validation: comando proibido detectado em "${toolName}": ${params.command}`);
+      if (pattern.test(p.command)) {
+        throw new Error(`Schema validation: comando proibido detectado em "${toolName}": ${p.command}`);
       }
     }
   }
 
   return true;
 }
+validateToolCall._warned = new Set();
 
 // ── 4b. Python Sandbox (AST-light import deny-list) ──
 // v3.4: os/pathlib/sys are allowed — ipython runs on the user's REAL PC,
@@ -287,14 +307,21 @@ function checkDestructivePattern(command) {
 }
 
 // ── 5. Timeout Wrapper ──
+// NOTA (Wave 3, Fix H): este race apenas REJEITA a promise — não mata trabalho
+// em andamento. Só executeShell ganha kill real: o timeout do guard é alinhado
+// com o timer próprio do safeExec (Fix D), que mata o process group. Os demais
+// toolFns são cooperativos (o guard desiste de esperar, o trabalho continua).
 function withTimeout(promise, ms, label = 'operation') {
+  let timer;
   const timeout = new Promise((_, reject) => {
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       reject(new Error(`Timeout: "${label}" excedeu ${ms}ms`));
     }, ms);
-    // Clean up timer if promise resolves first
-    promise.finally(() => clearTimeout(timer)).catch(() => {});
   });
+  // Limpa o timer quando a promise settle (resolve OU reject) — o antigo
+  // promise.finally(...).catch(...) criava um caminho de unhandled rejection
+  // quando o timeout vencia a race.
+  promise.then(() => clearTimeout(timer), () => clearTimeout(timer));
 
   return Promise.race([promise, timeout]);
 }
@@ -411,6 +438,10 @@ class StepCheckpoint {
 }
 
 // ── Guard Wrapper — Combina TUDO ──
+// Wave 3 (Fix H3): idempotency só se aplica a tools que mutam estado.
+// Reads (dashboardList*, readFile, grep...) devem ser livremente repetíveis.
+const MUTATING_TOOL_RE = /^(writeFile|appendFile|replaceInFile|deleteFile|moveFile|copyFile|gitCommit|applyPatch|installPackages|clipboardWrite|executeScript|executeShell|dashboard(Create|Update|Delete|Complete|Pay|Receive|Add|Send|Vote|Control|Enrich|Sync|Mark|Quick|Adjust|Reconcile))/;
+
 class ToolGuard {
   constructor(workspacePath) {
     this.circuit = new CircuitBreaker();
@@ -429,9 +460,12 @@ class ToolGuard {
     // 2. Circuit breaker check
     this.circuit.check(toolName, params);
 
-    // 3. Idempotency check
+    // 3. Idempotency check — Wave 3 (Fix H3): escopado a tools MUTATING.
+    // Com o guard agora ativo em sessões web/Telegram, deduplicar reads
+    // (dashboardList* etc.) devolveria skips obsoletos.
     const idemKey = this.idempotency.generateKey(toolName, params);
-    if (this.idempotency.isProcessed(idemKey) && options.idempotent !== false) {
+    const isMutating = MUTATING_TOOL_RE.test(toolName);
+    if (isMutating && this.idempotency.isProcessed(idemKey) && options.idempotent !== false) {
       console.log(`[tool-guard] Idempotency: skipping duplicate ${label}`);
       return { success: true, skipped: true, reason: 'already processed', idempotencyKey: idemKey, message: 'Operação idêntica já executada recentemente (idempotência).' };
     }
@@ -451,6 +485,18 @@ class ToolGuard {
       ? SHELL_TIMEOUT_MS
       : TOOL_TIMEOUT_MS;
 
+    // Wave 3 (Fix H4): alinha o timeout do guard com o kill real do executeShell.
+    // safeExec (Fix D) mata o process group quando opts.timeout > 0; sem o clamp,
+    // o guard rejeitaria a promise mas o filho continuaria vivo até o default
+    // interno. `params` aqui é a MESMA referência `p` que a toolFn lambda do soul
+    // fecha sobre (luna-soul.cjs execute dispatch), então mutar params.timeout
+    // limita o timer interno. Outros toolFns são cooperativos (sem handle de
+    // processo para matar).
+    if (toolName === 'executeShell') {
+      const budgetSec = Math.floor(timeoutMs / 1000);
+      params.timeout = Math.min(Number(params.timeout) || budgetSec, budgetSec);
+    }
+
     // 1. Retry + execute
     const result = await withRetry(
       () => withTimeout(toolFn(), timeoutMs, label),
@@ -462,7 +508,8 @@ class ToolGuard {
 
     // 3. Mark idempotency — only on success: a failed result ({success:false})
     // must stay retryable instead of being silently "skipped" forever.
-    if (result && result.success !== false) {
+    // Fix H3: apenas tools mutating são marcadas (reads nunca são dedupados).
+    if (isMutating && result && result.success !== false) {
       this.idempotency.markProcessed(idemKey);
     }
 

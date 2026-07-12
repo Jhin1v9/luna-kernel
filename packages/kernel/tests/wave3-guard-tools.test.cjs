@@ -5,6 +5,9 @@
 // Fix D: safeExec default 60s/600s cap + dashboardApi 15s abort (lib/exec-timeout.cjs + luna-tools.cjs)
 // Fix E: command injection — shell-quote + numeric clamps + name whitelist (lib/shell-quote.cjs + luna-tools.cjs + luna-code-validator.cjs)
 // Fix F: path traversal — alias-aware, realpath-resolved, tmp allowlist (lib/path-guard.cjs + luna-soul.cjs)
+// Fix G: SSRF guard for fetchURL/downloadFile/browser (lib/url-safety.cjs + luna-tools.cjs)
+// Fix H: guard registry desync — fail-open default schema, alias-aware paths, per-session workspace guard,
+//        mutating-only idempotency, executeShell timeout alignment (luna-tool-guard.cjs + luna-soul.cjs)
 // Run: node --test packages/kernel/tests/wave3-guard-tools.test.cjs
 'use strict';
 
@@ -17,7 +20,7 @@ const path = require('node:path');
 const { looksBinary } = require('../lib/text-file.cjs');
 const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
 const { readFile, writeFile, replaceInFile } = require('../luna-tools.cjs');
-const { ToolGuard, IdempotencyStore } = require('../luna-tool-guard.cjs');
+const { ToolGuard, IdempotencyStore, validateToolCall } = require('../luna-tool-guard.cjs');
 
 // ── Fix A1: looksBinary (pure unit tests) ────────────────────────────────────
 
@@ -906,4 +909,140 @@ test('G5: redirect counter is clamped (content assertion)', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
   const occurrences = src.split('Math.max(0, opts._redirects | 0)').length - 1;
   assert.strictEqual(occurrences, 2, 'both fetchURL and downloadFile must clamp _redirects');
+});
+
+// ── Fix H: guard registry desync + workspace mismatch ────────────────────────
+
+// H1: tools sem schema estrito NÃO lançam mais — fail-open com warn-once.
+// FAILS pré-fix: validateToolCall('dashboardListTasks', {}) lançava
+// "não existe no schema registry".
+test('H1: unschema\'d tool validates against the permissive default (no throw), warning fires ONCE', () => {
+  validateToolCall._warned.delete('dashboardListTasks'); // estado limpo p/ o assert de warn-once
+
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (msg) => warnings.push(String(msg));
+  try {
+    assert.strictEqual(validateToolCall('dashboardListTasks', {}), true, 'fail-open must return true');
+    assert.strictEqual(validateToolCall('dashboardListTasks', {}), true, 'second call must also pass');
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.strictEqual(warnings.length, 1, 'warning must fire exactly once per tool');
+  assert.match(warnings[0], /dashboardListTasks/);
+  assert.match(warnings[0], /Wave 5/);
+  validateToolCall._warned.delete('dashboardListTasks');
+});
+
+// H1: writeFile com o alias filePath (suportado pelo dispatch do soul) satisfaz
+// required:['path'] e pathMustBeAbsolute. FAILS pré-fix: required check só olhava
+// params.path.
+test('H1: writeFile accepts the filePath alias for required + absolute checks', () => {
+  assert.strictEqual(validateToolCall('writeFile', { filePath: '/abs/x', content: 'c' }), true);
+  assert.strictEqual(validateToolCall('writeFile', { file: '/abs/y', content: 'c' }), true, 'file alias also accepted');
+});
+
+test('H1: writeFile alias is still ENFORCED — relative filePath throws', () => {
+  assert.throws(
+    () => validateToolCall('writeFile', { filePath: 'rel/x', content: 'c' }),
+    /deve ser absoluto/
+  );
+});
+
+test('H1: pathMustNotContain also applies to the resolved alias value', () => {
+  assert.throws(
+    () => validateToolCall('writeFile', { filePath: '/abs/../escape', content: 'c' }),
+    /padrão proibido/
+  );
+});
+
+// H3: idempotency escopada a tools mutating — reads idênticos NUNCA são
+// dedupados. FAILS pré-fix para o caso read (segunda chamada era skipada).
+test('H3: duplicate READ tool calls are NOT idempotency-skipped', async () => {
+  const guard = new ToolGuard(process.cwd());
+  let calls = 0;
+  const toolFn = async () => { calls++; return { success: true, output: 'data' }; };
+
+  const first = await guard.execute('readFile', { path: '/etc/hostname' }, toolFn);
+  const second = await guard.execute('readFile', { path: '/etc/hostname' }, toolFn);
+
+  assert.strictEqual(calls, 2, 'read toolFn must execute BOTH times');
+  assert.strictEqual(first.skipped, undefined);
+  assert.strictEqual(second.skipped, undefined, 'duplicate read must NOT be skipped');
+});
+
+test('H3: duplicate MUTATING tool calls ARE still idempotency-skipped', async () => {
+  const guard = new ToolGuard(os.tmpdir());
+  let calls = 0;
+  const target = path.join(os.tmpdir(), 'luna-h3-mut.txt');
+  const toolFn = async () => { calls++; return { success: true }; }; // stubbed: no fs write
+
+  await guard.execute('writeFile', { path: target, content: 'a' }, toolFn);
+  const second = await guard.execute('writeFile', { path: target, content: 'a' }, toolFn);
+
+  assert.strictEqual(calls, 1, 'mutating toolFn must execute only once');
+  assert.strictEqual(second.skipped, true);
+  assert.strictEqual(second.success, true);
+});
+
+test('H3: dashboard read tools are not treated as mutating', async () => {
+  const guard = new ToolGuard(process.cwd());
+  let calls = 0;
+  const toolFn = async () => { calls++; return { success: true, tasks: [] }; };
+
+  await guard.execute('dashboardListTasks', {}, toolFn);
+  const second = await guard.execute('dashboardListTasks', {}, toolFn);
+
+  assert.strictEqual(calls, 2, 'dashboard read must run every time');
+  assert.strictEqual(second.skipped, undefined);
+});
+
+// H4: o guard clampa params.timeout do executeShell ao seu próprio budget, para
+// que o kill real do safeExec (Fix D) dispare dentro do race do guard.
+test('H4: executeShell params.timeout is clamped to the guard budget', async () => {
+  const guard = new ToolGuard(process.cwd());
+
+  const big = { command: 'echo a', timeout: 999 };
+  await guard.execute('executeShell', big, async () => ({ success: true }));
+  assert.ok(big.timeout <= 30, `timeout 999 must be clamped to <=30, got ${big.timeout}`);
+
+  const small = { command: 'echo b', timeout: 5 };
+  await guard.execute('executeShell', small, async () => ({ success: true }));
+  assert.strictEqual(small.timeout, 5, 'a timeout under the budget must be preserved');
+
+  const missing = { command: 'echo c' };
+  await guard.execute('executeShell', missing, async () => ({ success: true }));
+  assert.strictEqual(missing.timeout, 30, 'missing timeout must default to the guard budget (30s)');
+});
+
+// H2: _ensureToolGuard nunca retorna null (fallback workspaceBase) e o call site
+// passa o usuário da sessão. Content-assertion estrutural.
+test('H2: _ensureToolGuard has a workspaceBase fallback and the call site passes actionUserId (content assertion)', () => {
+  const soulSrc = fs.readFileSync(path.join(__dirname, '..', 'luna-soul.cjs'), 'utf8');
+
+  const fnIdx = soulSrc.indexOf('_ensureToolGuard(userId)');
+  assert.ok(fnIdx !== -1, '_ensureToolGuard must take a userId parameter');
+  const fnWindow = soulSrc.slice(fnIdx, fnIdx + 600);
+  assert.ok(
+    fnWindow.includes('lunaConfig.PATHS.workspaceBase'),
+    '_ensureToolGuard must fall back to lunaConfig.PATHS.workspaceBase instead of returning null'
+  );
+  assert.ok(
+    !fnWindow.includes('if (!ws) return null'),
+    '_ensureToolGuard must never return null'
+  );
+  assert.ok(
+    fnWindow.includes("workspaceManager.getWorkspace(userId)"),
+    'user workspace must be tried before the luna-cli fallback'
+  );
+
+  assert.ok(
+    soulSrc.includes('this._ensureToolGuard(actionUserId)'),
+    'the execute call site must pass the session user'
+  );
+  assert.ok(
+    soulSrc.includes("session?.userId || 'luna-cli'"),
+    '_handleAction must resolve actionUserId from the session with a luna-cli fallback'
+  );
 });

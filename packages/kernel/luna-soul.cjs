@@ -1700,10 +1700,11 @@ class LunaSoul extends EventEmitter {
     return null;
   }
 
-  /** Initialize ToolGuard for workspace */
-  _ensureToolGuard() {
-    const ws = workspaceManager.getWorkspace('luna-cli');
-    if (!ws) return null;
+  /** Initialize ToolGuard for workspace (Wave 3 Fix H: per-session user, nunca null) */
+  _ensureToolGuard(userId) {
+    const ws = (userId && workspaceManager.getWorkspace(userId))
+      || workspaceManager.getWorkspace('luna-cli')
+      || { path: lunaConfig.PATHS.workspaceBase };
     if (this.toolGuard && this.toolGuard.workspacePath === ws.path) return this.toolGuard;
     this.toolGuard = new ToolGuard(ws.path);
     return this.toolGuard;
@@ -4082,6 +4083,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const reasoning = parsed.reasoning || '';
     let result;
 
+    // Wave 3 (Fix H): resolve o usuário da sessão para o ToolGuard ter o
+    // workspace correto (web/Telegram antes ficavam sem guard nenhum).
+    const session = this.sessionManager.loadSession(sessionId);
+    const actionUserId = session?.userId || 'luna-cli';
+
     // ── Plan Mode Tool Filter ──
     // When in plan mode, only read-only tools are allowed
     if (options?.planMode === true) {
@@ -4269,7 +4275,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     // ── Execute ──
     if (!result) {
       try {
-        const guard = this._ensureToolGuard();
+        const guard = this._ensureToolGuard(actionUserId);
         if (isFileTool && lunaTools[tool]) {
           const p = params || {};
           // Build tool executor lambda
