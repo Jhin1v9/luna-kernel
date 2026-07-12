@@ -96,6 +96,7 @@
 ### Wave 7 (2026-07-12)
 
 - [x] 🟠 **Cross-user filter unverified in agent/swarm mode** — OBSOLETE: modes removed in Wave 7 — no longer applicable. (Was Open; agent/swarm modes and their dedicated Kimi URLs deleted.)
+- [x] 🟠 **Orphan empty terminal windows + uninvited window on every tool call** — the Debian perl `gnome-terminal.wrapper` (realpath of `x-terminal-emulator`) silently dropped `--wait -- bash script` argv → empty window that never closed, no log, invisible fallback double-executed; fixed with a new `xterm` argv style (single-string `-e 'bash script'`; the wrapper adds `--wait` itself). `visibleMode` now defaults to `false` (opt-in via `/visible` / setVisibleMode) — under PM2 `!detectHeadless()` was true, so every tool opened a window. Supersedes the W6-T10 `wrapper → --wait --` override above. (`325d0fe`; W7-T3; tests `wave3-guard-tools.test.cjs` W7-T3a/b/c)
 
 ---
 

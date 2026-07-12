@@ -965,7 +965,7 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
   });
 }
 
-// v10.2-fix: Global visible mode — all commands open in terminal by default
+// v10.2-fix: Global visible mode toggle — when ON, every command opens a terminal
 // v10.29-fix: Default to invisible on headless/VPS environments so commands
 // still execute instead of failing when no terminal emulator is resolvable.
 // W7-T3 (2026-07-12): default to INVISIBLE, always. Visible mode is opt-in
