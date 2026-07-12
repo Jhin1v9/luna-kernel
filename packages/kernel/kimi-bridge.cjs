@@ -5756,6 +5756,12 @@ class KimiBridge {
     const pollWithTimeout = async () => {
     const provider = page._lunaProvider || this.defaultProvider || 'kimi';
     try {
+      // Wave 2 Fix A: hoist session lookup to the top of the try block so the
+      // shared empty-extraction tail can reference it for the Kimi provider too
+      // (it was previously declared only inside the generic-provider block,
+      // making the empty-wait branch throw ReferenceError for provider='kimi').
+      const session = userId ? this.userSessions.get(userId) : null;
+
       // v7.5: Layer 1 — Native Playwright Network Interceptor (PRIMARY)
       // This replaces fragile JavaScript injection with server-side response capture.
       // Immune to page anti-tampering, SPA navigation, or React resets.
@@ -5999,7 +6005,6 @@ class KimiBridge {
           // v10.27-fix: DeepSeek's send button is disabled when the input is empty,
           // so _detectUiState reports canSteer=false/isGenerating=true forever.
           // Use response stability as a completion heuristic for non-Kimi providers.
-          const session = userId ? this.userSessions.get(userId) : null;
           if (session) {
             if (session._lastPollResponse === generic.response && generic.response.length > 0) {
               session._responseStableCycles = (session._responseStableCycles || 0) + 1;
