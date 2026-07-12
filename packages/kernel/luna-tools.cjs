@@ -614,9 +614,9 @@ function searchFiles(pattern, opts = {}) {
     const hasRg = (() => { try { execSync('which rg', { stdio: 'ignore' }); return true; } catch { return false; } })();
     let cmd;
     if (hasRg) {
-      cmd = `rg -n --color=never -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --glob '!{node_modules/*,.git/*,dist/*,build/*,coverage/*,*.lock,*.log,*.min.*}' ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      cmd = `rg -n --color=never -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --glob '!{node_modules/*,.git/*,dist/*,build/*,coverage/*,*.lock,*.log,*.min.*}' ${shellQuote(pattern)} ${shellQuote(cwd)}`;
     } else {
-      cmd = `grep -rn --color=never -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --exclude-dir={node_modules,.git,dist,build,coverage,venv,.venv,__pycache__} --exclude={*.lock,*.log,*.min.*} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      cmd = `grep -rn --color=never -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --exclude-dir={node_modules,.git,dist,build,coverage,venv,.venv,__pycache__} --exclude={*.lock,*.log,*.min.*} ${shellQuote(pattern)} ${shellQuote(cwd)}`;
     }
     const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
@@ -642,12 +642,12 @@ function grep(pattern, opts = {}) {
     let cmd;
     const outputMode = opts.output_mode || 'content';
     const headLimit = opts.head_limit || 100;
-    const includeGlob = opts.glob ? `--include=${JSON.stringify(opts.glob)}` : (opts.include ? `--include=${JSON.stringify(opts.include)}` : '');
+    const includeGlob = opts.glob ? `--include=${shellQuote(opts.glob)}` : (opts.include ? `--include=${shellQuote(opts.include)}` : '');
     if (hasRg) {
-      const rgGlob = opts.glob ? `-g ${JSON.stringify(opts.glob)}` : '';
-      cmd = `rg -n --color=never ${rgGlob} -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      const rgGlob = opts.glob ? `-g ${shellQuote(opts.glob)}` : '';
+      cmd = `rg -n --color=never ${rgGlob} -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} ${shellQuote(pattern)} ${shellQuote(cwd)}`;
     } else {
-      cmd = `grep -rn --color=never ${includeGlob} -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --exclude-dir={node_modules,.git,dist,build} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      cmd = `grep -rn --color=never ${includeGlob} -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --exclude-dir={node_modules,.git,dist,build} ${shellQuote(pattern)} ${shellQuote(cwd)}`;
     }
     const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
@@ -1094,19 +1094,19 @@ function checkSyntax(filePath, opts = {}) {
   let cmd;
   switch (ext) {
     case '.js': case '.mjs': case '.cjs':
-      cmd = `node --check ${JSON.stringify(resolved)}`;
+      cmd = `node --check ${shellQuote(resolved)}`;
       break;
     case '.ts': case '.tsx':
-      cmd = `npx tsc --noEmit ${JSON.stringify(resolved)} 2>/dev/null || echo "TypeScript checker not available"`;
+      cmd = `npx tsc --noEmit ${shellQuote(resolved)} 2>/dev/null || echo "TypeScript checker not available"`;
       break;
     case '.py':
-      cmd = `python3 -m py_compile ${JSON.stringify(resolved)}`;
+      cmd = `python3 -m py_compile ${shellQuote(resolved)}`;
       break;
     case '.sh':
-      cmd = `bash -n ${JSON.stringify(resolved)}`;
+      cmd = `bash -n ${shellQuote(resolved)}`;
       break;
     case '.json':
-      cmd = `node -e "JSON.parse(require('fs').readFileSync(${JSON.stringify(resolved)}))"`;
+      cmd = `node -e ${shellQuote("JSON.parse(require('fs').readFileSync(" + JSON.stringify(resolved) + "))")}`;
       break;
     default:
       return ok({ path: resolved, note: `Nenhum checker disponível para extensão ${ext}`, valid: true });
@@ -1186,7 +1186,7 @@ function gitLog(opts = {}) {
 
 function gitCommit(message, opts = {}) {
   const cwd = resolvePath(opts.cwd || '.');
-  const result = safeExec(`git add -A && git commit -m ${JSON.stringify(message)}`, { cwd });
+  const result = safeExec(`git add -A && git commit -m ${shellQuote(message)}`, { cwd });
   return ok({ cwd, message, ...result });
 }
 
@@ -1287,8 +1287,8 @@ function clipboardWrite(text) {
         try { execSync('sleep 0.2', { timeout: 1000 }); } catch {}
         return true;
       },
-      () => execSync(`printf '%s' ${JSON.stringify(text)} | xsel --clipboard --input`, { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'], env }),
-      () => execSync(`printf '%s' ${JSON.stringify(text)} | wl-copy`, { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'], env }),
+      () => execSync(`printf '%s' ${shellQuote(text)} | xsel --clipboard --input`, { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'], env }),
+      () => execSync(`printf '%s' ${shellQuote(text)} | wl-copy`, { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'], env }),
     ];
     for (const tool of tools) {
       try { tool(); return ok({ bytes: Buffer.byteLength(text, 'utf8') }); } catch { continue; }

@@ -443,3 +443,47 @@ test('E3: shell-quote.cjs reuses the Fix D shQuote implementation (no duplicate 
   const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'shell-quote.cjs'), 'utf8');
   assert.strictEqual(src.match(/replace\(\/'/g), null, 'shell-quote.cjs must not re-implement the quoting regex');
 });
+
+// E4: JSON.stringify-in-shell sites converted to shellQuote — $(...) executes
+// inside shell double quotes, so the old "already safe" premise was false.
+// These are behavioral PoCs through the real tool functions.
+test('E4: searchFiles pattern with command substitution does NOT execute', () => {
+  const marker = `/tmp/luna-w3-e4-${process.pid}`;
+  try { fs.unlinkSync(marker); } catch {}
+  const result = searchFiles(`$(touch ${marker})`, { cwd: '/tmp' });
+  // pattern legitimately matches nothing; the point is the side effect
+  assert.ok(!fs.existsSync(marker), 'command substitution in pattern must not execute');
+});
+
+test('E4: gitCommit message with command substitution does NOT execute', () => {
+  const { gitCommit } = require('../luna-tools.cjs');
+  const { execSync: execSyncLocal } = require('node:child_process');
+  const marker = `/tmp/luna-w3-e4-git-${process.pid}`;
+  withTmpDir(dir => {
+    try { fs.unlinkSync(marker); } catch {}
+    execSyncLocal('git init -q && git config user.email t@t && git config user.name t', { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+    gitCommit(`msg $(touch ${marker})`, { cwd: dir });
+    assert.ok(!fs.existsSync(marker), 'command substitution in commit message must not execute');
+  });
+});
+
+test('E4: assertSafeName rejects leading-dash argument injection, accepts npm ranges', () => {
+  assert.throws(() => assertSafeName('--prefix=/tmp', 'pacote'), /inválido/);
+  assert.throws(() => assertSafeName('-g', 'pacote'), /inválido/);
+  assert.strictEqual(assertSafeName('lodash@^4', 'pacote'), 'lodash@^4');
+  assert.strictEqual(assertSafeName('react@~18.2.0', 'pacote'), 'react@~18.2.0');
+  assert.throws(() => assertSafeName('pkg@>=2', 'pacote'), /inválido/, '< and > stay banned (shell metachars)');
+});
+
+test('E4: no JSON.stringify interpolation remains in shell command strings (content assertion)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  const lines = src.split('\n');
+  const offenders = lines.filter(l =>
+    l.includes('JSON.stringify') &&
+    (l.includes('execSync(') || /cmd\s*=\s*`/.test(l) || l.includes('safeExec(`')) &&
+    !l.includes('tmpFile') &&           // internal pid-based tmp paths, not LLM-controllable
+    !l.includes('node -e ${shellQuote')  // JS-level quoting inside a shell-quoted arg
+  );
+  assert.deepStrictEqual(offenders, [], `JSON.stringify-in-shell sites remain: ${offenders.join(' | ')}`);
+});

@@ -12,10 +12,13 @@ function toNonNegInt(value, def, max = 10000) {
 }
 
 // Package/process names: npm/pip/cargo identifiers and pm2 process names only.
-const SAFE_NAME_RE = /^[a-zA-Z0-9@._/-]+$/;
+// ^ and ~ allowed (npm version ranges — an LLM's natural output); < > never
+// (real shell metachars). Leading dash rejected: `npm install --prefix=/tmp x`
+// is argument injection even without shell metacharacters.
+const SAFE_NAME_RE = /^[a-zA-Z0-9@._/^~-]+$/;
 function assertSafeName(value, what = 'name') {
   const s = String(value ?? '');
-  if (!s || s.length > 200 || !SAFE_NAME_RE.test(s) || s.includes('..')) {
+  if (!s || s.length > 200 || !SAFE_NAME_RE.test(s) || s.includes('..') || s.startsWith('-')) {
     throw new Error(`${what} inválido (caracteres proibidos): ${JSON.stringify(s).slice(0, 60)}`);
   }
   return s;
