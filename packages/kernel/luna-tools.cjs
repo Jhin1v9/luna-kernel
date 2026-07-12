@@ -23,6 +23,7 @@ const { execSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
 const lunaConfig = require('./config/luna-config');
+const { looksBinary } = require('./lib/text-file.cjs');
 
 // v10.28-fix: Centralize runtime paths via LUNA_HOME. Auto-create dirs so the
 // Luna never fails with ENOENT on temp files across different PCs/VPS.
@@ -140,11 +141,33 @@ function safeExec(cmd, opts = {}) {
 // 1. FILE OPERATIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
+const READFILE_DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
+
 function readFile(filePath, opts = {}) {
   const resolved = resolvePath(filePath);
   if (!fs.existsSync(resolved)) return err(`Arquivo não encontrado: ${filePath}`);
   try {
-    const content = fs.readFileSync(resolved, 'utf8');
+    const stat = fs.statSync(resolved);
+    const maxBytes = opts.maxBytes || READFILE_DEFAULT_MAX_BYTES;
+    let buffer;
+    let truncatedBytes = false;
+    if (stat.size > maxBytes) {
+      // Read only the first maxBytes — do NOT load the whole file into memory.
+      buffer = Buffer.alloc(maxBytes);
+      const fd = fs.openSync(resolved, 'r');
+      try {
+        fs.readSync(fd, buffer, 0, maxBytes, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+      truncatedBytes = true;
+    } else {
+      buffer = fs.readFileSync(resolved);
+    }
+    if (looksBinary(buffer)) {
+      return err(`Arquivo binário (${stat.size} bytes): ${filePath}. Use readMediaFile para imagens/vídeo.`);
+    }
+    const content = buffer.toString('utf8');
     const lines = content.split('\n');
     const totalLines = lines.length;
     let offset = (opts.offset || opts.line_offset || 1) - 1;
@@ -166,6 +189,10 @@ function readFile(filePath, opts = {}) {
       content: numbered,
       totalLines,
       linesRead: Math.max(0, limit),
+      truncatedBytes: truncatedBytes || undefined,
+      note: truncatedBytes
+        ? `Arquivo tem ${stat.size} bytes; exibidos apenas os primeiros ${maxBytes}. Use line_offset para paginar.`
+        : undefined,
     });
   } catch (e) {
     return err(e.message);
