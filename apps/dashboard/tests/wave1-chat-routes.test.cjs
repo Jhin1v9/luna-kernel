@@ -58,3 +58,14 @@ test('B4: different text content does not dedupe', () => {
   const k2 = makeEventDedupKey({ type: 'response_delta' }, 'segunda parte');
   assert.notStrictEqual(k1, k2);
 });
+
+// B1 degenerate case: an action event with NEITHER toolInstanceId NOR id
+// collapses to type:tool: — repeated same-tool calls dedupe away. The soul
+// always emits toolInstanceId on action_* (luna-soul.cjs:2496,2513,2937), so
+// this is unreachable today; this test locks in the documented terminal
+// behavior of the fallback chain.
+test('B1: action event without toolInstanceId or id collapses (documented)', () => {
+  const k1 = makeEventDedupKey({ type: 'action_start', tool: 'readFile' }, '');
+  const k2 = makeEventDedupKey({ type: 'action_start', tool: 'readFile' }, '');
+  assert.strictEqual(k1, k2, 'without any instance id the key degenerates to type:tool:');
+});

@@ -503,7 +503,7 @@ router.post('/api/chat', async (req, res) => {
               ? (ev.error || ev.message || ev.text || ev.fullResponse || '')
               : (ev.text || ev.fullResponse || '');
 
-        // v5.4-fix: Skip duplicate non-final events (same type + content within 5s window)
+        // v5.4-fix: Skip duplicate non-final events (same type + content within a turn)
         // Wave 1 Fix B1: action_* events dedup by toolInstanceId, not (empty) content
         const dedupKey = makeEventDedupKey(ev, content);
         if (ev.type !== 'done' && emittedEventHashes.has(dedupKey)) {
