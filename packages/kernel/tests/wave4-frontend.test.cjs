@@ -468,3 +468,86 @@ test('W6e-c: ToolCard renders result warnings', () => {
     'ToolCard must show warnings from the tool result');
   assert.ok(src.includes('tool-warning'), 'ToolCard must style the warning block');
 });
+
+// ── Wave 7 Task 2 review (f): plan-mode state machine hygiene ──────────────
+// Review of 06c21fc found that planModeState had no transition out of
+// 'processing' on failure paths (409 refusal, error event, dead plan stream),
+// so the next user message hit the "already processing" guard and was
+// silently dropped. These tests pin the release paths.
+
+const PLAN_CARD = path.join(REPO, 'packages/kernel/luna-web/src/components/PlanCard.svelte');
+
+test('W7-T2f: both startPlanMode call sites check the response and reset on refusal', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  const hits = src.split('await startPlanMode(');
+  assert.strictEqual(hits.length, 3, 'expected exactly two startPlanMode call sites');
+  for (let i = 1; i < hits.length; i++) {
+    const window = hits[i].slice(0, 600);
+    assert.ok(window.includes('planRes'), `call site ${i} must capture the startPlanMode response`);
+    assert.ok(window.includes('!planRes.ok'), `call site ${i} must check planRes.ok (409 refusal)`);
+    assert.ok(window.includes("status: 'idle'"), `call site ${i} must reset planModeState on refusal`);
+    assert.ok(window.includes('isStreaming.set(false)'), `call site ${i} must unlock the input on refusal`);
+  }
+});
+
+test('W7-T2f: error and plan_error events release a processing planModeState', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  // generic 'error' case
+  const errIdx = src.indexOf("case 'error': {");
+  assert.notStrictEqual(errIdx, -1, 'error case must exist');
+  const errWindow = src.slice(errIdx, errIdx + 1200);
+  assert.ok(errWindow.includes("$planModeState.status === 'processing'"),
+    'error case must check for a processing planModeState');
+  assert.ok(errWindow.includes("status: 'idle'"),
+    'error case must reset planModeState to idle');
+  // 'plan_error' case (server emits it when the plan stream dies silently)
+  const peIdx = src.indexOf("case 'plan_error':");
+  assert.notStrictEqual(peIdx, -1, 'plan_error case must exist');
+  const peWindow = src.slice(peIdx, peIdx + 900);
+  assert.ok(peWindow.includes("$planModeState.status === 'processing'"),
+    'plan_error case must release a processing planModeState');
+  assert.ok(peWindow.includes('event.text'),
+    'plan_error case must display event.text (the serializer maps content→text)');
+});
+
+test('W7-T2f: session switch resets foreign planModeState (cross-session hijack)', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  const watcher = src.indexOf('sessionId !== lastConnectedSessionId');
+  assert.notStrictEqual(watcher, -1, 'session-switch watcher must exist');
+  const window = src.slice(watcher, watcher + 900);
+  assert.ok(window.includes('$planModeState.active'),
+    'watcher must inspect planModeState on session switch');
+  assert.ok(window.includes('$planModeState.sessionId !== sessionId'),
+    'watcher must only reset state owned by a different session');
+  assert.ok(window.includes("status: 'idle'"),
+    'watcher must reset the leaked plan-mode state');
+});
+
+test('W7-T2f: plan actions are re-entrancy guarded and unlock on send failure', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  assert.ok(src.includes('planActionPending'), 're-entrancy guard must exist');
+  for (const handler of ['handleApprovePlan', 'handleRejectPlan', 'handleRevisePlan']) {
+    const idx = src.indexOf(`async function ${handler}(`);
+    assert.notStrictEqual(idx, -1, `${handler} must exist`);
+    const window = src.slice(idx, idx + 400);
+    assert.ok(window.includes('planActionPending'), `${handler} must be guarded against double submit`);
+  }
+  const finallyCount = (src.match(/planActionPending = false/g) || []).length;
+  assert.ok(finallyCount >= 3, 'every guarded handler must release the guard (finally)');
+  // sendPlanFollowUp: a failed kickoff must not leak isStreaming=true
+  const sfIdx = src.indexOf('async function sendPlanFollowUp(');
+  assert.notStrictEqual(sfIdx, -1, 'sendPlanFollowUp must exist');
+  const sfWindow = src.slice(sfIdx, sfIdx + 1100);
+  assert.ok(sfWindow.includes('catch'), 'sendPlanFollowUp must catch sendMessage failure');
+  assert.ok(sfWindow.includes('isStreaming.set(false)'),
+    'sendPlanFollowUp must unlock the input when the kickoff send fails');
+});
+
+test('W7-T2f: PlanCard renders action buttons only while awaiting approval', () => {
+  const src = fs.readFileSync(PLAN_CARD, 'utf8');
+  const actionsIdx = src.indexOf('plan-actions');
+  assert.notStrictEqual(actionsIdx, -1, 'plan-actions block must exist');
+  const before = src.slice(Math.max(0, actionsIdx - 200), actionsIdx);
+  assert.ok(before.includes("{#if status === 'awaiting_approval'}"),
+    'action buttons must be gated on awaiting_approval (decided plans keep no clickable buttons)');
+});

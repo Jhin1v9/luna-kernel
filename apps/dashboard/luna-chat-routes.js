@@ -1289,6 +1289,16 @@ router.post('/api/plan', async (req, res) => {
     if (planMetaEnd && planMetaEnd.status === 'investigating') {
       planMetaEnd.status = 'error';
       planMetaEnd.error = 'Stream do plano encerrado antes de produzir um plano (cancelado ou erro).';
+      // Wave 7 review: notify the frontend so planModeState leaves 'processing' —
+      // without this event the next user message hit the duplicate guard and was
+      // silently dropped (the soul's cancel 'system' event is not forwarded).
+      addMessageToSession(session.id, {
+        id: 'plan-err-' + Date.now(),
+        role: 'assistant',
+        type: 'plan_error',
+        content: 'A investigação do plano foi cancelada ou encerrada antes de produzir um plano. Inicie um novo plano quando quiser.',
+        timestamp: new Date().toISOString(),
+      });
     }
   } catch (e) {
     console.error('[PLAN MODE] Error:', e.message, e.stack);

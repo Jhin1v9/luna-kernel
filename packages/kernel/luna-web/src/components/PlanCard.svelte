@@ -84,6 +84,10 @@
     {/if}
   </div>
 
+  <!-- Wave 7 review: actions only make sense while the plan awaits a decision —
+       after approve/reject the buttons used to stay clickable and every extra
+       click sent another real execution message to the model. -->
+  {#if status === 'awaiting_approval'}
   <div class="plan-actions">
     {#if isEditing}
       <button class="btn btn-primary" on:click={submitRevision}>
@@ -109,6 +113,7 @@
       </button>
     {/if}
   </div>
+  {/if}
 </div>
 
 <style>

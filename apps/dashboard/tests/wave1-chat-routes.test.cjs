@@ -157,3 +157,20 @@ test('W7-T2a: /api/plan builds web-<id> userId (same chat), never web-plan-', ()
   assert.ok(route.includes("userId: 'web-' + session.id"),
     '/api/plan must reuse the same web-<id> userId as normal chat');
 });
+
+// ── Wave 7 Task 2 review (e): dead plan stream must notify the frontend ─────
+// When the plan stream dies still 'investigating' (user cancel, bridge death),
+// the entry is marked 'error' — but without an SSE-visible event the frontend
+// planModeState stayed 'processing' forever and the next user message was
+// silently dropped by the duplicate guard. The route must emit a plan_error
+// session message so ChatArea can release the state.
+test('W7-T2e: plan stream death marks error AND emits a plan_error session message', () => {
+  const src = fs.readFileSync(CHAT_ROUTES, 'utf8');
+  const anchor = src.indexOf("planMetaEnd.status = 'error'");
+  assert.notStrictEqual(anchor, -1, 'stream-end error marking must exist');
+  const window = src.slice(anchor, anchor + 900);
+  assert.ok(window.includes('addMessageToSession'),
+    'error marking must be followed by a session message (SSE-visible)');
+  assert.ok(window.includes("type: 'plan_error'"),
+    'the emitted message must be plan_error so the frontend can reset planModeState');
+});

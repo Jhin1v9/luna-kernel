@@ -751,6 +751,12 @@
           timestamp: new Date().toISOString()
         }]);
         isStreaming.set(false);
+        // Wave 7 review: a plan-mode investigation that dies with an error event
+        // must release planModeState — otherwise it stays 'processing' forever and
+        // the next user message hits the duplicate guard and is silently dropped.
+        if ($planModeState.status === 'processing') {
+          planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+        }
         // v10.28-fix: A compaction may have failed and emitted error instead of compact_error.
         compactState.set({ active: false, phase: 0, message: '', steps: [] });
         break;
@@ -817,10 +823,16 @@
       }
       case 'plan_error':
       case 'plan_complete': {
+        // Wave 7 review: plan_error means the investigation died before producing
+        // a plan (cancel/bridge failure) — release planModeState so the chat does
+        // not stay locked in 'processing' (silent message drop).
+        if (type === 'plan_error' && $planModeState.status === 'processing') {
+          planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+        }
         messages.update(msgs => [...msgs, {
           id: 'plan-' + Date.now(),
           type: 'system',
-          content: event.error || event.message || `${type}`,
+          content: event.error || event.message || event.text || `${type}`,
           timestamp: new Date().toISOString()
         }]);
         break;
@@ -1056,6 +1068,13 @@
   }
 
   $: if (sessionId && sessionId !== lastConnectedSessionId) {
+    // Wave 7 review: plan-mode state belongs to the session where the plan
+    // started — without this reset, planModeState.active leaked across sessions
+    // and a normal message typed in ANOTHER session was hijacked into a new
+    // plan investigation (handleSend's $planModeState.active branch).
+    if ($planModeState.active && $planModeState.sessionId && $planModeState.sessionId !== sessionId) {
+      planModeState.set({ active: false, status: 'idle', plan: null, planPath: null, sessionId: null });
+    }
     connectSSE();
   }
 
@@ -1342,8 +1361,16 @@
             return;
           }
           const planMsg = args.join(' ');
-          planModeState.update(s => ({ ...s, active: true, status: 'processing' }));
-          await startPlanMode(planMsg, activeSessionId);
+          planModeState.update(s => ({ ...s, active: true, status: 'processing', sessionId: activeSessionId }));
+          const planRes = await startPlanMode(planMsg, activeSessionId);
+          // Wave 7 review: the server may refuse (409 — another stream active) or
+          // fail. Without this check planModeState stayed 'processing' and every
+          // later message was silently dropped by the duplicate guard.
+          if (!planRes || !planRes.ok) {
+            planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+            isStreaming.set(false);
+            showPlanError((planRes && planRes.error) || 'Falha ao iniciar o plano.');
+          }
           return;
         }
         // All other tools — execute via luna-tools.cjs backend
@@ -1393,9 +1420,15 @@
           return;
         }
         const planMsg = msg.startsWith('/plan') ? msg.slice(5).trim() : msg;
-        planModeState.update(s => ({ ...s, active: true, status: 'processing' }));
+        planModeState.update(s => ({ ...s, active: true, status: 'processing', sessionId: activeSessionId }));
         console.log('[handleSend] calling startPlanMode', { planMsg, activeSessionId });
-        await startPlanMode(planMsg, activeSessionId);
+        const planRes = await startPlanMode(planMsg, activeSessionId);
+        // Wave 7 review: same refusal handling as the /plan slash branch (409 etc.)
+        if (!planRes || !planRes.ok) {
+          planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null, planPath: null }));
+          isStreaming.set(false);
+          showPlanError((planRes && planRes.error) || 'Falha ao iniciar o plano.');
+        }
       } else {
         await sendMessage(msg, activeSessionId, $currentMode, files, currentMessageId, sessionProvider);
         // v7.1-fix: Reconnect SSE after sending a new message in the same session.
@@ -1446,12 +1479,27 @@
     }]);
     userMessageAdded = true;
     isStreaming.set(true);
-    await sendMessage(text, sessionId, $currentMode, [], null, sessionProvider);
+    try {
+      await sendMessage(text, sessionId, $currentMode, [], null, sessionProvider);
+    } catch (e) {
+      // Wave 7 review: the plan action itself already succeeded server-side —
+      // only the execution kickoff failed. Unlock the input (isStreaming) and
+      // say so honestly instead of leaking a stuck streaming state.
+      isStreaming.set(false);
+      showPlanError('Ação registrada, mas falhou ao enviar a continuação ao modelo (' + e.message + '). Envie uma mensagem manualmente.');
+      return;
+    }
     await connectSSE();
   }
 
+  // Wave 7 review: re-entrancy guard — the plan card buttons stay rendered until
+  // the SSE echo arrives, so a double-click would POST twice and send the
+  // follow-up message twice.
+  let planActionPending = false;
+
   async function handleApprovePlan() {
-    if (!sessionId) return;
+    if (!sessionId || planActionPending) return;
+    planActionPending = true;
     try {
       const res = await approvePlan(sessionId);
       if (!res || !res.ok) {
@@ -1465,11 +1513,14 @@
     } catch (e) {
       console.error('Approve plan error:', e);
       showPlanError('Falha ao aprovar o plano: ' + e.message);
+    } finally {
+      planActionPending = false;
     }
   }
 
   async function handleRejectPlan() {
-    if (!sessionId) return;
+    if (!sessionId || planActionPending) return;
+    planActionPending = true;
     try {
       const res = await rejectPlan(sessionId);
       if (!res || !res.ok) {
@@ -1482,11 +1533,14 @@
     } catch (e) {
       console.error('Reject plan error:', e);
       showPlanError('Falha ao rejeitar o plano: ' + e.message);
+    } finally {
+      planActionPending = false;
     }
   }
 
   async function handleRevisePlan(revisedPlan) {
-    if (!sessionId) return;
+    if (!sessionId || planActionPending) return;
+    planActionPending = true;
     try {
       const res = await submitRevision(sessionId, revisedPlan);
       if (!res || !res.ok) {
@@ -1498,6 +1552,8 @@
     } catch (e) {
       console.error('Revise plan error:', e);
       showPlanError('Falha ao revisar o plano: ' + e.message);
+    } finally {
+      planActionPending = false;
     }
   }
 
