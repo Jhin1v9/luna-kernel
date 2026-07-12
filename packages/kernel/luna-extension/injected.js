@@ -5,7 +5,7 @@
 (function setupLunaDomObserver() {
   if (window.__lunaDomObserver) return;
 
-  const VERSION = '2.1.0-v10.20';
+  const VERSION = '2.1.1-wave2'; // Wave2-fix B: dropped parent .markdown-container selector
   const DEBOUNCE_MS = 250; // v10.7-fix: Increased from 50ms to reduce CPU load during streaming
   const TOOL_DEDUP_TTL_MS = 60000; // 60s TTL for deduplicating tool calls
 
