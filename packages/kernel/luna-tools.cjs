@@ -27,6 +27,13 @@ const { looksBinary } = require('./lib/text-file.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { clampExecTimeout, shQuote } = require('./lib/exec-timeout.cjs');
 const { shellQuote, toNonNegInt, assertSafeName } = require('./lib/shell-quote.cjs');
+const { checkUrlSafety, fetchAllowList } = require('./lib/url-safety.cjs');
+
+// Wave3-fix G: SSRF caps for the LLM-facing network tools (fetchURL,
+// downloadFile, browser) — see lib/url-safety.cjs for the host policy.
+const MAX_FETCH_REDIRECTS = 5;
+const DEFAULT_FETCH_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024;
 
 // Wave3-fix D: GNU `timeout` runs the command in its own process group and
 // signals the whole group — execSync's native timeout only kills the direct
@@ -699,7 +706,11 @@ function searchWeb(query, opts = {}) {
       }
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchURL(res.headers.location, opts).then(resolve);
+        // Wave3-fix G: resolve relative Location and route through the guarded
+        // fetchURL (host validation + redirect cap come for free there).
+        let nextUrl;
+        try { nextUrl = new URL(res.headers.location, searchUrl).href; } catch { return resolve(err('Search redirect Location inválida')); }
+        return fetchURL(nextUrl, opts).then(resolve);
       }
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -769,6 +780,10 @@ async function getBrowserContext() {
 }
 
 async function browser(url, opts = {}) {
+  // Wave3-fix G: SSRF guard — validate before page.goto (the fetchURL
+  // fallback below re-checks anyway).
+  const safety = checkUrlSafety(url, fetchAllowList());
+  if (!safety.ok) return err(`browser bloqueado: ${safety.reason}`);
   try {
     const ctx = await getBrowserContext();
     const page = await ctx.newPage();
@@ -805,13 +820,28 @@ async function browser(url, opts = {}) {
 
 function fetchURL(url, opts = {}) {
   return new Promise((resolve) => {
+    // Wave3-fix G: SSRF guard — default-deny private/loopback/metadata hosts,
+    // re-validated on EVERY redirect (an allowed host must not bounce to
+    // 169.254.169.254). Owner override: LUNA_FETCH_ALLOW_HOSTS.
+    const safety = checkUrlSafety(url, fetchAllowList());
+    if (!safety.ok) return resolve(err(`fetchURL bloqueado: ${safety.reason}`));
+    const redirects = opts._redirects || 0;
+    const maxBytes = opts.maxBytes || DEFAULT_FETCH_MAX_BYTES;
     const client = url.startsWith('https:') ? https : http;
     const req = client.get(url, { timeout: opts.timeout || 15000 }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchURL(res.headers.location, opts).then(resolve);
+        if (redirects >= MAX_FETCH_REDIRECTS) return resolve(err('fetchURL: excesso de redirects (max 5)'));
+        let nextUrl;
+        try { nextUrl = new URL(res.headers.location, url).href; } catch { return resolve(err('fetchURL: redirect Location inválida')); }
+        return fetchURL(nextUrl, { ...opts, _redirects: redirects + 1 }).then(resolve);
       }
       let data = '';
-      res.on('data', chunk => data += chunk);
+      let received = 0;
+      res.on('data', chunk => {
+        received += chunk.length;
+        if (received > maxBytes) { req.destroy(); return resolve(err('Resposta excede 5MB')); }
+        data += chunk;
+      });
       res.on('end', () => resolve(ok({ url, status: res.statusCode, content: data.slice(0, opts.limit || 50000) })));
     });
     req.on('error', (e) => resolve(err(e.message)));
@@ -1228,27 +1258,52 @@ function applyPatch(patchContent, opts = {}) {
 function downloadFile(url, destination, opts = {}) {
   const dst = resolvePath(destination);
   return new Promise((resolve) => {
+    // Wave3-fix G: SSRF guard — same policy as fetchURL, re-validated on every
+    // redirect; 15s default timeout (was 0 = NO timeout); 100MB byte cap.
+    const safety = checkUrlSafety(url, fetchAllowList());
+    if (!safety.ok) return resolve(err(`downloadFile bloqueado: ${safety.reason}`));
+    const redirects = opts._redirects || 0;
+    const maxBytes = opts.maxBytes || DEFAULT_DOWNLOAD_MAX_BYTES;
     const client = url.startsWith('https:') ? https : http;
     const file = fs.createWriteStream(dst);
-    const req = client.get(url, { timeout: opts.timeout || 0 }, (res) => { // v8.5-fix: no default timeout
+    const cleanup = () => { try { file.close(); } catch {} try { fs.unlinkSync(dst); } catch {} };
+    const req = client.get(url, { timeout: opts.timeout || 15000 }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file.close();
-        return downloadFile(res.headers.location, destination, opts).then(resolve);
+        if (redirects >= MAX_FETCH_REDIRECTS) return resolve(err('downloadFile: excesso de redirects (max 5)'));
+        let nextUrl;
+        try { nextUrl = new URL(res.headers.location, url).href; } catch { return resolve(err('downloadFile: redirect Location inválida')); }
+        return downloadFile(nextUrl, destination, { ...opts, _redirects: redirects + 1 }).then(resolve);
       }
       if (res.statusCode !== 200) {
-        file.close();
-        fs.unlinkSync(dst);
+        cleanup();
         return resolve(err(`HTTP ${res.statusCode}`));
       }
-      res.pipe(file);
+      let received = 0;
+      let capped = false;
+      file.on('error', () => {}); // writes racing a timeout/error abort — expected, swallow
+      res.on('data', chunk => {
+        if (capped) return;
+        received += chunk.length;
+        if (received > maxBytes) {
+          capped = true;
+          req.destroy();
+          file.end(); // 'finish' below resolves + unlinks the partial file
+          return;
+        }
+        file.write(chunk);
+      });
+      res.on('end', () => { if (!capped) file.end(); });
       file.on('finish', () => {
         file.close();
-        const stats = fs.statSync(dst);
-        resolve(ok({ url, destination: dst, bytes: stats.size }));
+        if (capped) { try { fs.unlinkSync(dst); } catch {} return resolve(err('Download excede 100MB')); }
+        let size;
+        try { size = fs.statSync(dst).size; } catch { return; } // unlinked by the timeout/error path
+        resolve(ok({ url, destination: dst, bytes: size }));
       });
     });
-    req.on('error', (e) => { file.close(); fs.unlinkSync(dst); resolve(err(e.message)); });
-    req.on('timeout', () => { req.destroy(); file.close(); fs.unlinkSync(dst); resolve(err('Timeout')); });
+    req.on('error', (e) => { cleanup(); resolve(err(e.message)); });
+    req.on('timeout', () => { req.destroy(); cleanup(); resolve(err('Timeout')); });
   });
 }
 

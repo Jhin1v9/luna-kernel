@@ -698,3 +698,188 @@ test('F5: listFiles /etc/** static prefix is blocked (behavioral)', () => {
     assert.strictEqual(checkPathWithinRoots(base, roots).ok, false, '/etc/** must be blocked via prefix');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Fix G — SSRF: host validation + redirect/size/timeout caps
+// ═══════════════════════════════════════════════════════════════════════════
+
+const http = require('node:http');
+const { checkUrlSafety, parseIPv4, isPrivateIPv4, fetchAllowList } = require('../lib/url-safety.cjs');
+const { fetchURL, downloadFile, browser } = require('../luna-tools.cjs');
+
+const G_BLOCKED = [
+  'http://127.0.0.1/', 'http://2130706433/', 'http://0177.0.0.1/', 'http://0x7f000001/',
+  'http://127.1/', 'http://10.0.0.1/', 'http://172.16.0.1/', 'http://172.31.255.1/',
+  'http://192.168.1.1/', 'http://169.254.169.254/', 'http://100.64.0.1/',
+  'http://localhost/', 'http://foo.localhost/', 'http://db.internal/',
+  'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'file:///etc/passwd',
+];
+
+test('G1: checkUrlSafety blocks every private/loopback/metadata form', () => {
+  for (const u of G_BLOCKED) {
+    const r = checkUrlSafety(u);
+    assert.strictEqual(r.ok, false, `${u} must be blocked`);
+    assert.ok(r.reason, `${u} must carry a reason`);
+  }
+});
+
+test('G1: checkUrlSafety allows public hosts and boundary ranges', () => {
+  for (const u of ['http://example.com/', 'http://8.8.8.8/', 'http://172.15.0.1/', 'http://172.32.0.1/', 'http://100.128.0.1/']) {
+    assert.strictEqual(checkUrlSafety(u).ok, true, `${u} must be allowed`);
+  }
+});
+
+test('G1: parseIPv4 normalizes integer/octal/hex/short literals', () => {
+  assert.deepStrictEqual(parseIPv4('2130706433'), [127, 0, 0, 1]);
+  assert.deepStrictEqual(parseIPv4('0177.0.0.1'), [127, 0, 0, 1]);
+  assert.deepStrictEqual(parseIPv4('0x7f000001'), [127, 0, 0, 1]);
+  assert.deepStrictEqual(parseIPv4('127.1'), [127, 0, 0, 1]);
+  assert.strictEqual(parseIPv4('example.com'), null);
+  assert.strictEqual(isPrivateIPv4([172, 31, 0, 1]), true);
+  assert.strictEqual(isPrivateIPv4([172, 32, 0, 1]), false);
+});
+
+test('G1: LUNA_FETCH_ALLOW_HOSTS allowlist punches exact holes only', () => {
+  assert.strictEqual(checkUrlSafety('http://127.0.0.1/', ['127.0.0.1']).ok, true);
+  assert.strictEqual(checkUrlSafety('http://127.0.0.1:3456/', ['127.0.0.1:3456']).ok, true);
+  assert.strictEqual(checkUrlSafety('http://127.0.0.1:9999/', ['127.0.0.1:3456']).ok, false, 'different port must stay blocked');
+  assert.deepStrictEqual(fetchAllowList({ LUNA_FETCH_ALLOW_HOSTS: ' a , b:3000 ,' }), ['a', 'b:3000']);
+  assert.deepStrictEqual(fetchAllowList({}), []);
+});
+
+// Starts an http fixture on 127.0.0.1 with the given handler; returns { server, base }.
+function listenFixture(handler) {
+  return new Promise((resolveListen) => {
+    const server = http.createServer(handler);
+    server.listen(0, '127.0.0.1', () => {
+      resolveListen({ server, base: `http://127.0.0.1:${server.address().port}` });
+    });
+  });
+}
+
+function withAllowHosts(value, fn) {
+  const prev = process.env.LUNA_FETCH_ALLOW_HOSTS;
+  if (value === undefined) delete process.env.LUNA_FETCH_ALLOW_HOSTS; else process.env.LUNA_FETCH_ALLOW_HOSTS = value;
+  return Promise.resolve().then(fn).finally(() => {
+    if (prev === undefined) delete process.env.LUNA_FETCH_ALLOW_HOSTS; else process.env.LUNA_FETCH_ALLOW_HOSTS = prev;
+  });
+}
+
+test('G2: fetchURL blocks a loopback URL before any connection (no allowlist)', async () => {
+  await withAllowHosts(undefined, async () => {
+    const r = await fetchURL('http://127.0.0.1:1/secret');
+    assert.strictEqual(r.success, false);
+    assert.match(r.error, /bloqueado/);
+  });
+});
+
+test('G2: allowlisted fixture is reachable end-to-end (owner override)', async () => {
+  const { server, base } = await listenFixture((req, res) => res.end('hello-luna'));
+  try {
+    await withAllowHosts(base.replace('http://', ''), async () => {
+      const r = await fetchURL(base + '/');
+      assert.strictEqual(r.success, true);
+      assert.strictEqual(r.content, 'hello-luna');
+    });
+  } finally { server.close(); }
+});
+
+test('G2: relative redirect Location is resolved against the current URL', async () => {
+  const { server, base } = await listenFixture((req, res) => {
+    if (req.url === '/target') return res.end('relative-ok');
+    res.writeHead(302, { Location: '/target' });
+    res.end();
+  });
+  try {
+    await withAllowHosts(base.replace('http://', ''), async () => {
+      const r = await fetchURL(base + '/start');
+      assert.strictEqual(r.success, true);
+      assert.strictEqual(r.content, 'relative-ok');
+    });
+  } finally { server.close(); }
+});
+
+test('G2: redirect from an allowed host to a private IP is re-validated and blocked', async () => {
+  const { server, base } = await listenFixture((req, res) => {
+    res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data' });
+    res.end();
+  });
+  try {
+    await withAllowHosts(base.replace('http://', ''), async () => {
+      const r = await fetchURL(base + '/bounce');
+      assert.strictEqual(r.success, false);
+      assert.match(r.error, /bloqueado/);
+    });
+  } finally { server.close(); }
+});
+
+test('G2: a redirect loop terminates after 5 redirects', async () => {
+  const { server, base } = await listenFixture((req, res) => {
+    res.writeHead(302, { Location: '/loop' });
+    res.end();
+  });
+  try {
+    await withAllowHosts(base.replace('http://', ''), async () => {
+      const r = await fetchURL(base + '/loop');
+      assert.strictEqual(r.success, false);
+      assert.match(r.error, /redirect/i);
+    });
+  } finally { server.close(); }
+});
+
+test('G2: a body over 5MB is capped mid-stream', async () => {
+  const big = Buffer.alloc(5 * 1024 * 1024 + 4096, 'a');
+  const { server, base } = await listenFixture((req, res) => res.end(big));
+  try {
+    await withAllowHosts(base.replace('http://', ''), async () => {
+      const r = await fetchURL(base + '/big');
+      assert.strictEqual(r.success, false);
+      assert.match(r.error, /5MB/);
+    });
+  } finally { server.close(); }
+});
+
+test('G3: downloadFile blocks a loopback URL and creates no file', async () => {
+  await withAllowHosts(undefined, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luna-wave3g-'));
+    try {
+      const dst = path.join(dir, 'x.bin');
+      const r = await downloadFile('http://127.0.0.1:1/secret', dst);
+      assert.strictEqual(r.success, false);
+      assert.match(r.error, /bloqueado/);
+      assert.strictEqual(fs.existsSync(dst), false);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+test('G3: downloadFile honors the byte cap, aborts and unlinks the partial file', async () => {
+  const { server, base } = await listenFixture((req, res) => res.end(Buffer.alloc(1024 * 1024, 'b')));
+  try {
+    await withAllowHosts(base.replace('http://', ''), async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luna-wave3g-'));
+      try {
+        const dst = path.join(dir, 'big.bin');
+        const r = await downloadFile(base + '/big', dst, { maxBytes: 4096 });
+        assert.strictEqual(r.success, false);
+        assert.match(r.error, /100MB/);
+        assert.strictEqual(fs.existsSync(dst), false, 'partial file must be unlinked');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+  } finally { server.close(); }
+});
+
+test('G3: downloadFile timeout no longer defaults to 0 = unlimited (content assertion)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  const idx = src.indexOf('function downloadFile(');
+  const body = src.slice(idx, idx + 2000);
+  assert.ok(!body.includes('opts.timeout || 0'), 'zero default timeout must be gone');
+  assert.ok(body.includes('opts.timeout || 15000'), '15s default timeout expected');
+});
+
+test('G4: browser blocks a private URL before launching Playwright', async () => {
+  await withAllowHosts(undefined, async () => {
+    const r = await browser('http://169.254.169.254/latest/meta-data');
+    assert.strictEqual(r.success, false);
+    assert.match(r.error, /bloqueado/);
+  });
+});
