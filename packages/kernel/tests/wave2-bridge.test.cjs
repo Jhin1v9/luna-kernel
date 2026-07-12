@@ -440,4 +440,9 @@ test('W6-T3: Phase 1 safety timeout is re-enabled (large but real)', () => {
   const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
   assert.ok(/MESSAGE_SAFETY_TIMEOUT_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/.test(src), 'safety timeout constant must exist at 60min');
   assert.ok(!src.includes('Safety timeout disabled'), 'the disabled comment must be gone');
+  const checkIdx = src.indexOf('Date.now() - messageStartTime > MESSAGE_SAFETY_TIMEOUT_MS');
+  assert.ok(checkIdx !== -1, 'the expiry check must exist');
+  const window = src.slice(checkIdx, checkIdx + 600);
+  assert.ok(window.includes('isComplete = true'), 'expiry must force completion');
+  assert.ok(window.includes('break'), 'expiry must break the wait loop into the final-extraction tail');
 });
