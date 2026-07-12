@@ -171,3 +171,72 @@ test('T5: api.js 401 handler clears the session reactively instead of reloading'
   assert.ok(src.includes('shouldForceLogout'), 'decision must go through the pure helper');
   assert.ok(src.includes('user.set(null)'), 'must show the login screen via the user store');
 });
+
+// ── T6: SSEManager reconnect timer + session-switch reset ────────────────────
+
+globalThis.window = globalThis.window || { fetch: async () => ({ status: 200 }) };
+globalThis.localStorage = globalThis.localStorage || { getItem: () => null, setItem() {}, removeItem() {} };
+
+let eventSourceCount = 0;
+globalThis.EventSource = class FakeEventSource {
+  constructor(url) { this.url = url; eventSourceCount++; this.closed = false; }
+  close() { this.closed = true; }
+};
+
+const { SSEManager } = require('../luna-web/src/api.js');
+
+function freshManager() {
+  const m = new SSEManager();
+  m.baseDelay = 1;  // keep backoff tests fast: delay = min(1*2^n + jitter, 5) <= 5ms
+  m.maxDelay = 5;
+  return m;
+}
+
+test('T6 (bug 5): lastMessageCount resets when connect() switches sessions', () => {
+  const m = freshManager();
+  try {
+    m.currentSessionId = 's1';
+    m.lastMessageCount = 42;
+    m.connect('s2', () => {});
+    assert.strictEqual(m.lastMessageCount, 0, 'new session must not slice history with the old count');
+    m.connect('s2', () => {}); // same session reconnect path (guard returns early)
+    m.lastMessageCount = 7;
+    m.connect('s2', () => {});
+    assert.strictEqual(m.lastMessageCount, 7, 'same-session reconnect must preserve the count');
+  } finally {
+    m.disconnect();
+  }
+});
+
+test('T6 (bug 3): reconnect backoff timer is stored and disconnect() cancels it', () => {
+  const m = freshManager();
+  try {
+    m.connect('s1', () => {});
+    m.eventSource.onerror(); // arm the backoff timer
+    assert.ok(m.reconnectTimer, 'backoff timer must be stored on the instance (pre-fix: property is undefined)');
+    m.disconnect();
+    assert.strictEqual(m.reconnectTimer, null, 'disconnect() must cancel the pending reconnect');
+  } finally {
+    m.disconnect();
+  }
+});
+
+test('T6 (bug 3): a reconnect timer pending at disconnect() never resurrects the connection', async () => {
+  const m = freshManager();
+  try {
+    m.connect('s1', () => {});
+    const before = eventSourceCount;
+    m.eventSource.onerror();        // timer armed (<=5ms with the test knobs)
+    m.disconnect();                 // user/session switch happens before it fires
+    await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(eventSourceCount, before, 'no new EventSource may be created after disconnect');
+  } finally {
+    m.disconnect();
+  }
+});
+
+test('T6 (bug 3): ChatArea reuses the SSEManager instead of discarding it per reconnect', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  const occurrences = src.split('new SSEManager()').length - 1;
+  assert.strictEqual(occurrences, 1, 'only the declaration at :19 may instantiate SSEManager');
+});

@@ -940,8 +940,10 @@
     runningToolTimers = new Map();
     progressBuffers.clear();
     flushedContentHashes.clear();
+    // Wave 4 bug 3: reuse the manager — disconnect() now cancels every pending
+    // timer, so discarding the instance (which orphaned its backoff timer) is
+    // no longer needed and would reintroduce the zombie.
     sseManager.disconnect();
-    sseManager = new SSEManager();
 
     // v3.6-fix: Load full message history from backend instead of clearing
     try {

@@ -31,6 +31,7 @@ export class SSEManager {
     this.currentSessionId = null;
     this.onEventCallback = null;
     this.fallbackTimer = null;
+    this.reconnectTimer = null;
     this.lastMessageCount = 0;
   }
 
@@ -101,10 +102,17 @@ export class SSEManager {
       console.log(`[SSE] Already connected to session ${sessionId}, skipping`);
       return;
     }
+    // Wave 4 bug 3: never let an older backoff timer fire into a new connection
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     // Disconnect any existing connection before creating new one
     if (this.eventSource) {
       console.log('[SSE] Disconnecting existing connection before reconnect');
       this.disconnect();
+    }
+    // Wave 4 bug 5: a new session must not slice its history with the previous
+    // session's message count (fallback polling starts clean).
+    if (this.currentSessionId !== sessionId) {
+      this.lastMessageCount = 0;
     }
     this.currentSessionId = sessionId;
     this.isIntentionallyClosed = false;
@@ -157,7 +165,13 @@ export class SSEManager {
         const delay = Math.min(this.baseDelay * Math.pow(2, this.reconnectAttempts) + Math.random() * 1000, this.maxDelay);
         this.reconnectAttempts++;
         console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        setTimeout(() => this.connect(sessionId, onEvent), delay);
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          // Wave 4 bug 3: disconnect() may have run while this timer was pending —
+          // never resurrect an intentionally closed connection.
+          if (this.isIntentionallyClosed || this.gracefulClose) return;
+          this.connect(sessionId, onEvent);
+        }, delay);
       } else if (this.gracefulClose) {
         this._setStatus('disconnected');
         console.log('[SSE] Graceful close — no reconnect needed.');
@@ -171,6 +185,7 @@ export class SSEManager {
     this.gracefulClose = true;
     this.currentSessionId = null;
     this.onEventCallback = null;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this._stopFallbackPolling();
     if (this.statusDebounceTimer) clearTimeout(this.statusDebounceTimer);
     if (this.eventSource) {
