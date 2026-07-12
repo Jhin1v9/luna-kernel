@@ -2760,8 +2760,14 @@ class LunaSoul extends EventEmitter {
         }
       }
 
+      // W6-T7: defense in depth behind bridge turn-scoping (W6-T6). If every DOM
+      // action result this turn is a cached replay (W6-T5 marks replays with
+      // cached: true on the domActionResults entries), nothing NEW executed —
+      // feeding stale replays back would auto-continue a finished turn forever.
+      const allCached = domActionResults.length > 0 && domActionResults.every(r => r.cached === true);
+
       // v10.16-fix: CHAT/DONE puro nunca deve auto-continuar — entrega imediata ao frontend
-      const isPureChat = (parsed.mode === 'CHAT' || parsed.mode === 'DONE') && domActionResults.length === 0;
+      const isPureChat = (parsed.mode === 'CHAT' || parsed.mode === 'DONE') && (domActionResults.length === 0 || allCached);
 
       // v3.4: Auto-healing — detect incomplete responses and auto-continue
       // v10.16-fix: Só aplicar em ACTION/PLAN; CHAT/DONE sempre entregar direto
@@ -2800,7 +2806,10 @@ class LunaSoul extends EventEmitter {
       // This fixes the bug where tools execute but Kimi never receives the result.
       // v8.4-fix: RESPONSE-only (CHAT) must ALWAYS stop and let the user respond,
       // regardless of mode (agent/swarm/thinking/instant). Only loop for ACTION/PLAN.
-      if ((parsed.mode === 'CHAT' || parsed.mode === 'DONE') && domActionResults.length === 0) {
+      if ((parsed.mode === 'CHAT' || parsed.mode === 'DONE') && (domActionResults.length === 0 || allCached)) {
+        if (allCached) {
+          console.log('[soul] all DOM results were cached replays — stopping as pure chat');
+        }
         yield { type: 'done', result: { success: true, mode: parsed.mode, response: parsed.response || fullResponse || '', sessionId }, sessionId };
         return; // CHAT/DONE puro → sempre parar, nunca continuar
       }

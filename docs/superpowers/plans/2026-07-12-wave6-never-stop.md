@@ -233,11 +233,11 @@ test('W6-T6: sendMessageStream records the pre-send assistant marker', () => {
 
 **Why (A-Q2 fix 3):** even if bridge-side scoping misses something, a CHAT/DONE turn whose `domActionResults` are ALL cache replays (`cached: true`) must be treated as pure chat: stop. This extends the Wave 1 phantom oracle beyond parseable wrappers.
 
-- [ ] **T7.1. Failing test** — replicate the oracle in wave1 (A3 pattern): CHAT turn + `domActionResults = [{ tool, result, cached: true }]` → assert stop-decision true; same with one non-cached result → false.
+- [x] **T7.1. Failing test** — replicate the oracle in wave1 (A3 pattern): CHAT turn + `domActionResults = [{ tool, result, cached: true }]` → assert stop-decision true; same with one non-cached result → false.
 
-- [ ] **T7.2. Implement** — at `:2714-2722` (or the stop gate `:2764-2767`): compute `allCached = domActionResults.length > 0 && domActionResults.every(r => r.cached === true)`; when `(CHAT || DONE) && (domActionResults.length === 0 || allCached)` → yield `done` + return. Ensure `_getRecentActionResult` replays carry `cached: true` (Task 5 shape).
+- [x] **T7.2. Implement** — at `:2714-2722` (or the stop gate `:2764-2767`): compute `allCached = domActionResults.length > 0 && domActionResults.every(r => r.cached === true)`; when `(CHAT || DONE) && (domActionResults.length === 0 || allCached)` → yield `done` + return. Ensure `_getRecentActionResult` replays carry `cached: true` (Task 5 shape).
 
-- [ ] **T7.3. Verify + commit** — wave1 + full regression (190→191). `fix(soul): all-cached action results on a CHAT turn stop as pure chat - defense in depth behind turn-scoped detection`.
+- [x] **T7.3. Verify + commit** — wave1 + full regression (190→191). `fix(soul): all-cached action results on a CHAT turn stop as pure chat - defense in depth behind turn-scoped detection`.
 
 ---
 

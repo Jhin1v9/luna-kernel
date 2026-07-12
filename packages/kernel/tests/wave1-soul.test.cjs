@@ -220,3 +220,27 @@ test('W6-T5c: action cache is size-bounded (FIFO eviction)', () => {
   const last = soul._getRecentActionResult('sess-t5c', `hash-${ACTION_CACHE_MAX}`);
   assert.ok(last && last.i === ACTION_CACHE_MAX, 'the newest entry must still be present');
 });
+
+// W6-T7: defense in depth behind bridge turn-scoping (W6-T6). A CHAT/DONE turn
+// whose domActionResults are ALL cached replays (W6-T5 marks replays with
+// cached: true) executed nothing new — it must stop as pure chat instead of
+// feeding stale replays back and auto-continuing a finished turn forever.
+test('W6-T7: all-cached domActionResults on a CHAT turn stop as pure chat', () => {
+  // Replicate the stop decision as a pure oracle (A3 pattern):
+  const shouldStopAsPureChat = (mode, domActionResults) => {
+    const allCached = domActionResults.length > 0 && domActionResults.every(r => r.cached === true);
+    return (mode === 'CHAT' || mode === 'DONE') && (domActionResults.length === 0 || allCached);
+  };
+  assert.strictEqual(shouldStopAsPureChat('CHAT', []), true, 'plain chat stops');
+  assert.strictEqual(shouldStopAsPureChat('CHAT', [{ tool: 'executeShell', result: {}, cached: true }]), true, 'all-cached replays stop');
+  assert.strictEqual(shouldStopAsPureChat('DONE', [{ tool: 'executeShell', result: {}, cached: true }]), true, 'DONE + all-cached stops');
+  assert.strictEqual(shouldStopAsPureChat('CHAT', [{ tool: 'executeShell', result: {}, cached: true }, { tool: 'readFile', result: {} }]), false, 'one fresh result keeps feed-back');
+  assert.strictEqual(shouldStopAsPureChat('CHAT', [{ tool: 'readFile', result: {} }]), false, 'fresh results feed back');
+  assert.strictEqual(shouldStopAsPureChat('ACTION', []), false, 'ACTION never stops here');
+
+  // Source pin: the soul must compute allCached with the same shape (hard assert).
+  const src = fs.readFileSync(SOUL, 'utf8');
+  const w = sliceAround(src, 'allCached', 600);
+  assert.ok(/every\(\(?\s*r\s*\)?\s*=>\s*r\.cached\s*===\s*true\)/.test(w),
+    'soul must gate on every result carrying cached === true');
+});
