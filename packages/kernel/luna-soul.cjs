@@ -2674,7 +2674,13 @@ class LunaSoul extends EventEmitter {
       }
 
       // Parse the full response (tag-based primary, JSON fallback)
-      let parsed = parseTagResponse(fullResponse) || parseKimiResponse(fullResponse);
+      const tagParsed = parseTagResponse(fullResponse);
+      let parsed = tagParsed || parseKimiResponse(fullResponse);
+      // wave1-fix A3: a VALID response wrapper means a genuine JSON object was
+      // parsed from the message. parseKimiResponse returns non-null ONLY in that
+      // case; parseTagResponse's final fallback also returns CHAT for plain text,
+      // so tag-parsed CHAT results are verified lazily at the guard below.
+      const parsedFromJsonParser = !tagParsed && parsed !== null;
       if (!parsed) {
         yield { type: 'warning', message: '⚠️ Resposta não reconhecida, tratando como chat', sessionId };
         parsed = { mode: 'CHAT', response: fullResponse };
@@ -2689,12 +2695,21 @@ class LunaSoul extends EventEmitter {
         parsed.response = fullResponse;
       }
 
-      // wave1-fix A3: a pure CHAT (valid {"response": ...} wrapper) never legitimately
-      // carries tools — the master prompt mandates ONE JSON per message. Ignore any
-      // DOM-extracted actions instead of continuing the tool loop.
+      // wave1-fix A3: a pure CHAT from a VALID {"response": ...} JSON wrapper never
+      // legitimately carries tools — the master prompt mandates ONE JSON per message.
+      // Fallback CHAT (unparsed plain text) is NOT a wrapper: its DOM tool results
+      // are legit and must be fed back to Kimi. The oracle runs only in this rare
+      // CHAT + DOM-tools combination — no double parse in the hot path.
+      // NOTE: jsonrepair can turn plain text into an array, so a valid wrapper
+      // requires a plain object with a string `response` field.
       if (parsed.mode === 'CHAT' && domActionResults.length > 0) {
-        console.log(`[soul] ignoring ${domActionResults.length} dom actions inside pure response`);
-        domActionResults.length = 0;
+        const wrapperObj = parsedFromJsonParser ? parsed : parseKimiResponse(fullResponse);
+        const fromValidWrapper = wrapperObj !== null && typeof wrapperObj === 'object' &&
+          !Array.isArray(wrapperObj) && typeof wrapperObj.response === 'string';
+        if (fromValidWrapper) {
+          console.log(`[soul] ignoring ${domActionResults.length} dom actions inside pure response`);
+          domActionResults.length = 0;
+        }
       }
 
       // v10.16-fix: CHAT/DONE puro nunca deve auto-continuar — entrega imediata ao frontend

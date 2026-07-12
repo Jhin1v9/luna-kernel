@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 
 const lunaConfig = require('../config/luna-config.js');
-const { buildSystemPrompt } = require('../luna-soul.cjs');
+const { buildSystemPrompt, parseKimiResponse, parseTagResponse } = require('../luna-soul.cjs');
 
 test('A1: buildSystemPrompt injects master prompt JSON examples and persona', () => {
   const masterPath = lunaConfig.PATHS.masterPrompt;
@@ -57,4 +57,31 @@ test('A2: followUp and toolLoop templates contain JSON format examples', () => {
     assert.ok(tpl.includes('"params"'), `${key} must contain "params"`);
     assert.ok(tpl.includes('{"tool"'), `${key} must contain {"tool" example`);
   }
+});
+
+// A3: the phantom-tool guard in processMessageStream fires only when CHAT came
+// from a VALID {"response": ...} JSON wrapper. The guard itself lives inside the
+// stream generator (not unit-testable without heavy mocks), but its validity
+// oracle is replicated here verbatim: parseKimiResponse must return a plain
+// object with a string `response` field (jsonrepair can turn plain text into an
+// array, which must NOT count as a wrapper).
+function isValidResponseWrapper(text) {
+  const obj = parseKimiResponse(text);
+  return obj !== null && typeof obj === 'object' && !Array.isArray(obj) && typeof obj.response === 'string';
+}
+
+test('A3: wrapper oracle distinguishes valid JSON response from plain-text fallback', () => {
+  // Valid fenced wrapper → oracle true → guard ignores DOM actions
+  const fenced = '```json\n{"response": "Claro! 🌙"}\n```';
+  assert.strictEqual(isValidResponseWrapper(fenced), true, 'fenced wrapper must be valid');
+  assert.strictEqual(parseTagResponse(fenced).mode, 'CHAT');
+
+  // Valid bare wrapper → oracle true → guard ignores DOM actions
+  assert.strictEqual(isValidResponseWrapper('{"response": "Sem cercas."}'), true, 'bare wrapper must be valid');
+
+  // Plain text (fallback CHAT path) → oracle false → guard must NOT fire,
+  // DOM tool results stay legit and are fed back to Kimi
+  const plain = 'Aqui está o resultado da sua busca, sem JSON nenhum.';
+  assert.strictEqual(parseTagResponse(plain).mode, 'CHAT', 'plain text falls back to CHAT');
+  assert.strictEqual(isValidResponseWrapper(plain), false, 'plain text must NOT be a valid wrapper');
 });
