@@ -66,10 +66,10 @@
 > fica la e eu tenho q apertar enter manualmente no chat da kimi." The bridge types the
 > prompt into the Kimi input but the submit (Enter/click) silently doesn't happen.
 
-- [ ] Investigate the send path in `packages/kernel/kimi-bridge.cjs` (`sendMessage`/`_typeAndSubmit`/Enter dispatch, ~:3915-4050) and `bridge-libs/message-sender.cjs`: find why the message can remain typed-but-unsent (selector drift on the send button, Enter dispatched before the editor registers the text, contenteditable needing an input event, send-button disabled state, CDP key event not trusted). Identify ALL submit strategies and their fallback order.
-- [ ] Fix with defense in depth: after typing, verify the input actually contains the text before submitting; submit via the strategy chain (Enter → send-button click → form requestSubmit if applicable); after submit, VERIFY the input was cleared / a new assistant turn started within a bounded window; if not, retry submit once; if still stuck, fail the turn with a visible error (never hang silently — Wave 6 contract).
-- [ ] Tests (+? ): unit/source-slice for the verify-after-submit logic in wave2-bridge.test.cjs.
-- [ ] Commit: `fix(bridge): verify-and-retry submit - typed messages can no longer sit unsent in the Kimi input`.
+- [x] Investigate the send path in `packages/kernel/kimi-bridge.cjs` (`sendMessage`/`_typeAndSubmit`/Enter dispatch, ~:3915-4050) and `bridge-libs/message-sender.cjs`: find why the message can remain typed-but-unsent (selector drift on the send button, Enter dispatched before the editor registers the text, contenteditable needing an input event, send-button disabled state, CDP key event not trusted). Identify ALL submit strategies and their fallback order.
+- [x] Fix with defense in depth: after typing, verify the input actually contains the text before submitting; submit via the strategy chain (Enter → send-button click → form requestSubmit if applicable); after submit, VERIFY the input was cleared / a new assistant turn started within a bounded window; if not, retry submit once; if still stuck, fail the turn with a visible error (never hang silently — Wave 6 contract).
+- [x] Tests (+4 → 221): unit/source-slice for the verify-after-submit logic in wave2-bridge.test.cjs.
+- [x] Commit: `fix(bridge): verify-and-retry submit - typed messages can no longer sit unsent in the Kimi input`.
 
 ## Task 5 — Close the wave: bugs.md bookkeeping
 

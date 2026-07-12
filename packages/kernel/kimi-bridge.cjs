@@ -3183,26 +3183,15 @@ class KimiBridge {
       // Step 4: Send optional text
       if (text && text.trim()) {
         const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-        // v10.18-fix: Focus the editor first for Lexical contenteditable.
-        // Playwright's click() can hang on the landing editor, so we use JS focus().
-        await inputLocator.evaluate((el) => el.focus());
-        await page.waitForTimeout(200);
-        await inputLocator.fill('');
-        await page.waitForTimeout(300);
-        // v10.18-fix: type() hangs on Kimi's Lexical contenteditable on landing page
-        await inputLocator.fill(text);
-        await page.waitForTimeout(200);
-        await inputLocator.evaluate((el) => {
-          const data = el.value || el.innerText || '';
-          el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        });
+        // W7-T4: Lexical-safe fill — fill() desyncs the React/Lexical
+        // EditorState (visible text, Enter becomes a no-op).
+        await this._fillContentEditable(inputLocator, text);
         await page.waitForTimeout(500);
       }
 
-      // Step 5: Press Enter to send
+      // Step 5: Press Enter to send (W7-T4: verify-and-retry)
       const sendLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await this._pressEnterOnInput(sendLocator);
+      await this._submitWithVerification(page, sendLocator, text, { provider: resolvedProvider });
       log.info(`Image (+text) sent for user ${hashUserId(userId)}`);
 
       // Step 6: Wait for response
@@ -3233,8 +3222,9 @@ class KimiBridge {
         mode: session.mode,
       };
     } catch (err) {
+      // W7-T4: Lexical-safe clear (fill('') leaves desynced text in the box).
       try {
-        await page.locator('textarea, [contenteditable="true"]').first().fill('');
+        await this._fillContentEditable(page.locator('textarea, [contenteditable="true"]').first(), '');
       } catch {}
       throw err;
     } finally {
@@ -3455,26 +3445,15 @@ class KimiBridge {
       // Step 4: Send optional text
       if (text && text.trim()) {
         const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-        // v10.18-fix: Focus the editor first for Lexical contenteditable.
-        // Playwright's click() can hang on the landing editor, so we use JS focus().
-        await inputLocator.evaluate((el) => el.focus());
-        await page.waitForTimeout(200);
-        await inputLocator.fill('');
-        await page.waitForTimeout(300);
-        // v10.18-fix: type() hangs on Kimi's Lexical contenteditable on landing page
-        await inputLocator.fill(text);
-        await page.waitForTimeout(200);
-        await inputLocator.evaluate((el) => {
-          const data = el.value || el.innerText || '';
-          el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        });
+        // W7-T4: Lexical-safe fill — fill() desyncs the React/Lexical
+        // EditorState (visible text, Enter becomes a no-op).
+        await this._fillContentEditable(inputLocator, text);
         await page.waitForTimeout(500);
       }
 
-      // Step 5: Press Enter to send
+      // Step 5: Press Enter to send (W7-T4: verify-and-retry)
       const sendLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await this._pressEnterOnInput(sendLocator);
+      await this._submitWithVerification(page, sendLocator, text, { provider: resolvedProvider });
       log.info(`File (+text) sent for user ${hashUserId(userId)}`);
       const sendResult = await checkAndRecoverLogin('send message');
       if (sendResult === 'RESTART_UPLOAD') {
@@ -3509,7 +3488,8 @@ class KimiBridge {
         mode: session.mode,
       };
     } catch (err) {
-      try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch {}
+      // W7-T4: Lexical-safe clear (fill('') leaves desynced text in the box).
+      try { await this._fillContentEditable(page.locator('textarea, [contenteditable="true"]').first(), ''); } catch {}
       throw err;
     } finally {
       session.processing = false;
@@ -3826,6 +3806,94 @@ class KimiBridge {
     }, text);
   }
 
+  /**
+   * W7-T4: Submit the typed message and VERIFY it actually left the input.
+   * Kimi's Lexical editor can silently swallow the synthetic Enter (text
+   * visible in the DOM but an empty/desynced EditorState) — the message then
+   * sits in the box until the user presses Enter manually. Strategy chain,
+   * one per attempt, with a ~10s verification poll after each:
+   *   1. synthetic KeyboardEvent Enter (_pressEnterOnInput);
+   *   2. Lexical-safe re-fill + TRUSTED Enter (Playwright click + keyboard);
+   *   3. click the .send-button-container (same selector the steer uses).
+   * Verification succeeds when the input no longer contains the sent-text
+   * prefix, a new .segment-assistant appears, or the send button turns
+   * disabled / the stop (generating) button shows up. Throws
+   * SEND_NOT_CONFIRMED when all attempts fail so the turn errors visibly
+   * instead of hanging silently (Wave 6 contract).
+   */
+  async _submitWithVerification(page, inputLocator, text, options = {}) {
+    const provider = options.provider || 'kimi';
+    const prefix = (text || '').slice(0, 100);
+    const baselineAssistants = await page.evaluate(() => document.querySelectorAll('.segment-assistant').length).catch(() => 0);
+    const strategies = ['synthetic-enter', 'trusted-enter', 'send-button-click'];
+
+    for (let attempt = 0; attempt < strategies.length; attempt++) {
+      const strategy = strategies[attempt];
+      try {
+        if (strategy === 'synthetic-enter') {
+          await this._pressEnterOnInput(inputLocator);
+        } else if (strategy === 'trusted-enter') {
+          // The first Enter may have hit a desynced Lexical state — re-fill so
+          // the EditorState actually holds the text, then send a TRUSTED Enter
+          // via a real Playwright click + keyboard press.
+          await this._fillContentEditable(inputLocator, text || '');
+          await page.waitForTimeout(300);
+          await inputLocator.click({ timeout: 5000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
+          await page.keyboard.press('Enter');
+        } else {
+          const sendBtn = page.locator('.send-button-container').first();
+          if (await sendBtn.count() > 0) {
+            await sendBtn.click({ timeout: 5000 });
+          } else {
+            log.warn('[_submitWithVerification] .send-button-container not found — click strategy skipped');
+          }
+        }
+      } catch (e) {
+        log.warn(`[_submitWithVerification] strategy '${strategy}' threw: ${e.message}`);
+      }
+
+      // Verify the submit: poll ~10s for the message to leave the input.
+      const verifyDeadline = Date.now() + 10_000;
+      while (Date.now() < verifyDeadline) {
+        let stillThere = false;
+        if (prefix) {
+          const current = await inputLocator.inputValue().catch(() =>
+            inputLocator.evaluate((el) => el.innerText || el.textContent || '').catch(() => '')
+          );
+          stillThere = !!(current && current.includes(prefix));
+        }
+        const state = await page.evaluate(() => {
+          const assistants = document.querySelectorAll('.segment-assistant').length;
+          const sendBtn = document.querySelector('.send-button-container');
+          const sendDisabled = sendBtn
+            ? (sendBtn.className.includes('disabled') || sendBtn.getAttribute('aria-disabled') === 'true')
+            : false;
+          const generating = !!document.querySelector('.stop-button-container');
+          return { assistants, sendDisabled, generating };
+        }).catch(() => null);
+
+        if (!stillThere
+          || (state && state.assistants > baselineAssistants)
+          || (state && (state.generating || state.sendDisabled))) {
+          log.info(`[_submitWithVerification] submit confirmed via '${strategy}' (attempt ${attempt + 1})`);
+          return { confirmed: true, strategy };
+        }
+        await page.waitForTimeout(300);
+      }
+      log.warn(`[_submitWithVerification] attempt ${attempt + 1} ('${strategy}') NOT confirmed — text still in the input`);
+
+      // Empty-text sends on non-Kimi providers (image/file without caption)
+      // have no generic DOM signal to verify — accept best-effort rather than
+      // throwing a false SEND_NOT_CONFIRMED.
+      if (provider !== 'kimi' && !prefix) {
+        log.warn(`[_submitWithVerification] no DOM signal for empty-text ${provider} send — accepting best-effort after '${strategy}'`);
+        return { confirmed: true, strategy, weak: true };
+      }
+    }
+
+    throw new Error('SEND_NOT_CONFIRMED: texto permanece no input da Kimi — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)');
+  }
+
   async sendMessage(userId, text, options = {}, provider = 'kimi') {
     if (!text || !text.trim()) {
       throw new Error('Message text is required');
@@ -3949,8 +4017,9 @@ class KimiBridge {
       const preSendSnapshot = await this._capturePreSendSnapshot(page);
       const preSendAssistantCount = preSendSnapshot.length;
 
-      // Press Enter to send
-      await this._pressEnterOnInput(inputLocator);
+      // W7-T4: Press Enter to send with verify-and-retry (typed text must
+      // never sit unsent in the Kimi input).
+      await this._submitWithVerification(page, inputLocator, text, { provider: resolvedProvider });
       log.info(`Message sent for user ${hashUserId(userId)} (initialText=${initialText.length} chars, snapshot=${preSendAssistantCount} assistants)`);
 
       // v7.6-fix: Assistant detection for logging/compatibility
@@ -4035,9 +4104,11 @@ class KimiBridge {
         contextLimit: isContextLimit,
       };
     } catch (err) {
-      // Try to clear input on error so next message doesn't have leftover text
+      // Try to clear input on error so next message doesn't have leftover text.
+      // W7-T4: _fillContentEditable(locator, '') clears the Lexical EditorState
+      // for real — fill('') leaves the desynced text in the box.
       try {
-        await page.locator('textarea, [contenteditable="true"]').first().fill('');
+        await this._fillContentEditable(page.locator('textarea, [contenteditable="true"]').first(), '');
       } catch {}
       throw err;
     } finally {
@@ -4097,7 +4168,10 @@ class KimiBridge {
       await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(500);
 
-      await this._pressEnterOnInput(inputLocator);
+      // W7-T4: verify-and-retry submit (Enter → trusted Enter → send-button
+      // click). The 30s delivery poll below then confirms immediately once
+      // the input has cleared.
+      await this._submitWithVerification(page, inputLocator, text);
       log.info(`[sendMessageNoWait] Submitted message for user ${hashUserId(userId)}`);
 
       let confirmed = false;
@@ -4127,8 +4201,9 @@ class KimiBridge {
 
       return { sent: true, chatUrl: session.chatUrl, mode: session.mode };
     } catch (err) {
+      // W7-T4: Lexical-safe clear (fill('') leaves desynced text in the box).
       try {
-        await page.locator('textarea, [contenteditable="true"]').first().fill('');
+        await this._fillContentEditable(page.locator('textarea, [contenteditable="true"]').first(), '');
       } catch {}
       throw err;
     } finally {
@@ -7489,21 +7564,14 @@ class KimiBridge {
       await inputLocator.evaluate((el) => el.focus());
       await page.waitForTimeout(200);
 
-      await inputLocator.fill('');
-      await page.waitForTimeout(300);
-
-      // v10.18-fix: Always use fill + native input events. Playwright's type()
-      // hangs on Kimi's Lexical contenteditable editor on the landing page.
-      await inputLocator.fill(text);
-      await page.waitForTimeout(200);
-      await inputLocator.evaluate((el) => {
-        const data = el.value || el.innerText || '';
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      // W7-T4: Lexical-safe fill. Playwright's fill() does not register in the
+      // React/Lexical contenteditable (text visible in the DOM but EditorState
+      // empty → Enter becomes a no-op and the message sits unsent in the box).
+      await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(500);
       log.info(`[DEBUG-LUNA] Step 6: pressing Enter`);
-      await this._pressEnterOnInput(inputLocator);
+      // W7-T4: verify-and-retry submit — typed text must never sit unsent.
+      await this._submitWithVerification(page, inputLocator, text, { provider: resolvedProvider });
       // Wave2-fix: discard everything the poller observed during send-prep —
       // it describes the PREVIOUS turn's DOM, not this message.
       queue.events.length = 0;
@@ -8075,7 +8143,8 @@ class KimiBridge {
       } else {
         log.error(`[sendMessageStream] Error for user ${hashUserId(userId)} (provider=${resolvedProvider}): ${err.message}`);
         log.error(`[sendMessageStream] Stack: ${err.stack}`);
-        try { await page.locator('textarea, [contenteditable="true"]').first().fill(''); } catch {}
+        // W7-T4: Lexical-safe clear (fill('') leaves desynced text in the box).
+        try { await this._fillContentEditable(page.locator('textarea, [contenteditable="true"]').first(), ''); } catch {}
         throw err;
       }
     } finally {
@@ -8327,27 +8396,17 @@ class KimiBridge {
       const inputSelector = getProviderInputSelector(providerCfg) || 'textarea, [contenteditable="true"]';
       const inputLocator = page.locator(inputSelector).first();
       await inputLocator.waitFor({ state: 'visible', timeout: 0 });
-      // v10.18-fix: Focus the editor first for Lexical contenteditable.
-      // Playwright's click() can hang on the landing editor, so we use JS focus().
-      await inputLocator.evaluate((el) => el.focus());
-      await page.waitForTimeout(200);
-      await inputLocator.fill('');
-      await page.waitForTimeout(300);
-      // Use fill + event dispatch for large texts (contenteditable can be tricky with type())
-      await inputLocator.fill(prompt);
-      await page.waitForTimeout(200);
-      await inputLocator.evaluate((el) => {
-        const data = el.value || el.innerText || '';
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, data }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      // W7-T4: Lexical-safe fill — fill() desyncs the React/Lexical
+      // EditorState (visible text, Enter becomes a no-op).
+      await this._fillContentEditable(inputLocator, prompt);
       // Capture initial text BEFORE sending — critical for fast responses.
       // v10.18-fix: Use finite timeout — landing page has no markdown yet.
       const responseSelectors = getProviderResponseSelectors(providerCfg);
       const initialText = await page.locator(responseSelectors.container || '.markdown-container').last().innerText({ timeout: 2000 }).catch(() => '');
 
       await page.waitForTimeout(500);
-      await this._pressEnterOnInput(inputLocator);
+      // W7-T4: verify-and-retry submit
+      await this._submitWithVerification(page, inputLocator, prompt, { provider: resolvedProvider });
       log.info('[anonymousConsult] Message sent, polling for response...');
 
       let lastResponse = '';

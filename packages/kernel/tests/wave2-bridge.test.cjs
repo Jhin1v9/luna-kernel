@@ -552,3 +552,79 @@ test('W6-T12b: generic-provider block wires the force-complete helper', () => {
   assert.ok(window.includes('generic-provider'),
     'slice must sit inside the generic-provider block');
 });
+
+// ── W7-T4: verify-and-retry submit (typed messages never sit unsent) ──
+
+test('W7-T4a: sendMessageStream fills via _fillContentEditable (no direct fill(text)) and submits via _submitWithVerification', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const streamIdx = src.indexOf('async *sendMessageStream(');
+  assert.notStrictEqual(streamIdx, -1, 'sendMessageStream must exist');
+  const step6Idx = src.indexOf('Step 6: pressing Enter', streamIdx);
+  assert.notStrictEqual(step6Idx, -1, 'stream Enter step must exist');
+  const window = src.slice(streamIdx, step6Idx + 600);
+
+  assert.ok(window.includes('this._fillContentEditable(inputLocator, text)'),
+    'stream must fill the input via the Lexical-safe helper');
+  assert.ok(!window.includes('inputLocator.fill(text)'),
+    'stream must NOT use Playwright fill(text) directly (desyncs the Lexical EditorState — Enter becomes a no-op)');
+  assert.ok(window.includes('this._submitWithVerification(page, inputLocator, text'),
+    'stream must submit via _submitWithVerification');
+});
+
+test('W7-T4b: _submitWithVerification is called at every submit point', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const callCount = src.split('this._submitWithVerification(').length - 1;
+  assert.ok(callCount >= 5, `_submitWithVerification must be called at >= 5 submit points (found ${callCount})`);
+
+  const windowBetween = (startNeedle, endNeedle) => {
+    const start = src.indexOf(startNeedle);
+    assert.notStrictEqual(start, -1, `${startNeedle} must exist`);
+    const end = src.indexOf(endNeedle, start + startNeedle.length);
+    assert.notStrictEqual(end, -1, `${endNeedle} must exist after ${startNeedle}`);
+    return src.slice(start, end);
+  };
+
+  // The 5 submit points from the owner report (sendMessageStream is pinned
+  // by W7-T4a above; sendMessageNoWait also wired as a 6th, low-risk site).
+  const sites = [
+    ['async sendMessage(userId', 'async sendMessageNoWait('],
+    ['async sendMessageNoWait(', 'async getStatus('],
+    ['async sendImage(', 'async sendFile('],
+    ['async sendFile(userId', 'async _sendFileViaWebBridge('],
+    ['async anonymousConsult(', null],
+  ];
+  for (const [start, end] of sites) {
+    const window = end ? windowBetween(start, end) : src.slice(src.indexOf(start));
+    assert.ok(window.includes('this._submitWithVerification('),
+      `${start} must submit via _submitWithVerification`);
+  }
+});
+
+test('W7-T4c: _submitWithVerification implements the 3-strategy chain with post-submit verification and SEND_NOT_CONFIRMED', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const defIdx = src.indexOf('async _submitWithVerification(page, inputLocator, text');
+  assert.notStrictEqual(defIdx, -1, '_submitWithVerification must be defined');
+  const body = src.slice(defIdx, defIdx + 6000);
+
+  assert.ok(body.includes('this._pressEnterOnInput(inputLocator)'),
+    'strategy 1 must be the synthetic KeyboardEvent Enter');
+  assert.ok(body.includes("page.keyboard.press('Enter')"),
+    'strategy 2 must include a TRUSTED Enter via Playwright keyboard');
+  assert.ok(body.includes('this._fillContentEditable(inputLocator, text'),
+    'strategy 2 must re-fill via the Lexical-safe helper');
+  assert.ok(body.includes('.send-button-container'),
+    'strategy 3 must click the send-button-container (same selector as the steer)');
+  assert.ok(body.includes('.segment-assistant'),
+    'verification must watch for a new assistant segment');
+  assert.ok(body.includes('SEND_NOT_CONFIRMED: texto permanece no input da Kimi'),
+    'must throw a clear SEND_NOT_CONFIRMED error after all attempts');
+});
+
+test('W7-T4d: error-path input cleanup uses _fillContentEditable(locator, \'\') — no fill(\'\') left', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  assert.ok(!src.includes(".fill('')"),
+    "no fill('') cleanup may remain — it does not clear the Lexical EditorState");
+  const lexicalClears = src.split('this._fillContentEditable(page.locator(\'textarea, [contenteditable="true"]\').first(), \'\')').length - 1;
+  assert.ok(lexicalClears >= 5,
+    `all 5 catch cleanups must use _fillContentEditable(locator, '') (found ${lexicalClears})`);
+});
