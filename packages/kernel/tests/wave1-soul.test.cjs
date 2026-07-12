@@ -49,6 +49,32 @@ test('A1: buildSystemPrompt injects master prompt JSON examples and persona', ()
   );
 });
 
+test('A1b: 20k cap never truncates the master prompt tail (BOTTOM EXAMPLES)', () => {
+  const master = fs.readFileSync(lunaConfig.PATHS.masterPrompt, 'utf8');
+  const bottomMarker = '[JSON FORMAT — BOTTOM EXAMPLES';
+  assert.ok(master.includes(bottomMarker), 'master prompt must contain the bottom examples marker');
+
+  // Worst case: every section at its max size. Pre-master content alone
+  // exceeds 20k, so a naive whole-string slice would drop the master tail.
+  const out = buildSystemPrompt({
+    masterPrompt: master,
+    personaContent: 'P'.repeat(5000),
+    memoryContext: 'M'.repeat(5000),
+    agentsMd: 'A'.repeat(5000),
+    brainContext: 'B'.repeat(12000),
+    userId: 'wave1-test-user',
+  });
+
+  assert.ok(
+    out.includes(bottomMarker),
+    'master prompt tail must survive the 20k cap even with max-size sections'
+  );
+  assert.ok(
+    out.endsWith(master.slice(-50)),
+    'master prompt must be the LAST thing in the system prompt'
+  );
+});
+
 test('A2: followUp and toolLoop templates contain JSON format examples', () => {
   const cfg = JSON.parse(fs.readFileSync(lunaConfig.PATHS.promptConfig, 'utf8'));
   for (const key of ['followUp', 'toolLoop']) {

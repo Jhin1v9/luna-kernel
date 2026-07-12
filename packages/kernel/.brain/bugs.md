@@ -46,6 +46,7 @@
 - [ ] 🟡 **`window.fetch` monkey-patch reloads page on any 401** (`api.js:429-448`) — loses stream/state without warning.
 - [ ] 🟡 **Debug logs in production** — `console.log` with `new Error().stack` on every send (`ChatArea.svelte:1043, 1132`); `[SSE]` per event (`:364`).
 - [ ] 🟡 **Resize listener never removed** (`OrbBackground.svelte:139`).
+- [ ] 🟠 **Transport drops error/system event text** (found in Wave 1 quality review) — live path computes content as `ev.text || ev.fullResponse || ''` (`luna-chat-routes.js:496`), but the soul emits `{type:'error', error:...}` and `{type:'system', message:...}` → `msg.content` is `''`, SSE `eventData.error` never set, frontend renders "Erro desconhecido" / empty system bubble. Affects the new A4 PT-BR empty-response message and the pre-existing STREAM_CANCELLED message. Fix in Fix B: read `ev.error || ev.message` for these types.
 
 ### Tools / Guard (`luna-tools.cjs`, `luna-tool-guard.cjs`, `luna-code-validator.cjs`)
 

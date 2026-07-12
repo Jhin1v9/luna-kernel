@@ -324,14 +324,19 @@ function buildSystemPrompt(opts = {}) {
     // wave1-fix A1: the config template only interpolates {{WORKSPACE}} — append
     // persona, memories, AGENTS.md and brain context, then the master prompt LAST
     // (it ends with the exact JSON format examples the owner requires at the end).
+    // The 20k cap applies to the pre-master portion ONLY: slicing the whole thing
+    // would drop the master prompt's tail (the BOTTOM EXAMPLES) exactly when the
+    // brain context is large — silently defeating the purpose of this fix.
     const base = interpolateTemplate(cfg.systemPrompt, vars);
-    const appended =
+    const masterPart = '\n[MASTER PROMPT]\n' + vars.masterPrompt;
+    const head = (
+      base +
       (vars.personaContent || '') +
       (vars.memoryContext || '') +
       (vars.agentsMd || '') +
-      (vars.BRAIN_CONTEXT || '') +
-      '\n[MASTER PROMPT]\n' + vars.masterPrompt;
-    return (base + appended).slice(0, 20000);
+      (vars.BRAIN_CONTEXT || '')
+    ).slice(0, Math.max(0, 20000 - masterPart.length));
+    return head + masterPart;
   }
 
   // v8.4-fix: Restored visual persona. JSON format is required for tools,
