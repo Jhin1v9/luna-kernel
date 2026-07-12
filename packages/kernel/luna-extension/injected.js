@@ -20,6 +20,10 @@
         sendButton: 'div[role="button"].ds-button--primary, div[role="button"][aria-label*="send" i], button[type="submit"]',
         stopButton: 'div[role="button"] svg[class*="stop"], div[role="button"][aria-label*="stop" i]',
         thinking: '.ds-thinking, [class*="thinking"]',
+        // NOTE (Wave2-fix B, unverified): .ds-markdown may be nested inside
+        // .message-content on chat.deepseek.com, which would double-emit text like
+        // the Kimi .markdown-container bug did. Left unchanged — no live DeepSeek
+        // DOM was available to verify; only drop the parent after verification.
         textContent: '.ds-markdown, .message-content'
       };
     }
@@ -31,7 +35,9 @@
       sendButton: 'button[type="submit"], .send-btn, [data-testid="send-button"]',
       stopButton: 'button.stop-btn, .stop-generation, [data-testid="stop-button"]',
       thinking: '.thinking, [class*="thinking"], .segment-thinking, [class*="think-block"], [data-testid*="think"]',
-      textContent: '.segment-text, .message-content, .markdown-container, [class*="segment-text"], [class*="message-content"]'
+      // Wave2-fix B: dropped .markdown-container — it's the PARENT of the leaf text
+      // nodes, so querySelectorAll matched both and every paragraph was concatenated twice.
+      textContent: '.segment-text, .message-content, [class*="segment-text"], [class*="message-content"]'
     };
   }
   const SELECTORS = getSelectors();

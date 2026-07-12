@@ -14,7 +14,9 @@
     thinking: '.thinking, [class*="thinking"], .segment-thinking, [class*="think-block"], [data-testid*="think"]',
     // v7.3-fix: textContent must NOT include generic [class*="content"] which can match thinking containers.
     // Use more specific selectors that only match actual response text containers.
-    textContent: '.segment-text, .message-content, .markdown-container, [class*="segment-text"], [class*="message-content"]'
+    // Wave2-fix B: dropped .markdown-container — it's the PARENT of the leaf text
+    // nodes, so querySelectorAll matched both and every paragraph was concatenated twice.
+    textContent: '.segment-text, .message-content, [class*="segment-text"], [class*="message-content"]'
   };
 
   window.__lunaEventQueue = {

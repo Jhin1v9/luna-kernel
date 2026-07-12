@@ -1,4 +1,4 @@
-// wave2-bridge.test.cjs — Wave 2 Fix A regression test
+// wave2-bridge.test.cjs — Wave 2 regression tests (Fix A, Fix B)
 // Run: node --test packages/kernel/tests/wave2-bridge.test.cjs
 'use strict';
 
@@ -8,6 +8,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const BRIDGE_PATH = path.join(__dirname, '..', 'kimi-bridge.cjs');
+const INJECTED_PATH = path.join(__dirname, '..', 'luna-extension', 'injected.js');
+const OBSERVER_PATH = path.join(__dirname, '..', 'kimi-dom-observer.js');
+
+/**
+ * Extract the Kimi `textContent` selector string from a SELECTORS definition:
+ * the `textContent:` line that follows the Kimi-branch marker `.segment-assistant`
+ * (or, in the observer, the single SELECTORS object which is Kimi-only).
+ */
+function extractKimiTextContentLine(src, fileLabel) {
+  const lines = src.split('\n');
+  const matches = lines.filter(l => l.includes('textContent:') && l.includes('.segment-text'));
+  assert.strictEqual(matches.length, 1, `${fileLabel}: exactly one Kimi textContent line expected (found ${matches.length})`);
+  return matches[0];
+}
 
 /**
  * Locate the body of `pollWithTimeout` defined inside `_pollThinkingAndResponse`
@@ -79,4 +93,39 @@ test('A1b: empty-extraction tail references the hoisted session (empty-wait bran
   const genericIdx = body.indexOf("if (provider !== 'kimi')");
   const tailIdx = body.indexOf('session._lastEmptyLayersLogAt');
   assert.ok(tailIdx > genericIdx, 'empty-extraction tail must follow the generic-provider block');
+});
+
+// ── Fix B: parent .markdown-container removed from Kimi textContent selectors ──
+
+for (const [label, filePath] of [
+  ['injected.js', INJECTED_PATH],
+  ['kimi-dom-observer.js', OBSERVER_PATH],
+]) {
+  test(`B1: ${label} Kimi textContent selector excludes parent .markdown-container, keeps leaf .segment-text`, () => {
+    const src = fs.readFileSync(filePath, 'utf8');
+    const line = extractKimiTextContentLine(src, label);
+
+    assert.ok(
+      !line.includes('.markdown-container'),
+      `${label}: textContent must NOT contain .markdown-container (parent of leaf text nodes — caused doubled paragraphs). Line: ${line.trim()}`
+    );
+    assert.ok(
+      line.includes('.segment-text'),
+      `${label}: textContent must still contain leaf selector .segment-text. Line: ${line.trim()}`
+    );
+    assert.ok(
+      line.includes('.message-content'),
+      `${label}: textContent must still contain leaf selector .message-content. Line: ${line.trim()}`
+    );
+  });
+}
+
+test('B1b: DeepSeek textContent selector is intentionally left unchanged pending live-DOM verification', () => {
+  const src = fs.readFileSync(INJECTED_PATH, 'utf8');
+  const dsLine = src.split('\n').find(l => l.includes("textContent: '.ds-markdown"));
+  assert.ok(dsLine, 'injected.js: DeepSeek textContent line must still exist');
+  assert.ok(
+    dsLine.includes('.ds-markdown, .message-content'),
+    'DeepSeek selector must be unchanged (only a comment documents the unverified nesting assumption)'
+  );
 });
