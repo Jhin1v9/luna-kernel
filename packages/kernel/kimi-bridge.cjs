@@ -7226,9 +7226,20 @@ class KimiBridge {
     // STREAM_CANCELLED here — we wait for the previous stream to drain its
     // events or for the soft-cancel signal to propagate.
     // v9.5-fix: Guard against undefined session (userSessions may not have entry yet)
+    // W6-T3: bounded + self-healing. If a previous stream died without clearing
+    // `processing`, an unbounded wait here would hang every future message
+    // BEFORE sending anything, with no event. Past 60s the previous stream is
+    // provably dead — force-clear the flag and continue sending.
+    const PROCESSING_DRAIN_TIMEOUT_MS = 60_000;
     if (session?.processing) {
-      log.warn(`[DEBUG-LUNA] User ${hashUserId(userId)} already processing — waiting for drain (no timeout)`);
+      log.warn(`[DEBUG-LUNA] User ${hashUserId(userId)} already processing — waiting for drain (max ${PROCESSING_DRAIN_TIMEOUT_MS}ms)`);
+      const drainDeadline = Date.now() + PROCESSING_DRAIN_TIMEOUT_MS;
       while (session?.processing) {
+        if (Date.now() > drainDeadline) {
+          log.warn(`[sendMessageStream] Processing drain timeout (${PROCESSING_DRAIN_TIMEOUT_MS}ms) for user ${hashUserId(userId)} — previous stream is dead, force-clearing processing flag`);
+          session.processing = false;
+          break;
+        }
         await new Promise(r => setTimeout(r, 500));
       }
       log.warn(`[DEBUG-LUNA] Previous drain complete for user ${hashUserId(userId)}`);
@@ -7489,11 +7500,19 @@ class KimiBridge {
       const emittedJsonActionHashes = new Set();
       let domActionsCount = 0;
 
-      // Phase 0: Wait for first text change via queue events
-      // v8.4: NO TIMEOUT — Kimi may take hours for large file generation.
-      // Chrome lag is expected with huge prompts. We wait patiently.
+      // Phase 0: Wait for first text change via queue events.
+      // W6-T3: bounded — chrome lag with huge prompts is expected and gets the
+      // full 5 minutes, but a SILENT send failure (Enter never landed, tab dead)
+      // must surface as a visible error instead of hanging forever. The throw
+      // propagates through the catch below (only STREAM_CANCELLED is swallowed)
+      // up to the soul's error handling.
+      const GENERATION_START_TIMEOUT_MS = 5 * 60_000;
+      const generationStartDeadline = Date.now() + GENERATION_START_TIMEOUT_MS;
       log.info(`[DEBUG-LUNA] Phase 0: waiting for first text change. initialText='${initialText}' queueLen=${queue.events.length}`);
       while (!textHasChanged && !stopConsuming) {
+        if (Date.now() > generationStartDeadline) {
+          throw new Error('GENERATION_NEVER_STARTED: Kimi did not start generating within 5 minutes');
+        }
         while (queue.lastReadIndex < queue.events.length) {
           const ev = queue.events[queue.lastReadIndex++];
           if (ev.type === 'state_change') {
@@ -7527,10 +7546,12 @@ class KimiBridge {
         await new Promise(r => setTimeout(r, 500));
       }
 
-      // Phase 1: Consume events from queue until completion or cancel
-      // v8.4: NO GLOBAL TIMEOUT — Kimi may generate for hours. User can always
-      // send a new message to hard-cancel the old stream.
-      const MESSAGE_SAFETY_TIMEOUT = 24 * 60 * 60 * 1000; // 24h — effectively no timeout
+      // Phase 1: Consume events from queue until completion or cancel.
+      // W6-T3: safety net re-enabled at 60min — large-file generations survive,
+      // but a truly dead stream can no longer hang forever. User can still
+      // hard-cancel at any time by sending a new message.
+      const MESSAGE_SAFETY_TIMEOUT_MS = 60 * 60 * 1000;
+      const messageStartTime = Date.now();
 
       // v7.0: Soft cancel drain tracking
       let softCancelDrainStart = null;
@@ -7580,9 +7601,16 @@ class KimiBridge {
           }
         }
 
-        // v8.4: Safety timeout disabled — wait forever for Kimi to finish.
-        // User can hard-cancel by sending a new message at any time.
-        // if (Date.now() - messageStartTime > MESSAGE_SAFETY_TIMEOUT) { ... }
+        // W6-T3: safety-net deadline. On expiry we BREAK (not throw): the
+        // final-extraction tail below still runs and yields whatever text
+        // exists, so the user sees the partial response plus a visible
+        // warning — never silent truncation.
+        if (Date.now() - messageStartTime > MESSAGE_SAFETY_TIMEOUT_MS) {
+          log.warn(`[sendMessageStream] SAFETY TIMEOUT (${MESSAGE_SAFETY_TIMEOUT_MS}ms) reached for user ${hashUserId(userId)} — breaking wait loop, running final extraction with partial content`);
+          yield { type: 'waiting', message: '⏱️ Limite de segurança (60min) atingido — finalizando com o conteúdo parcial...' };
+          isComplete = true;
+          break;
+        }
 
         // Process all new events in queue
         while (queue.lastReadIndex < queue.events.length && !stopConsuming) {

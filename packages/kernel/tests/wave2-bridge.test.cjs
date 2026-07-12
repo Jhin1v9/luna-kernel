@@ -417,3 +417,27 @@ test('W6-T1: new-assistant wait loop is bounded and cancellable', () => {
   assert.ok(window.includes('NO_ASSISTANT_DETECTED'), 'loop must throw a visible error on expiry');
   assert.ok(window.includes("if (stopConsuming) throw new Error('STREAM_CANCELLED')"), 'loop body must break on cancel');
 });
+
+// ── W6-T3: the three infinite send waits in sendMessageStream ──
+// NOTE (adaptation): the task-spec needles 'already processing' and
+// 'textHasChanged' first match OUT OF SCOPE sites (sendImage queue at :3074,
+// another method at :2710). Anchored instead on strings unique to the three
+// target sites inside sendMessageStream.
+
+test('W6-T3: pre-send processing drain is bounded and self-healing', () => {
+  const window = sliceAround(fs.readFileSync(BRIDGE_PATH, 'utf8'), 'waiting for drain', 2000);
+  assert.ok(window.includes('PROCESSING_DRAIN_TIMEOUT_MS'), 'drain wait must be bounded');
+  assert.ok(/processing = false/.test(window), 'expired drain must force-clear the dead processing flag');
+});
+
+test('W6-T3: Phase 0 has a generation-start timeout', () => {
+  const window = sliceAround(fs.readFileSync(BRIDGE_PATH, 'utf8'), 'Phase 0: waiting for first text change', 3000);
+  assert.ok(window.includes('GENERATION_START_TIMEOUT_MS'), 'Phase 0 must be bounded');
+  assert.ok(/GENERATION_NEVER_STARTED/.test(window), 'Phase 0 expiry must throw a visible error');
+});
+
+test('W6-T3: Phase 1 safety timeout is re-enabled (large but real)', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  assert.ok(/MESSAGE_SAFETY_TIMEOUT_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/.test(src), 'safety timeout constant must exist at 60min');
+  assert.ok(!src.includes('Safety timeout disabled'), 'the disabled comment must be gone');
+});
