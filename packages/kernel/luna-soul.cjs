@@ -321,7 +321,17 @@ function buildSystemPrompt(opts = {}) {
       WORKSPACE_CONTEXT: workspaceContext,
       BRAIN_CONTEXT: brainContext ? '\n[BRAIN CONTEXT]\n' + brainContext.slice(0, 8000) + (brainContext.length > 8000 ? '\n...[truncated]...' : '') : '',
     };
-    return interpolateTemplate(cfg.systemPrompt, vars).slice(0, 20000);
+    // wave1-fix A1: the config template only interpolates {{WORKSPACE}} — append
+    // persona, memories, AGENTS.md and brain context, then the master prompt LAST
+    // (it ends with the exact JSON format examples the owner requires at the end).
+    const base = interpolateTemplate(cfg.systemPrompt, vars);
+    const appended =
+      (vars.personaContent || '') +
+      (vars.memoryContext || '') +
+      (vars.agentsMd || '') +
+      (vars.BRAIN_CONTEXT || '') +
+      '\n[MASTER PROMPT]\n' + vars.masterPrompt;
+    return (base + appended).slice(0, 20000);
   }
 
   // v8.4-fix: Restored visual persona. JSON format is required for tools,
@@ -2521,6 +2531,8 @@ class LunaSoul extends EventEmitter {
                 message: '📦 Limite de contexto atingido. Clique em "Compactar" no cabeçalho para continuar.',
                 sessionId,
               };
+              // wave1-fix A4: never exit silently — always emit done
+              yield { type: 'done', result: { success: true, mode: 'CHAT', response: fullResponse || '', sessionId }, sessionId };
               return;
             }
 
@@ -2585,6 +2597,8 @@ class LunaSoul extends EventEmitter {
           }
           // v5.3-fix: User cancelled — not an error, just stop gracefully
           yield { type: 'system', message: '⏹️ Geração cancelada pelo usuário.', sessionId };
+          // wave1-fix A4: never exit silently — always emit done
+          yield { type: 'done', result: { success: true, mode: 'CHAT', response: fullResponse || '', sessionId }, sessionId };
           return;
         }
 
@@ -2650,6 +2664,15 @@ class LunaSoul extends EventEmitter {
       // v10.32: Regex fallback for context limit removed. Compaction is manual.
       // The LLM's context_limit event is handled above.
 
+      // wave1-fix A4: provider returned nothing — never emit CHAT done with an empty string.
+      // Only when no DOM actions ran: tool results still need to be fed back to Kimi.
+      if ((!fullResponse || !fullResponse.trim()) && domActionResults.length === 0) {
+        yield { type: 'error', error: 'Empty response from provider', sessionId };
+        yield { type: 'system', message: 'O provedor não respondeu — tente reenviar sua mensagem.', sessionId };
+        yield { type: 'done', result: { success: false, mode: 'CHAT', response: '', sessionId }, sessionId };
+        return;
+      }
+
       // Parse the full response (tag-based primary, JSON fallback)
       let parsed = parseTagResponse(fullResponse) || parseKimiResponse(fullResponse);
       if (!parsed) {
@@ -2664,6 +2687,14 @@ class LunaSoul extends EventEmitter {
       // This happens when Kimi returns content as reasoning instead of content
       if (parsed && !parsed.response && fullResponse) {
         parsed.response = fullResponse;
+      }
+
+      // wave1-fix A3: a pure CHAT (valid {"response": ...} wrapper) never legitimately
+      // carries tools — the master prompt mandates ONE JSON per message. Ignore any
+      // DOM-extracted actions instead of continuing the tool loop.
+      if (parsed.mode === 'CHAT' && domActionResults.length > 0) {
+        console.log(`[soul] ignoring ${domActionResults.length} dom actions inside pure response`);
+        domActionResults.length = 0;
       }
 
       // v10.16-fix: CHAT/DONE puro nunca deve auto-continuar — entrega imediata ao frontend
@@ -4988,11 +5019,14 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const sessionId = options.sessionId || 'telegram-default';
     const userId = options.userId || 'luna-default';
 
-    const personaPath = path.join(lunaConfig.PATHS.lunaKernel, 'packages', 'kernel', 'personas', 'telegram-assistant.json');
+    // wave1-fix A5: PATHS.lunaKernel already points at packages/kernel — no duplicated segments
+    const personaPath = path.join(lunaConfig.PATHS.lunaKernel, 'personas', 'telegram-assistant.json');
     let telegramPersona = '';
     try {
       if (fs.existsSync(personaPath)) {
         telegramPersona = JSON.parse(fs.readFileSync(personaPath, 'utf8')).systemPrompt || '';
+      } else {
+        console.warn('[TelegramPipeline] Persona file missing:', personaPath);
       }
     } catch (e) {
       console.warn('[TelegramPipeline] Could not load telegram persona:', e.message);
