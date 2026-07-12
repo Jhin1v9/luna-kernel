@@ -4,6 +4,7 @@
   import { isStreaming, currentMode, currentProvider, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
   import { sendMessage, cancelStream, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
+  import { evictOldestEntries } from '../lib/evictSet.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
   import MessagesList from './MessagesList.svelte';
@@ -357,11 +358,8 @@
       return;
     }
     processedEventIds.add(dedupKey);
-    // Limit set size to prevent memory leaks — increased to 5000 for long sessions
-    if (processedEventIds.size > 5000) {
-      const iter = processedEventIds.values();
-      processedEventIds.delete(iter.next().value);
-    }
+    // Limit set size to prevent memory leaks — Wave 4: trim to 80% in one pass
+    evictOldestEntries(processedEventIds, 5000);
 
     // v3.6-fix: Also deduplicate by backend event ID
     if (event.id) {

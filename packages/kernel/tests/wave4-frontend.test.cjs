@@ -51,3 +51,32 @@ test('T2: OrbBackground registers a NAMED resize handler and removes it in onDes
   assert.ok(src.includes("addEventListener('resize', handleResize)"), 'named handler must be registered');
   assert.ok(src.includes("removeEventListener('resize', handleResize)"), 'handler must be removed in onDestroy');
 });
+
+// ── T3: set eviction policy ──────────────────────────────────────────────────
+
+const { evictOldestEntries } = require('../luna-web/src/lib/evictSet.js');
+
+test('T3: eviction trims an over-cap set down to 80%, oldest first', () => {
+  const s = new Set();
+  for (let i = 0; i < 5001; i++) s.add('ev-' + i);
+  const removed = evictOldestEntries(s, 5000);
+  assert.strictEqual(s.size, 4000, 'must trim to 80% of the cap, not delete a single entry');
+  assert.strictEqual(removed, 1001);
+  assert.ok(!s.has('ev-0') && !s.has('ev-1000'), 'oldest entries must be evicted');
+  assert.ok(s.has('ev-1001') && s.has('ev-5000'), 'newest entries must survive');
+});
+
+test('T3: eviction is a no-op at or below the cap', () => {
+  const s = new Set(['a', 'b', 'c']);
+  assert.strictEqual(evictOldestEntries(s, 5000), 0);
+  assert.strictEqual(s.size, 3);
+  const t = new Set();
+  for (let i = 0; i < 5000; i++) t.add(i);
+  assert.strictEqual(evictOldestEntries(t, 5000), 0, 'exactly at cap: no eviction');
+  assert.strictEqual(t.size, 5000);
+});
+
+test('T3: ChatArea uses evictOldestEntries for processedEventIds', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  assert.ok(src.includes('evictOldestEntries(processedEventIds, 5000)'), 'component must call the shared helper');
+});
