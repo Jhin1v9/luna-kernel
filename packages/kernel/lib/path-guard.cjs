@@ -2,13 +2,33 @@
 const fs = require('fs');
 const path = require('path');
 
+// Kernel-faithful path resolution: the kernel follows a symlink BEFORE
+// processing a following `..` (`ln -s / ws/root; ws/root/../etc` → `/etc`),
+// while path.resolve/realpathSync collapse `..` lexically first. Tools that
+// pass raw strings to fs would escape a lexical guard — so resolve component
+// by component, realpathing each existing prefix as we walk.
+function realpathKernel(p) {
+  let abs = p.startsWith('/') ? p : process.cwd() + '/' + p;
+  const parts = abs.split('/').filter(Boolean);
+  let cur = '/';
+  for (const part of parts) {
+    if (part === '.') continue;
+    if (part === '..') {
+      try { cur = fs.realpathSync(cur); } catch { /* nonexistent: keep lexical */ }
+      cur = path.dirname(cur);
+      continue;
+    }
+    cur = cur === '/' ? '/' + part : cur + '/' + part;
+    try {
+      if (fs.lstatSync(cur).isSymbolicLink()) cur = fs.realpathSync(cur);
+    } catch { /* nonexistent tail: keep lexical */ }
+  }
+  return cur;
+}
+
 // realpath of the nearest existing ancestor + re-join the non-existing tail.
 function realpathLoose(p) {
-  const resolved = path.resolve(p);
-  if (fs.existsSync(resolved)) return fs.realpathSync(resolved);
-  const parent = path.dirname(resolved);
-  if (parent === resolved) return resolved;
-  return path.join(realpathLoose(parent), path.basename(resolved));
+  return realpathKernel(p);
 }
 
 function isInside(child, root) {
@@ -28,7 +48,10 @@ function checkPathWithinRoots(rawPath, allowedRoots) {
   return { ok: false, reason: `"${rawPath}" (real: ${real}) está fora dos diretórios permitidos`, resolved: real };
 }
 
-// All param keys that carry a filesystem path across the 123-tool surface.
+// Path-carrying param keys of the FILE tools. NOTE: generic keys (to/from/
+// source) are only checked for file tools — the soul scopes the guard via
+// PATH_GUARD_TOOLS, since dashboard tools use the same keys for non-path data.
+// `cwd` and listFiles/glob `pattern` are handled separately at the call site.
 const PATH_PARAM_KEYS = ['path', 'filePath', 'file', 'source', 'from', 'destination', 'to', 'dirPath'];
 
-module.exports = { realpathLoose, isInside, checkPathWithinRoots, PATH_PARAM_KEYS };
+module.exports = { realpathLoose, realpathKernel, isInside, checkPathWithinRoots, PATH_PARAM_KEYS };

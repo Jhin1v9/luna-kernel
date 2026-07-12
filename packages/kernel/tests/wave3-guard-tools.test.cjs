@@ -611,3 +611,56 @@ test('F3: luna-soul.cjs uses the new guard and dropped the raw /tmp hatch (conte
   assert.ok(src.includes('checkPathWithinRoots'), 'soul must realpath-check via checkPathWithinRoots');
   assert.ok(src.includes("require('./lib/path-guard.cjs')"), 'soul must import lib/path-guard.cjs');
 });
+
+// F4: review follow-ups — guard scoped to file tools, cwd/pattern covered,
+// session-user workspace, symlink-aware `..` resolution.
+test('F4: soul path guard is scoped to file tools and checks cwd/pattern (content assertion)', () => {
+  const soulSrc = fs.readFileSync(path.join(__dirname, '..', 'luna-soul.cjs'), 'utf8');
+  const guardIdx = soulSrc.indexOf('PATH_GUARD_TOOLS = new Set(');
+  assert.ok(guardIdx !== -1, 'PATH_GUARD_TOOLS set must exist');
+  const window = soulSrc.slice(guardIdx, guardIdx + 1800);
+  assert.ok(window.includes('if (PATH_GUARD_TOOLS.has(tool))'), 'guard must be scoped to file tools');
+  assert.ok(!window.includes("'dashboardSendEmail'"), 'dashboard tools must not be in the guard set');
+  assert.ok(window.includes('cwd: params.cwd'), 'cwd param must be checked');
+  assert.ok(window.includes("tool === 'listFiles'"), 'listFiles pattern must be handled');
+  assert.ok(window.includes("tool === 'glob'"), 'glob static prefix must be handled');
+  assert.ok(window.includes('options?.userId'), 'workspace must resolve from the session user, not hardcoded luna-cli');
+});
+
+test('F4: realpathLoose follows symlinks before collapsing .. (kernel semantics)', () => {
+  const { realpathLoose } = require('../lib/path-guard.cjs');
+  withTmpDir(dir => {
+    // ws/root -> / ; ws/root/../etc/passwd must resolve via the symlink to
+    // /etc/passwd — NOT lexically to ws/etc/passwd.
+    const link = path.join(dir, 'root');
+    try {
+      fs.symlinkSync('/', link);
+    } catch (e) {
+      console.log('symlink unavailable, skipping:', e.message);
+      return;
+    }
+    // Raw string concatenation — path.join would collapse `..` lexically
+    // BEFORE the guard sees it (LLM params arrive as raw strings).
+    const real = realpathLoose(dir + '/root/../etc/passwd');
+    assert.strictEqual(real, '/etc/passwd', `symlink must win over lexical .., got ${real}`);
+  });
+});
+
+test('F4: glob static prefix extraction blocks absolute outside-glob (behavioral)', () => {
+  // Simulate the soul's glob branch: /etc/*.conf → prefix /etc → must fail
+  // against a workspace-only root set.
+  const { checkPathWithinRoots } = require('../lib/path-guard.cjs');
+  withTmpDir(dir => {
+    const roots = [fs.realpathSync(dir)];
+    const pattern = '/etc/*.conf';
+    const idx = pattern.search(/[*?\[\]{}]/);
+    const prefix = pattern.slice(0, idx);
+    const base = prefix.endsWith('/') ? prefix.slice(0, -1) : path.dirname(prefix);
+    assert.strictEqual(checkPathWithinRoots(base, roots).ok, false, '/etc glob prefix must be blocked');
+    const inside = path.join(dir, 'src', '**', '*.ts');
+    const idx2 = inside.search(/[*?\[\]{}]/);
+    const prefix2 = inside.slice(0, idx2);
+    const base2 = prefix2.endsWith('/') ? prefix2.slice(0, -1) : path.dirname(prefix2);
+    assert.strictEqual(checkPathWithinRoots(base2, roots).ok, true, 'in-workspace glob prefix must pass');
+  });
+});
