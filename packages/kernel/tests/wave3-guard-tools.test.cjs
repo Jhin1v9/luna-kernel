@@ -282,3 +282,17 @@ test('C3: ToolGuard.execute skips a duplicate SUCCESS with success:true on the s
   assert.strictEqual(second.success, true, 'skip result must carry success:true (a no-op success, not a failure)');
   assert.strictEqual(second.reason, 'already processed');
 });
+
+// C4: auto-commit gate must not fire for idempotency-skipped results —
+// the skip path bypasses the checksum drift check, so committing there
+// could commit externally-modified content (FILE_DRIFT bypass).
+test('C4: soul auto-commit gate excludes skipped results (content assertion)', () => {
+  const soulSrc = fs.readFileSync(require('node:path').join(__dirname, '../luna-soul.cjs'), 'utf8');
+  const gateIdx = soulSrc.indexOf('Auto-commit git hook for file-modifying tools');
+  assert.ok(gateIdx !== -1, 'auto-commit gate must exist');
+  const window = soulSrc.slice(gateIdx, gateIdx + 500);
+  assert.ok(
+    window.includes('result.success && !result.skipped'),
+    'auto-commit gate must exclude idempotency-skipped results'
+  );
+});

@@ -4549,8 +4549,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     }
 
     // Auto-commit git hook for file-modifying tools
+    // Wave3-fix: skip idempotency-skipped calls — the skip path bypasses the
+    // checksum drift check, so committing here could commit externally-modified
+    // content under Luna's name (FILE_DRIFT protection bypass).
     const MODIFYING_TOOLS = ['writeFile', 'appendFile', 'replaceInFile', 'deleteFile', 'moveFile'];
-    if (result.success && MODIFYING_TOOLS.includes(tool)) {
+    if (result.success && !result.skipped && MODIFYING_TOOLS.includes(tool)) {
       try {
         const git = await this._ensureGit();
         if (git) {
