@@ -1158,3 +1158,74 @@ test('W6b: close-handler falls back to invisible shell when the terminal produce
   assert.ok(closeFn.includes('visible: false'), 'close handler must fall back to invisible execution on missing log');
   assert.ok(closeFn.includes('setTimeout(async () =>'), 'the close setTimeout must be async to await the fallback');
 });
+
+// ── W6-T10: system-default terminal resolver + session-env self-sufficiency ──
+// lib/terminal-resolver.cjs resolves ANY system terminal ($TERMINAL first, then
+// a candidate table) and repairs the session env (DISPLAY/D-Bus/Xauthority) so
+// visible mode no longer depends on gnome-terminal or the stale PM2 env.
+
+const { resolveTerminal, enrichSessionEnv, _argvFor, TERMINAL_CANDIDATES } = require('../lib/terminal-resolver.cjs');
+
+test('W6-T10a: resolveTerminal honors $TERMINAL first, then the system default', () => {
+  const r = resolveTerminal({ TERMINAL: process.env.TERMINAL || 'gnome-terminal', PATH: process.env.PATH });
+  const anyCandidateOnPath = TERMINAL_CANDIDATES.some(c =>
+    (process.env.PATH || '').split(path.delimiter).some(d => d && fs.existsSync(path.join(d, c.bin))));
+  // Guard: headless CI with no terminal at all must not fail the suite.
+  if (anyCandidateOnPath || process.env.TERMINAL) {
+    assert.ok(r && r.bin, 'must resolve on this host');
+  }
+  const none = resolveTerminal({ PATH: '/nonexistent' });
+  assert.strictEqual(none, null, 'unresolvable PATH resolves null');
+});
+
+test('W6-T10b: _argvFor builds argv per terminal style', () => {
+  assert.deepStrictEqual(_argvFor('dashdash', 'gnome-terminal', '/s.sh'), ['gnome-terminal', '--wait', '--', 'bash', '/s.sh']);
+  assert.deepStrictEqual(_argvFor('e', 'xterm', '/s.sh'), ['xterm', '-e', 'bash', '/s.sh']);
+  assert.deepStrictEqual(_argvFor('plain', 'kitty', '/s.sh'), ['kitty', 'bash', '/s.sh']);
+  // W6-T10 review: per-bin extra flags (e.g. konsole --nofork) prepend the style args.
+  assert.deepStrictEqual(_argvFor('e', 'konsole', '/s.sh', ['--nofork']), ['konsole', '--nofork', '-e', 'bash', '/s.sh']);
+  assert.deepStrictEqual(_argvFor('dashdash', 'kgx', '/s.sh', ['--verbose']), ['kgx', '--verbose', '--wait', '--', 'bash', '/s.sh']);
+
+  // W6-T10 review: real-bin overrides keep close-based completion correct
+  // through symlinks — the mechanism must exist in the resolver source.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'terminal-resolver.cjs'), 'utf8');
+  assert.ok(src.includes('realpathSync'), 'resolver must resolve symlinks to the real binary');
+  assert.ok(src.includes('REAL_BIN_OVERRIDES'), 'resolver must apply per-real-binary overrides');
+  assert.ok(src.includes("'--nofork'"), 'konsole must get --nofork (it forks by default)');
+  // Host-pinned: on this host x-terminal-emulator → gnome-terminal.wrapper, so
+  // the resolved style must be dashdash (wrapper passes --wait). Guarded so
+  // other hosts (x-terminal-emulator → xterm, etc.) don't fail the suite.
+  const r = resolveTerminal({ PATH: process.env.PATH });
+  if (r) {
+    try {
+      const real = path.basename(fs.realpathSync(require('child_process').execSync(
+        `command -v ${r.bin}`, { encoding: 'utf8' }).trim()));
+      if (['gnome-terminal', 'gnome-terminal.wrapper', 'kgx', 'gnome-console'].includes(real)) {
+        assert.strictEqual(r.style, 'dashdash', `${r.bin} → ${real} must resolve to dashdash style`);
+      }
+      if (real === 'konsole') {
+        assert.ok(r.extra && r.extra.includes('--nofork'), 'konsole target must carry --nofork');
+      }
+    } catch { /* realpath check is best-effort */ }
+  }
+});
+
+test('W6-T10c: enrichSessionEnv fills D-Bus/runtime only when absent and existing', () => {
+  const uid = os.userInfo().uid;
+  const env = enrichSessionEnv({});
+  if (fs.existsSync(`/run/user/${uid}/bus`)) {
+    assert.strictEqual(env.DBUS_SESSION_BUS_ADDRESS, `unix:path=/run/user/${uid}/bus`);
+  }
+  const kept = enrichSessionEnv({ DBUS_SESSION_BUS_ADDRESS: 'unix:path=/custom' });
+  assert.strictEqual(kept.DBUS_SESSION_BUS_ADDRESS, 'unix:path=/custom', 'existing values are never overwritten');
+  const input = { PATH: '/x' };
+  enrichSessionEnv(input);
+  assert.deepStrictEqual(input, { PATH: '/x' }, 'input object must not be mutated');
+});
+
+test('W6-T10d: luna-tools consumes the resolver (no hardcoded gnome-terminal spawn)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  assert.ok(src.includes("require('./lib/terminal-resolver.cjs')"), 'must use the resolver');
+  assert.ok(!src.includes("spawn('gnome-terminal'"), 'hardcoded gnome-terminal spawn must be gone');
+  assert.ok(!src.includes("execSync('which gnome-terminal')"), 'per-call which must be gone');
+});

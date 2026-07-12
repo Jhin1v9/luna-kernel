@@ -28,6 +28,7 @@ const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { clampExecTimeout, shQuote } = require('./lib/exec-timeout.cjs');
 const { shellQuote, toNonNegInt, assertSafeName } = require('./lib/shell-quote.cjs');
 const { checkUrlSafety, fetchAllowList } = require('./lib/url-safety.cjs');
+const { resolveTerminal, enrichSessionEnv, _argvFor } = require('./lib/terminal-resolver.cjs');
 
 // Wave3-fix G: SSRF caps for the LLM-facing network tools (fetchURL,
 // downloadFile, browser) — see lib/url-safety.cjs for the host policy.
@@ -108,20 +109,17 @@ function notifyChange(type, data) {
 
 function detectHeadless() {
   // v10.29-fix: Auto-detect headless/VPS environments where no graphical terminal
-  // is available. This prevents gnome-terminal spawn failures on servers/SSH.
+  // is available. This prevents terminal spawn failures on servers/SSH.
   if (process.env.LUNA_HEADLESS === '1') return true;
   if (process.env.LUNA_HEADLESS === '0') return false;
   // SSH sessions are almost always headless
   if (process.env.SSH_CLIENT || process.env.SSH_TTY || process.env.SSH_CONNECTION) return true;
-  // No DISPLAY or explicit headless flag from common cloud envs
-  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return true;
-  // If gnome-terminal is not available, we cannot run visible mode anyway
-  try {
-    execSync('which gnome-terminal', { stdio: 'ignore' });
-    return false;
-  } catch {
-    return true;
-  }
+  // W6-T10: consult the self-repaired session env (not the stale PM2 snapshot)
+  // and the system terminal resolver — no per-call execSync('which ...').
+  const env = enrichSessionEnv(process.env);
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return true;
+  // If no terminal emulator is resolvable, we cannot run visible mode anyway
+  return resolveTerminal(env) === null;
 }
 
 function resolvePath(p) {
@@ -871,9 +869,19 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
     fs.writeFileSync(scriptFile, scriptContent, 'utf8');
     fs.chmodSync(scriptFile, 0o755);
 
-    const display = process.env.DISPLAY || ':0';
-    const child = spawn('gnome-terminal', ['--wait', '--', 'bash', scriptFile], {
-      env: { ...process.env, DISPLAY: display },
+    // W6-T10: resolve ANY system terminal and repair the session env ourselves —
+    // the PM2-inherited env is a stale snapshot (rotated Xauth, missing D-Bus).
+    const env = enrichSessionEnv(process.env);
+    const term = resolveTerminal(env);
+    if (!term) {
+      try { fs.unlinkSync(scriptFile); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch {}
+      // W6-T10: resolver-null fallback (warning annotation lands in W6-T11)
+      executeShell(command, { ...opts, visible: false }, onProgress).then(resolve);
+      return;
+    }
+    const child = spawn(term.bin, _argvFor(term.style, term.bin, scriptFile, term.extra).slice(1), {
+      env,
       detached: true,
     });
 
@@ -951,7 +959,7 @@ echo "[LUNA_EXIT_CODE=\${EXIT_CODE}]"
 
 // v10.2-fix: Global visible mode — all commands open in terminal by default
 // v10.29-fix: Default to invisible on headless/VPS environments so commands
-// still execute instead of failing because gnome-terminal is missing.
+// still execute instead of failing when no terminal emulator is resolvable.
 let visibleMode = !detectHeadless();
 
 function setVisibleMode(mode) { visibleMode = mode; }
@@ -999,7 +1007,7 @@ function executeShell(command, opts = {}, onProgress) {
     const cwd = opts.cwd ? resolvePath(opts.cwd) : (lunaConfig.PATHS.workspaceBase || process.cwd());
     // v10.2-fix: Open visible terminal for ALL commands when visibleMode is on
     const isVisibleCommand = opts.visible !== undefined ? opts.visible : visibleMode;
-    if (isVisibleCommand && process.env.DISPLAY && !detectHeadless()) {
+    if (isVisibleCommand && !detectHeadless()) {
       // v10.24-fix: Prevent duplicate visible terminals for the same command/cwd.
       const key = _makeShellKey(command, cwd);
       if (_runningShells.has(key)) {
@@ -1460,27 +1468,10 @@ function openDebugTerminal(params = {}) {
     return { success: false, error: e.message };
   }
 
-  // Detect available terminal emulator
-  const terminals = [
-    { cmd: 'gnome-terminal', args: (command) => ['--', 'bash', '-c', command] },
-    { cmd: 'konsole', args: (command) => ['-e', 'bash', '-c', command] },
-    { cmd: 'xfce4-terminal', args: (command) => ['-e', 'bash', '-c', command] },
-    { cmd: 'xterm', args: (command) => ['-e', 'bash', '-c', command] },
-    { cmd: 'terminator', args: (command) => ['-e', 'bash', '-c', command] },
-    { cmd: 'alacritty', args: (command) => ['-e', 'bash', '-c', command] },
-    { cmd: 'kitty', args: (command) => ['bash', '-c', command] },
-  ];
-
-  let detected = null;
-  for (const term of terminals) {
-    try {
-      execSync(`which ${term.cmd}`, { stdio: 'ignore' });
-      detected = term;
-      break;
-    } catch {
-      continue;
-    }
-  }
+  // W6-T10: resolve the system-default terminal via the shared resolver
+  // (replaces the hardcoded gnome-terminal-first list + per-call `which`).
+  const env = enrichSessionEnv(process.env);
+  const detected = resolveTerminal(env);
 
   if (!detected) {
     return { success: false, error: 'Nenhum terminal gráfico encontrado. Instale gnome-terminal, konsole, xterm, etc.' };
@@ -1489,16 +1480,25 @@ function openDebugTerminal(params = {}) {
   const followFlag = follow ? '--lines 100 --timestamp' : `--lines ${nLines}`;
   const command = `echo "🚀 Luna Debug Terminal — ${target}" && echo "========================================" && pm2 logs ${target} ${followFlag}; echo; echo "[Pressione ENTER para fechar]"; read`;
 
-  const child = spawn(detected.cmd, detected.args(command), {
+  // argv per terminal style for `bash -c command` (_argvFor is script-file only)
+  const extra = detected.extra || [];
+  const termArgs = detected.style === 'dashdash'
+    ? [...extra, '--', 'bash', '-c', command]
+    : detected.style === 'plain'
+      ? [...extra, 'bash', '-c', command]
+      : [...extra, '-e', 'bash', '-c', command];
+
+  const child = spawn(detected.bin, termArgs, {
+    env,
     detached: true,
     stdio: 'ignore',
   });
   child.unref();
 
   return ok({
-    terminal: detected.cmd,
+    terminal: detected.bin,
     target,
-    message: `✅ Terminal de debug aberto: ${detected.cmd}\n📋 Processo: ${target}\n💡 Comando: pm2 logs ${target} ${followFlag}\n🖥️  PID: ${child.pid}`,
+    message: `✅ Terminal de debug aberto: ${detected.bin}\n📋 Processo: ${target}\n💡 Comando: pm2 logs ${target} ${followFlag}\n🖥️  PID: ${child.pid}`,
     pid: child.pid,
   });
 }

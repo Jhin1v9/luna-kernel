@@ -322,7 +322,7 @@ test('W6-T9: soul never persists raw script JSON as a chat reply', () => {
 
 **Why (investigation C):** hardcoded `gnome-terminal` + inherited-env dependence = the live ENOENT bug class. PM2 env is a snapshot (Xauth rotates, D-Bus may be absent). Code must be self-sufficient.
 
-- [ ] **T10.1. Failing tests**
+- [x] **T10.1. Failing tests**
 
 ```js
 test('W6c: resolveTerminal honors $TERMINAL first, then the system default', () => {
@@ -356,11 +356,11 @@ test('W6d: luna-tools consumes the resolver (no hardcoded gnome-terminal spawn)'
 });
 ```
 
-- [ ] **T10.2. Implement**
+- [x] **T10.2. Implement**
 
 New module per investigation C: `TERMINAL_CANDIDATES` (x-terminal-emulator[e] → sensible-terminal[e] → gnome-terminal[dashdash] → kgx/gnome-console[dashdash] → kitty[plain] → alacritty/konsole/xterm[e]); `resolveTerminal(env)` probes `PATH` dirs with `fs.existsSync` (cached per process, invalidated on `$TERMINAL`/`$PATH` change); `$TERMINAL` honored first (whitespace-split, first token); `_argvFor(style, bin, scriptFile)` exported for tests; `enrichSessionEnv(env)` fills XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS/DISPLAY/WAYLAND_DISPLAY/XAUTHORITY (newest `.mutter-Xwaylandauth.*`) only when absent and the target exists. Consume at the four luna-tools sites; `detectHeadless` consults enriched env + `resolveTerminal() !== null` (drop per-call execSync); resolver-null → direct invisible fallback with warning annotation (Task 11 field).
 
-- [ ] **T10.3. Verify + commit** — wave3 + full regression (196→200). `feat(tools): system-default terminal resolver + session-env self-sufficiency - visible mode no longer depends on inherited env or gnome-terminal`.
+- [x] **T10.3. Verify + commit** — wave3 + full regression (196→200). `feat(tools): system-default terminal resolver + session-env self-sufficiency - visible mode no longer depends on inherited env or gnome-terminal`. (verified 200/200 2026-07-12; commit deferred — adversarial review follows)
 
 ---
 
