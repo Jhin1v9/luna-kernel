@@ -664,3 +664,37 @@ test('F4: glob static prefix extraction blocks absolute outside-glob (behavioral
     assert.strictEqual(checkPathWithinRoots(base2, roots).ok, true, 'in-workspace glob prefix must pass');
   });
 });
+
+// F5: second review round — 6 missing file tools added, listFiles globby
+// patterns guarded by static prefix, workspace fallback mirrors _buildContext.
+test('F5: PATH_GUARD_TOOLS covers all file tools incl. destructive ones (content assertion)', () => {
+  const soulSrc = fs.readFileSync(path.join(__dirname, '..', 'luna-soul.cjs'), 'utf8');
+  const setIdx = soulSrc.indexOf('PATH_GUARD_TOOLS = new Set(');
+  const setBody = soulSrc.slice(setIdx, soulSrc.indexOf('])', setIdx));
+  for (const t of ['getFileInfo', 'viewDirectory', 'readMediaFile', 'checkSyntax', 'createDirectory', 'removeDirectory']) {
+    assert.ok(setBody.includes(`'${t}'`), `${t} must be in PATH_GUARD_TOOLS`);
+  }
+});
+
+test('F5: listFiles globby patterns go through static-prefix extraction (content assertion)', () => {
+  const soulSrc = fs.readFileSync(path.join(__dirname, '..', 'luna-soul.cjs'), 'utf8');
+  const guardIdx = soulSrc.indexOf('PATH_GUARD_TOOLS = new Set(');
+  const window = soulSrc.slice(guardIdx, guardIdx + 2000);
+  assert.ok(
+    window.includes("tool === 'listFiles' || tool === 'glob'"),
+    'listFiles and glob must share the prefix extraction branch'
+  );
+  assert.ok(window.includes("options?.userId || 'luna-default'"), 'workspace fallback must mirror _buildContext');
+});
+
+test('F5: listFiles /etc/** static prefix is blocked (behavioral)', () => {
+  const { checkPathWithinRoots } = require('../lib/path-guard.cjs');
+  withTmpDir(dir => {
+    const roots = [fs.realpathSync(dir)];
+    const pattern = '/etc/**';
+    const idx = pattern.search(/[*?\[\]{}]/);
+    const prefix = pattern.slice(0, idx);
+    const base = prefix.endsWith('/') ? prefix.slice(0, -1) : path.dirname(prefix);
+    assert.strictEqual(checkPathWithinRoots(base, roots).ok, false, '/etc/** must be blocked via prefix');
+  });
+});

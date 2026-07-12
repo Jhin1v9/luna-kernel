@@ -4178,24 +4178,28 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const PATH_GUARD_TOOLS = new Set([
       'readFile', 'writeFile', 'appendFile', 'replaceInFile', 'deleteFile',
       'moveFile', 'copyFile', 'listFiles', 'glob', 'grep', 'searchFiles',
-      'applyPatch', 'downloadFile',
+      'applyPatch', 'downloadFile', 'getFileInfo', 'viewDirectory',
+      'readMediaFile', 'checkSyntax', 'createDirectory', 'removeDirectory',
     ]);
     if (PATH_GUARD_TOOLS.has(tool)) {
-      const guardUserId = options?.userId || 'luna-cli';
+      const guardUserId = options?.userId || 'luna-default';
       const ws = workspaceManager.getWorkspace(guardUserId) || workspaceManager.getWorkspace('luna-cli');
       const allowedRoots = [];
       for (const root of [ws?.path, lunaConfig.PATHS.tmp, os.tmpdir()]) {
         if (root) { try { allowedRoots.push(fs.realpathSync(root)); } catch {} }
       }
-      // listFiles carries the path in `pattern`; glob patterns can only be
-      // guarded by their static prefix (a `*` can't be realpathed).
+      // listFiles carries the path in `pattern`; glob patterns (in either
+      // tool) can only be guarded by their static prefix — a `*` can't be
+      // realpathed, but the prefix up to the first metachar can.
       const extra = { cwd: params.cwd };
-      if (tool === 'listFiles' && params.pattern && !/[*?\[\]{}]/.test(params.pattern)) {
-        extra.pattern = params.pattern;
-      } else if (tool === 'glob' && typeof params.pattern === 'string') {
+      if ((tool === 'listFiles' || tool === 'glob') && typeof params.pattern === 'string') {
         const idx = params.pattern.search(/[*?\[\]{}]/);
-        const prefix = idx === -1 ? params.pattern : params.pattern.slice(0, idx);
-        if (prefix) extra.pattern = prefix.endsWith('/') ? prefix.slice(0, -1) : path.dirname(prefix);
+        if (idx === -1) {
+          extra.pattern = params.pattern;
+        } else {
+          const prefix = params.pattern.slice(0, idx);
+          if (prefix) extra.pattern = prefix.endsWith('/') ? prefix.slice(0, -1) : path.dirname(prefix);
+        }
       }
       for (const key of [...PATH_PARAM_KEYS, ...Object.keys(extra)]) {
         // `extra` wins when present: glob's entry is the computed static
