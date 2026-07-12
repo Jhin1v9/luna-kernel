@@ -80,3 +80,57 @@ test('T3: ChatArea uses evictOldestEntries for processedEventIds', () => {
   const src = fs.readFileSync(CHAT_AREA, 'utf8');
   assert.ok(src.includes('evictOldestEntries(processedEventIds, 5000)'), 'component must call the shared helper');
 });
+
+// ── T4: debounced scheduler + marked config hygiene ──────────────────────────
+
+const { createDebouncedScheduler } = require('../luna-web/src/lib/debounce.js');
+
+function fakeTimer() {
+  let seq = 0;
+  const pending = new Map();
+  return {
+    setTimeoutFn: (cb, ms) => { const id = ++seq; pending.set(id, { cb, ms }); return id; },
+    clearTimeoutFn: (id) => pending.delete(id),
+    fireNext: () => { const [id, t] = pending.entries().next().value; pending.delete(id); t.cb(); },
+    pendingCount: () => pending.size,
+  };
+}
+
+test('T4: scheduler coalesces bursts into one trailing call', () => {
+  const t = fakeTimer();
+  let calls = 0;
+  const s = createDebouncedScheduler(() => calls++, 120, t);
+  s.schedule(); s.schedule(); s.schedule();
+  assert.strictEqual(t.pendingCount(), 1, 'only one timer may be armed during a burst');
+  assert.strictEqual(calls, 0);
+  t.fireNext();
+  assert.strictEqual(calls, 1, 'burst collapses into a single call');
+});
+
+test('T4: immediate schedule flushes pending work synchronously', () => {
+  const t = fakeTimer();
+  let calls = 0;
+  const s = createDebouncedScheduler(() => calls++, 120, t);
+  s.schedule();
+  s.schedule(true);
+  assert.strictEqual(calls, 1, 'immediate run executes now');
+  assert.strictEqual(t.pendingCount(), 0, 'pending timer cancelled by the immediate run');
+  t.fireNext = () => { throw new Error('nothing may remain armed'); };
+});
+
+test('T4: cancel drops a pending run', () => {
+  const t = fakeTimer();
+  let calls = 0;
+  const s = createDebouncedScheduler(() => calls++, 120, t);
+  s.schedule();
+  s.cancel();
+  assert.strictEqual(t.pendingCount(), 0);
+  assert.strictEqual(calls, 0);
+});
+
+test('T4: AssistantMessage uses a module-scope Marked instance, not per-instance marked.use', () => {
+  const src = fs.readFileSync(ASSISTANT_MSG, 'utf8');
+  assert.ok(!src.includes('marked.use('), 'per-instance global marked.use() must be gone');
+  assert.ok(src.includes('<script context="module">'), 'renderer config must move to module scope');
+  assert.ok(src.includes('createDebouncedScheduler'), 'render must go through the debounced scheduler');
+});

@@ -1,6 +1,40 @@
+<script context="module">
+  import { Marked } from 'marked';
+
+  // Wave 4 bug 8: ONE Marked instance per module. Previously the renderer was
+  // registered per instance, mutating the global marked config once per message.
+  const lunaRenderer = {
+    code(token) {
+      const code = token.text;
+      const language = token.lang || '';
+      const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<div class="code-block-wrapper">
+        <div class="code-header">
+          <span class="code-lang">${language || 'text'}</span>
+          <button class="copy-btn" data-code="${encodeURIComponent(code)}">Copiar</button>
+        </div>
+        <pre><code class="hljs ${language ? 'language-' + language : ''}">${escaped}</code></pre>
+      </div>`;
+    },
+    codespan(token) {
+      const code = token.text;
+      const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<code class="inline-code">${escaped}</code>`;
+    }
+  };
+
+  const lunaMarked = new Marked({
+    renderer: lunaRenderer,
+    gfm: true,
+    breaks: false,
+    headerIds: false,
+    mangle: false
+  });
+</script>
+
 <script>
   import { onMount, tick } from 'svelte';
-  import { marked } from 'marked';
+  import { createDebouncedScheduler } from '../lib/debounce.js';
   import { formatTime } from '../utils.js';
   import LunaAvatar from './LunaAvatar.svelte';
 
@@ -27,42 +61,28 @@
   let copiedCode = null;
   let copiedMessage = false;
 
-  // Configure marked: only override code blocks to keep the Luna copy header.
-  // All other markdown (tables, lists, headings, etc.) renders natively and is styled via CSS.
-  const lunaRenderer = {
-    code(token) {
-      const code = token.text;
-      const language = token.lang || '';
-      const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      return `<div class="code-block-wrapper">
-        <div class="code-header">
-          <span class="code-lang">${language || 'text'}</span>
-          <button class="copy-btn" data-code="${encodeURIComponent(code)}">Copiar</button>
-        </div>
-        <pre><code class="hljs ${language ? 'language-' + language : ''}">${escaped}</code></pre>
-      </div>`;
-    },
-    codespan(token) {
-      const code = token.text;
-      const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      return `<code class="inline-code">${escaped}</code>`;
-    }
-  };
+  let renderedHtml = content ? renderMarkdown(content) : '';
 
-  marked.use({
-    renderer: lunaRenderer,
-    gfm: true,
-    breaks: false,
-    headerIds: false,
-    mangle: false
-  });
+  // Wave 4 bug 8: coalesce render+highlight during streaming (one pass per
+  // 120ms instead of one per delta); render immediately when not streaming
+  // so final/historical content is never delayed.
+  const renderScheduler = createDebouncedScheduler(() => {
+    renderedHtml = renderMarkdown(content);
+    highlightCode();
+  }, 120);
+
+  $: scheduleRender(content, isStreaming);
+
+  function scheduleRender(_content, streaming) {
+    renderScheduler.schedule(!streaming);
+  }
 
   function renderMarkdown(text) {
     if (!text) return '';
     // Unescape literal \n sequences that may come from JSON
     const working = text.trim().replace(/\\n/g, '\n');
     try {
-      let html = marked.parse(working, { async: false });
+      let html = lunaMarked.parse(working, { async: false });
       // Wrap native <table> elements for the Luna glow frame
       html = html.replace(/<table>/g, '<div class="md-table-wrapper"><table>');
       html = html.replace(/<\/table>/g, '</table></div>');
@@ -121,10 +141,6 @@
   onMount(() => {
     highlightCode();
   });
-
-  $: if (content) {
-    highlightCode();
-  }
 </script>
 
 <div class="assistant-message-wrapper {personalityClass}">
@@ -144,7 +160,7 @@
       <span>{copiedMessage ? 'Copiado' : 'Copiar'}</span>
     </button>
     <div class="message-body" bind:this={contentEl} on:click={handleCopy} on:keydown={(e) => e.key === 'Enter' && handleCopy(e)} role="button" tabindex="0" aria-label="Clique para copiar codigo">
-      {@html renderMarkdown(content)}
+      {@html renderedHtml}
     </div>
     <div class="message-footer">
       {#if timestamp}
