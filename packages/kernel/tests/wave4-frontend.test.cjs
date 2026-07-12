@@ -448,3 +448,11 @@ test('T9: chat-routes stores and forwards chunk, and does not dedup action_progr
   const serializerHits = src.split('eventData.chunk').length - 1;
   assert.ok(serializerHits >= 2, `both SSE serializers (replay + live) must forward chunk (found ${serializerHits})`);
 });
+
+// Review follow-up: progress chunks stay in memory (live SSE + replay) but must
+// not trigger a full-session sync JSON rewrite + PG UPDATE per chunk.
+test('T9: action_progress rows skip per-event persistence (perf follow-up)', () => {
+  const src = fs.readFileSync(CHAT_ROUTES, 'utf8');
+  assert.ok(src.includes("persist: ev.type !== 'action_progress'"), 'progress chunks must skip per-chunk session persistence');
+  assert.ok(src.includes('if (!persist) return;'), 'addMessageToSession must honor the persist flag');
+});

@@ -260,7 +260,7 @@ function renameWebSession(id, title) {
   return false;
 }
 
-function addMessageToSession(sessionId, message) {
+function addMessageToSession(sessionId, message, { persist = true } = {}) {
   const session = webSessions.get(sessionId);
   if (session) {
     session.messages.push(message);
@@ -272,6 +272,12 @@ function addMessageToSession(sessionId, message) {
       session.eventLedger = session.eventLedger.slice(-200);
     }
     session.updatedAt = new Date().toISOString();
+    // Wave 4 review follow-up: action_progress chunks are ephemeral live output —
+    // they stay in memory (live SSE + replay read from here) but skip the
+    // per-event persistence below (a sync full-session JSON rewrite + PG UPDATE
+    // per chunk was hundreds of writes per verbose command). They ride along on
+    // the next real event's persistence instead.
+    if (!persist) return;
     // v10.32: Persistir no JSON fallback imediatamente.
     upsertSessionInJson(session);
     // Persistir no PostgreSQL (fire-and-forget with retry)
@@ -526,7 +532,7 @@ router.post('/api/chat', async (req, res) => {
           result: ev.result,
           messageId: messageId,
           timestamp: new Date().toISOString(),
-        });
+        }, { persist: ev.type !== 'action_progress' }); // Wave 4 review follow-up: chunks ride the next event's persistence
       }
     }
   } catch (e) {
