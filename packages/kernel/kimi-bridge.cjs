@@ -26,6 +26,7 @@ const crypto = require('crypto');
 const { jsonrepair } = require('jsonrepair');
 const { WebBridgeClient } = require('./webbridge-client.cjs');
 const { isPrematureCompletion } = require('./lib/stream-completion-guard.cjs');
+const { createResponseCursor } = require('./lib/stream-text-cursor.cjs');
 const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors, getProviderApiPatterns } = require('./provider-loader.cjs');
 
 // Lazy-load turndown — fail gracefully if not installed
@@ -7446,6 +7447,14 @@ class KimiBridge {
       // v7.0: Stream consumer — reads from event queue, NOT from DOM directly
       let lastThinking = '';
       let lastResponse = '';
+      // Wave2-fix E: per-source response cursors. Each producer (chrome_extension,
+      // dom-structure poll, dom_observer) emits FULL cumulative text from its own
+      // extraction; diffing all of them against one shared cursor duplicated or
+      // corrupted chunks. The cursor keeps a per-source watermark and swallows
+      // cross-source divergent chunks instead of emitting garbage.
+      // lastResponse is kept for completion/final-extraction fallbacks.
+      const responseCursor = createResponseCursor();
+      const divergedSourcesLogged = new Set(); // log.warn once per diverging source
       let lastCanSteer = false;
       let isComplete = false;
       let stopConsuming = false;
@@ -7479,6 +7488,10 @@ class KimiBridge {
               textHasChanged = true;
               lastThinking = ev.thinking || '';
               lastResponse = ev.response || '';
+              // Wave2-fix E: seed the cursor with the Phase 0 text (result
+              // discarded) so the first Phase 1 delta from the same source
+              // doesn't re-emit the seed text.
+              responseCursor.next(ev.source || 'phase0', lastResponse);
               log.info(`[DEBUG-LUNA] Phase 0 textHasChanged=true`);
               break;
             }
@@ -7577,9 +7590,20 @@ class KimiBridge {
               }
 
               // Yield response deltas
+              // Wave2-fix E: diff against the per-source cursor instead of the
+              // shared lastResponse — producers with divergent extractions no
+              // longer spray duplicated/corrupted chunks.
               if (r && r !== lastResponse) {
-                let delta = r.slice(lastResponse.length);
-                if (delta) {
+                const { emit, diverged } = responseCursor.next(ev.source, r);
+                if (diverged) {
+                  const srcKey = ev.source || 'unknown';
+                  if (!divergedSourcesLogged.has(srcKey)) {
+                    divergedSourcesLogged.add(srcKey);
+                    log.warn(`[sendMessageStream] Response source '${srcKey}' diverged from committed text — swallowing chunk to avoid duplicated stream`);
+                  }
+                }
+                if (emit) {
+                  let delta = emit;
                   // v9.4-fix: JSON Accumulation Buffer
                   // Once accumulating, ALL chunks go to the buffer — never emit as response_delta
                   if (isAccumulatingJson) {
@@ -7706,9 +7730,17 @@ class KimiBridge {
             case 'response_delta': {
               const r = ev.fullResponse || ev.text || '';
               if (r && r !== lastResponse) {
-                const delta = r.slice(lastResponse.length);
-                if (delta) {
-                  yield { type: 'response_delta', text: delta };
+                // Wave2-fix E: same per-source cursor as the state_change case.
+                const { emit, diverged } = responseCursor.next(ev.source, r);
+                if (diverged) {
+                  const srcKey = ev.source || 'unknown';
+                  if (!divergedSourcesLogged.has(srcKey)) {
+                    divergedSourcesLogged.add(srcKey);
+                    log.warn(`[sendMessageStream] Response source '${srcKey}' diverged from committed text — swallowing chunk to avoid duplicated stream`);
+                  }
+                }
+                if (emit) {
+                  yield { type: 'response_delta', text: emit };
                 }
                 lastResponse = r;
               }

@@ -1,4 +1,4 @@
-// wave2-bridge.test.cjs — Wave 2 regression tests (Fix A, Fix B, Fix C)
+// wave2-bridge.test.cjs — Wave 2 regression tests (Fix A, Fix B, Fix C, Fix D, Fix E)
 // Run: node --test packages/kernel/tests/wave2-bridge.test.cjs
 'use strict';
 
@@ -306,4 +306,90 @@ test('D2: sendMessageStream purges stale queue right after Enter (content assert
   assert.ok(window.includes('queue.events.length = 0;'), 'purge must clear queue.events');
   assert.ok(window.includes('queue.lastReadIndex = 0;'), 'purge must reset lastReadIndex');
   assert.ok(window.includes('session._completionState = null'), 'purge must reset completion state');
+});
+
+// ── Fix E: per-source response cursors with cross-source prefix guard ──
+
+const { createResponseCursor } = require(path.join(__dirname, '..', 'lib', 'stream-text-cursor.cjs'));
+
+test('E1a: same source monotonic growth → exact deltas, no repeats', () => {
+  const c = createResponseCursor();
+
+  assert.deepStrictEqual(c.next('chrome_extension', 'Hel'), { emit: 'Hel', diverged: false });
+  assert.deepStrictEqual(c.next('chrome_extension', 'Hello'), { emit: 'lo', diverged: false });
+  assert.deepStrictEqual(c.next('chrome_extension', 'Hello world'), { emit: ' world', diverged: false });
+
+  // Same full text again → nothing re-emitted
+  assert.deepStrictEqual(c.next('chrome_extension', 'Hello world'), { emit: null, diverged: false });
+  assert.strictEqual(c.committed, 'Hello world');
+});
+
+test('E1b: two sources, same text, different chunking → no duplication, committed == final text', () => {
+  const c = createResponseCursor();
+
+  // Extension streams in small chunks
+  assert.deepStrictEqual(c.next('chrome_extension', 'Hello '), { emit: 'Hello ', diverged: false });
+  assert.deepStrictEqual(c.next('chrome_extension', 'Hello world'), { emit: 'world', diverged: false });
+
+  // Poll arrives with the same text in one shot — everything already committed
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello world'), { emit: null, diverged: false });
+
+  // Poll then gets ahead — only the genuinely new suffix is emitted
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello world!'), { emit: '!', diverged: false });
+
+  assert.strictEqual(c.committed, 'Hello world!', 'total committed must equal the final text exactly once');
+});
+
+test('E1c: internally-duplicated source (pre-Fix-B "HelloHello" shape) → divergence flagged, no garbage emitted', () => {
+  const c = createResponseCursor();
+
+  // Clean source commits the real text first
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello'), { emit: 'Hello', diverged: false });
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello world'), { emit: ' world', diverged: false });
+
+  // Doubled-paragraph producer shows up with internally duplicated text
+  const res = c.next('chrome_extension', 'HelloHello world');
+  assert.strictEqual(res.diverged, true, 'divergence must be flagged');
+  assert.strictEqual(res.emit, null, 'divergent chunk must be swallowed');
+  assert.strictEqual(c.committed, 'Hello world', 'committed text must be untouched by the divergent source');
+});
+
+test('E1d: source shrink (DOM rebuild) → no emit, cursor reset, subsequent growth emits correctly', () => {
+  const c = createResponseCursor();
+
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello'), { emit: 'Hello', diverged: false });
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello world'), { emit: ' world', diverged: false });
+
+  // DOM rebuild: the source shrinks — move the cursor, emit nothing
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello w'), { emit: null, diverged: false });
+
+  // Growth from the reset cursor resumes normally off the committed prefix
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello world again'), { emit: ' again', diverged: false });
+  assert.strictEqual(c.committed, 'Hello world again');
+});
+
+test('E1e: trailing-whitespace difference between sources is tolerated (no permanent divergence lock)', () => {
+  const c = createResponseCursor();
+
+  // Extension keeps the trailing space, the poll producer trims it
+  assert.deepStrictEqual(c.next('chrome_extension', 'Hello '), { emit: 'Hello ', diverged: false });
+
+  // Trimmed full text: not an extension of committed, but of committed(trimEnd) — tolerated
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello'), { emit: null, diverged: false });
+
+  // The trimmed source keeps streaming — must NOT be locked out as divergent
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello world'), { emit: 'world', diverged: false });
+  assert.strictEqual(c.committed, 'Hello world');
+});
+
+test('E1f: diverged flag returned and committed unchanged on cross-source disagreement', () => {
+  const c = createResponseCursor();
+
+  assert.deepStrictEqual(c.next('dom_poll', 'Hello world'), { emit: 'Hello world', diverged: false });
+  const before = c.committed;
+
+  const res = c.next('chrome_extension', 'Completely different text');
+  assert.strictEqual(res.diverged, true);
+  assert.strictEqual(res.emit, null);
+  assert.strictEqual(c.committed, before, 'committed must be unchanged after a divergent event');
 });
