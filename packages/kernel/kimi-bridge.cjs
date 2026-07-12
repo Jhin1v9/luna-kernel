@@ -6202,6 +6202,11 @@ class KimiBridge {
             uiGenerating: uiState.isGenerating,
           }, Date.now())) {
             uiState.isGenerating = false;
+            // W6-T12 review: mirror the stability backstop above — a declared
+            // completion must also raise canSteer so the completion-candidate
+            // vote (buttonSend signal) can reach quorum even when the extracted
+            // text never goes byte-stable, and post-complete steer is not blocked.
+            uiState.canSteer = true;
             log.warn(`[_poll] generic-provider: force-complete cap reached (45s seen + 10s length-stable) — completing despite UI still generating`);
           }
           if (uiState.isGenerating) {
@@ -7566,7 +7571,17 @@ class KimiBridge {
       // it describes the PREVIOUS turn's DOM, not this message.
       queue.events.length = 0;
       queue.lastReadIndex = 0;
-      if (session) session._completionState = null;
+      if (session) {
+        session._completionState = null;
+        // W6-T12 review: per-turn reset of the force-complete tracking. The
+        // poller runs during send-prep and can observe the PREVIOUS turn's
+        // response without ever seeing an empty gap; without this reset
+        // _genericFirstSeenAt leaks forward and the cap's 45s runway silently
+        // degrades to just the 10s length-stable window on later turns.
+        session._genericFirstSeenAt = null;
+        session._genericLastLengthChangeAt = null;
+        session._genericLastLength = 0;
+      }
       // W6-T6: turn-scoped phantom-action detection.
       // (1) Pre-send assistant marker: number of .segment-assistant nodes that
       //     existed BEFORE this message was sent. Reuses the v7.7 pre-send
