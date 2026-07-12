@@ -825,7 +825,7 @@ function fetchURL(url, opts = {}) {
     // 169.254.169.254). Owner override: LUNA_FETCH_ALLOW_HOSTS.
     const safety = checkUrlSafety(url, fetchAllowList());
     if (!safety.ok) return resolve(err(`fetchURL bloqueado: ${safety.reason}`));
-    const redirects = opts._redirects || 0;
+    const redirects = Math.max(0, opts._redirects | 0);
     const maxBytes = opts.maxBytes || DEFAULT_FETCH_MAX_BYTES;
     const client = url.startsWith('https:') ? https : http;
     const req = client.get(url, { timeout: opts.timeout || 15000 }, (res) => {
@@ -1262,7 +1262,7 @@ function downloadFile(url, destination, opts = {}) {
     // redirect; 15s default timeout (was 0 = NO timeout); 100MB byte cap.
     const safety = checkUrlSafety(url, fetchAllowList());
     if (!safety.ok) return resolve(err(`downloadFile bloqueado: ${safety.reason}`));
-    const redirects = opts._redirects || 0;
+    const redirects = Math.max(0, opts._redirects | 0);
     const maxBytes = opts.maxBytes || DEFAULT_DOWNLOAD_MAX_BYTES;
     const client = url.startsWith('https:') ? https : http;
     const file = fs.createWriteStream(dst);

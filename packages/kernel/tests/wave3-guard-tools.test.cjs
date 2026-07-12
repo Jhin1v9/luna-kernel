@@ -883,3 +883,27 @@ test('G4: browser blocks a private URL before launching Playwright', async () =>
     assert.match(r.error, /bloqueado/);
   });
 });
+
+// G5: review follow-ups — trailing-dot bypass, IPv4-in-IPv6 tails, redirect clamp.
+test('G5: trailing-dot hostnames are blocked (localhost. resolves to loopback)', () => {
+  const { checkUrlSafety } = require('../lib/url-safety.cjs');
+  assert.strictEqual(checkUrlSafety('http://localhost.:8080/').ok, false);
+  assert.strictEqual(checkUrlSafety('http://foo.localhost./').ok, false);
+  assert.strictEqual(checkUrlSafety('http://example.com./').ok, true, 'public trailing-dot host must still pass');
+});
+
+test('G5: IPv4 embedded in IPv6 tails blocked (v4-compat + NAT64)', () => {
+  const { checkUrlSafety } = require('../lib/url-safety.cjs');
+  assert.strictEqual(checkUrlSafety('http://[::127.0.0.1]/').ok, false, 'v4-compat loopback');
+  assert.strictEqual(checkUrlSafety('http://[::10.0.0.1]/').ok, false, 'v4-compat private');
+  assert.strictEqual(checkUrlSafety('http://[64:ff9b::127.0.0.1]/').ok, false, 'NAT64 loopback');
+  assert.strictEqual(checkUrlSafety('http://[64:ff9b::192.168.1.1]/').ok, false, 'NAT64 private');
+  assert.strictEqual(checkUrlSafety('http://[64:ff9b::8.8.8.8]/').ok, true, 'NAT64 public must pass');
+  assert.strictEqual(checkUrlSafety('http://[fec0::1]/').ok, false, 'deprecated site-local');
+});
+
+test('G5: redirect counter is clamped (content assertion)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  const occurrences = src.split('Math.max(0, opts._redirects | 0)').length - 1;
+  assert.strictEqual(occurrences, 2, 'both fetchURL and downloadFile must clamp _redirects');
+});

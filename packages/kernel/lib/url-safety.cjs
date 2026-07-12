@@ -40,7 +40,7 @@ function checkUrlSafety(rawUrl, allowList = []) {
   let u;
   try { u = new URL(rawUrl); } catch { return { ok: false, reason: 'URL inválida' }; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, reason: `protocolo bloqueado: ${u.protocol}` };
-  const host = u.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  const host = u.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '').replace(/\.+$/, '');
   if (allowList.some(a => a === host || a === `${host}:${u.port}`)) return { ok: true };
   if (BLOCKED_HOSTNAMES.has(host) || host.endsWith('.localhost') || host.endsWith('.internal')) {
     return { ok: false, reason: `host local bloqueado: ${host}` };
@@ -51,8 +51,21 @@ function checkUrlSafety(rawUrl, allowList = []) {
     return { ok: true };
   }
   if (host.includes(':')) { // IPv6 literal
-    if (host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('::ffff:')) {
+    if (host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('::ffff:') || host.startsWith('fec0:')) {
       return { ok: false, reason: `IPv6 local/privado bloqueado: ${host}` };
+    }
+    // IPv4 embedded in IPv6 tails: v4-compat ::/96 (e.g. [::127.0.0.1] →
+    // canonical [::7f00:1]) and NAT64 64:ff9b::/96. WHATWG normalizes the
+    // dotted form to hextets, so parse the last two hextets as IPv4.
+    const compat = host.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    const nat64 = host.match(/^64:ff9b::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    const embedded = compat || nat64;
+    if (embedded) {
+      const hi = parseInt(embedded[1], 16), lo = parseInt(embedded[2], 16);
+      const parts = [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255];
+      if (isPrivateIPv4(parts)) {
+        return { ok: false, reason: `IPv4 privado embutido em IPv6 bloqueado: ${parts.join('.')}` };
+      }
     }
   }
   return { ok: true };
