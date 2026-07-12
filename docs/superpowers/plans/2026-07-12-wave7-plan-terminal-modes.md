@@ -74,8 +74,8 @@
 
 ## Task 5 — Close the wave: bugs.md bookkeeping
 
-- [ ] Append `### Wave 7 (2026-07-12)` to Resolved: orphan empty terminal windows (argv + default), plan "(plano vazio)" (SSE whitelist), plan buttons no-op (approve/revise wired), plan mode URL switch (same chat), plan prompt refusals (ipython removed + mechanism), master prompt two-worlds (sandbox vs user PC), typed-but-unsent messages (submit verify+retry), agent/swarm removed (cross-user agent/swarm open item → obsolete).
-- [ ] Commit: `docs(brain): close Wave 7 - plan mode works end-to-end, terminal fixed, agent/swarm removed`.
+- [x] Append `### Wave 7 (2026-07-12)` to Resolved: orphan empty terminal windows (argv + default), plan "(plano vazio)" (SSE whitelist), plan buttons no-op (approve/revise wired), plan mode URL switch (same chat), plan prompt refusals (ipython removed + mechanism), master prompt two-worlds (sandbox vs user PC), typed-but-unsent messages (submit verify+retry), agent/swarm removed (cross-user agent/swarm open item → obsolete).
+- [x] Commit: `docs(brain): close Wave 7 - plan mode works end-to-end, terminal fixed, agent/swarm removed`.
 
 ## Final steps (after T4)
 
