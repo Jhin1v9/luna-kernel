@@ -160,6 +160,8 @@ test('T5: no token, login endpoint, or non-401 never force logout', () => {
   assert.strictEqual(shouldForceLogout({ status: 401, url: '/api/auth/login', hasToken: true }), false);
   assert.strictEqual(shouldForceLogout({ status: 200, url: '/api/chat/sessions', hasToken: true }), false);
   assert.strictEqual(shouldForceLogout({ status: 403, url: '/api/chat/sessions', hasToken: true }), false);
+  // review follow-up: unknown/undefined url on a 401+token must fail safe (force logout)
+  assert.strictEqual(shouldForceLogout({ status: 401, url: undefined, hasToken: true }), true);
 });
 
 test('T5: api.js 401 handler clears the session reactively instead of reloading', () => {
