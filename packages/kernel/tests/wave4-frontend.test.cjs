@@ -146,3 +146,26 @@ test('T4: AssistantMessage uses a module-scope Marked instance, not per-instance
   assert.ok(src.includes('<script context="module">'), 'renderer config must move to module scope');
   assert.ok(src.includes('createDebouncedScheduler'), 'render must go through the debounced scheduler');
 });
+
+// ── T5: 401 logout decision ──────────────────────────────────────────────────
+
+const { shouldForceLogout } = require('../luna-web/src/lib/authGuard.js');
+
+test('T5: 401 with a token on an authed endpoint forces logout', () => {
+  assert.strictEqual(shouldForceLogout({ status: 401, url: '/api/chat/sessions', hasToken: true }), true);
+});
+
+test('T5: no token, login endpoint, or non-401 never force logout', () => {
+  assert.strictEqual(shouldForceLogout({ status: 401, url: '/api/chat/sessions', hasToken: false }), false);
+  assert.strictEqual(shouldForceLogout({ status: 401, url: '/api/auth/login', hasToken: true }), false);
+  assert.strictEqual(shouldForceLogout({ status: 200, url: '/api/chat/sessions', hasToken: true }), false);
+  assert.strictEqual(shouldForceLogout({ status: 403, url: '/api/chat/sessions', hasToken: true }), false);
+});
+
+test('T5: api.js 401 handler clears the session reactively instead of reloading', () => {
+  const src = fs.readFileSync(API_JS, 'utf8');
+  assert.ok(!src.includes('window.location.reload'), 'page reload on 401 must be gone');
+  assert.ok(!src.includes('__luna401handled'), 'reload debounce flag must be gone');
+  assert.ok(src.includes('shouldForceLogout'), 'decision must go through the pure helper');
+  assert.ok(src.includes('user.set(null)'), 'must show the login screen via the user store');
+});

@@ -1,4 +1,5 @@
-import { connectionStatus, isStreaming } from './stores.js';
+import { connectionStatus, isStreaming, user } from './stores.js';
+import { shouldForceLogout } from './lib/authGuard.js';
 
 // ============================================================
 // Auth Helpers
@@ -424,25 +425,19 @@ export async function fetchMe() {
   }
 }
 
-// Global 401 handler: intercept fetch responses and clear expired tokens
+// Global 401 handler: intercept fetch responses and clear expired tokens.
+// Wave 4 bug 9: NO page reload on 401 — a reload killed in-flight SSE
+// streams and wiped client state without warning. Clearing the user store
+// makes App.svelte show the login screen reactively; chat state in stores
+// survives for the next login.
 const originalFetch = window.fetch;
 window.fetch = async function(...args) {
   const res = await originalFetch.apply(this, args);
-  if (res.status === 401) {
-    const token = localStorage.getItem('luna_token');
-    if (token) {
-      // Only clear if we actually had a token (not a public endpoint 401)
-      const url = typeof args[0] === 'string' ? args[0] : args[0].url;
-      if (url && !url.includes('/api/auth/login')) {
-        localStorage.removeItem('luna_token');
-        // Reload to force login screen when token is rejected
-        if (!window.__luna401handled) {
-          window.__luna401handled = true;
-          setTimeout(() => { window.__luna401handled = false; }, 5000);
-          window.location.reload();
-        }
-      }
-    }
+  const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+  if (shouldForceLogout({ status: res.status, url, hasToken: !!localStorage.getItem('luna_token') })) {
+    localStorage.removeItem('luna_token');
+    user.set(null);
+    console.warn('[auth] Sessão expirada (401). Faça login novamente.');
   }
   return res;
 };
