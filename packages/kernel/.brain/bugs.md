@@ -9,7 +9,8 @@
 ### Soul (`luna-soul.cjs`)
 
 - [ ] 🔴 **Silent exits — Luna stops responding** (owner-reported symptom #4) — PARTIALLY FIXED in Wave 1 (see Resolved). Remaining paths: bridge retry exhaustion falls through without error (`:2389`); `_waitPromisesWithDrain` infinite poll when a tool hangs (`:3958-3977`); dedup-cache ping-pong loop (`:1631-1651` + `MAX_LOOPS = MAX_SAFE_INTEGER :2365`).
-- [ ] 🟠 **Auto-continue triggers on pure response** (owner-reported symptom #5) — DOM poller scans response text for tool JSON ANYWHERE (bridge `:7786-7799`): a response that QUOTES a tool example gets executed for real; META/SUGGEST/LOAD_SKILL/UPDATE_MEMORY never set `output` (`:3528-3547`) → fall into `[CHECK]` auto-continue (`:2792-2799`). (Soul-side phantom guard hardened in Wave 1; bridge part remains.)
+- [ ] 🟠 **Auto-continue triggers on pure response** (owner-reported symptom #5) — DOM poller scans response text for tool JSON ANYWHERE (bridge `:7786-7799`): a response that QUOTES a tool example gets executed for real; META/SUGGEST/LOAD_SKILL/UPDATE_MEMORY never set `output` (`:3528-3547`) → fall into `[CHECK]` auto-continue (`:2792-2799`). (Soul-side phantom guard hardened in Wave 1; bridge part remains.) **LIVE REPRO 2026-07-12:** after a failed tool, the mirror re-sent the SAME cached tool result on every auto-continue turn (identical `luna-shell` log timestamp across turns); pure `{"response"}` turns were answered with stale `RESULTADO DA FERRAMENTA` wrappers → the same reply reappeared in the frontend after idle.
+- [ ] 🟠 **`{"script"}` format swallowed** (live 2026-07-12) — when the model emits `{"script": "...", "language": "bash"}` the flow sometimes maps it to executeShell and sometimes returns NOTHING: no tool result, no response, no execution (screenshot evidence: a script to `mkdir -p .luna-tmp` never got a result back). The master prompt advertises script as a first-class format — investigate the script dispatch path (soul + bridge) end to end.
 - [ ] 🟡 **`invalidatePromptCache` never called** (`:117-127`) — prompt edits via UI never take effect until process restart.
 - [ ] 🟡 **Workspace `'luna-cli'` hardcoded in follow-up context** (`:3756-3757`) — multi-user isolation violation; same root cause makes the tool guard null for web/Telegram (see Tools section).
 - [ ] 🟡 **`_executedActionCache` grows unbounded** (`:1624`) — lazy per-key expiry only.
@@ -89,6 +90,10 @@
 - [x] 🟡 **Four sources of truth for tools → three** — `lib/tool-registry.cjs` (132 entries) is THE source: guard schemas derive from it (`buildToolSchemas()`, frozen copies); frontend icon/color maps are GENERATED from it (`scripts/gen-tool-meta.cjs` → `luna-web/src/lib/toolMeta.generated.js`, byte-drift test T4). Accepted residual: the master-prompt tool docs (`LUNA_MASTER_PROMPT.md`) stay hand-maintained. (`2997da4`, `fae3af1`, `05485dc`, `060d5b5`, `4540176`, `59c33f7`)
 - [x] 🟡 **Tracked dist chunk `index-Co_pucoo.js` suspected orphaned** — VERIFIED NOT orphaned: it is the highlight.js lazy chunk, dynamically imported from the main bundle; a fresh deterministic build regenerates and references it. Kept. (Wave 5 T4 review; `59c33f7`)
 - [x] ℹ️ **Phase 0 characterization net** — 12 guard schemas + fail-open + checksum drift pinned by `wave5-tool-registry.test.cjs` (P0-1…P0-12) BEFORE any migration, making the zero-behavior-change moves provable. (`c42cb45`, `6f1b8ed`)
+
+### Wave 6 (2026-07-12) — live validation hotfixes
+
+- [x] 🔴 **Every executeShell failed with bogus ENOENT** — PM2 inherited `DISPLAY=:0` from the shell (`pm2 restart --update-env`), routing executeShell through the VISIBLE path (`executeShellVisible`); the graphical terminal produced no log under the PM2 session, and the close handler classified the missing log as "file not found" instead of recovering. Now: ENOENT on the log ⇒ the command never ran ⇒ automatic fallback to the invisible shell (same pattern as the v10.29 spawn-error fallback). (`38e4be7`; tests `wave3-guard-tools.test.cjs` W6a/W6b)
 
 ---
 
