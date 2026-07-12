@@ -146,3 +146,25 @@ test('P0-11: checksum drift verify/record reads params.path ONLY — filePath al
     try { fs.unlinkSync(target); } catch {}
   }
 });
+
+// Review follow-up (Task 1): wrong-type pins for every schema field left unpinned,
+// so the Task 3 migration proof can't pass with a silently dropped `types` entry.
+test('P0-12: wrong-type rejects pinned for every remaining schema field', () => {
+  rejects('readFile', { path: '/etc/hostname', n_lines: '5' }, /"n_lines" deve ser number/);
+  rejects('writeFile', { path: 42, content: 'c' }, /"path" deve ser string/);
+  rejects('replaceInFile', { path: 42, old: 'a', new: 'b' }, /"path" deve ser string/);
+  rejects('replaceInFile', { path: '/abs/x', old: 42, new: 'b' }, /"old" deve ser string/);
+  rejects('replaceInFile', { path: '/abs/x', old: 'a', new: 42 }, /"new" deve ser string/);
+  rejects('appendFile', { path: 42, content: 'c' }, /"path" deve ser string/);
+  rejects('appendFile', { path: '/abs/x', content: 42 }, /"content" deve ser string/);
+  rejects('deleteFile', { path: 42 }, /"path" deve ser string/);
+  rejects('ipython', { code: 42 }, /"code" deve ser string/);
+  rejects('browser', { url: 42 }, /"url" deve ser string/);
+  rejects('computer', { action: 42 }, /"action" deve ser string/);
+  rejects('computer', { action: 'click', y: '20' }, /"y" deve ser number/);
+  rejects('computer', { action: 'click', text: 42 }, /"text" deve ser string/);
+  rejects('glob', { pattern: 42 }, /"pattern" deve ser string/);
+  rejects('grep', { pattern: 42 }, /"pattern" deve ser string/);
+  rejects('grep', { pattern: 'foo', type: 42 }, /"type" deve ser string/);
+  rejects('validateProject', { path: 42 }, /"path" deve ser string/);
+});
