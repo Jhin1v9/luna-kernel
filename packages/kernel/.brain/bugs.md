@@ -28,6 +28,7 @@
 - [ ] 🟡 **JSON wrapper accumulator misses mid-text wrappers** (`:7556`) — only fires when delta starts with `{`; raw JSON leaks to chat.
 - [ ] 🟡 **Infinite waits by design** (`:7384-7390`, `:7184-7190`) — guaranteed silent hangs when a selector breaks.
 - [ ] 🟡 **Parser duplication** — 3–5 copies of tool-JSON parsing across bridge/extension/observer with divergent capabilities (refactor target).
+- [ ] 🟠 **Cross-user filter unverified in agent/swarm mode** (found in Wave 2 Fix C review) — agent-mode URLs (`/agent`, `/agent-swarm`) may not navigate to a per-thread path; if two users run agent sessions with the same normalized URL, the tab-URL filter (Wave 2 Fix C) cross-matches. Needs one live URL observation; if confirmed, correlate by `tabId` (already buffered at `luna-extension-handler.cjs:149`) instead of URL. Also: new-chat landing window (bare `kimi.com` before SPA navigation) has the same narrow exposure.
 
 ### Frontend (`luna-web`)
 

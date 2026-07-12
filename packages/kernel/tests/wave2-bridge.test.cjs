@@ -215,3 +215,17 @@ test('C1d: no-url events + exactly one buffer → consumed (single-user dev pres
     'single buffer emptied or deleted after consumption'
   );
 });
+
+// C2: pin the handler-side event shape the filter depends on. If
+// luna-extension-handler.cjs ever renames/moves `url`/`tabUrl`, the bridge
+// filter silently treats every event as no-url — this test must fail first.
+test('C2: handler buffers events with top-level url/tabUrl (shape contract)', () => {
+  const handlerSrc = fs.readFileSync(
+    require('node:path').join(__dirname, '../../../apps/dashboard/luna-extension-handler.cjs'),
+    'utf8'
+  );
+  assert.ok(
+    /_bufferEvent\(sessionId,\s*\{\s*eventType,\s*data,\s*timestamp,\s*url,\s*tabId,\s*tabUrl\s*\}\)/.test(handlerSrc),
+    'handler must buffer events with flat top-level url/tabUrl — the bridge filter reads raw.tabUrl || raw.url'
+  );
+});
