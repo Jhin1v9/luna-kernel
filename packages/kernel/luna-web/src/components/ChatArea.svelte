@@ -940,6 +940,9 @@
     // v10.16-fix: If streaming in another session, cancel it first so we can switch
     if ($isStreaming && lastConnectedSessionId && lastConnectedSessionId !== sessionId) {
       console.log(`[connectSSE] Cancelling stream in ${lastConnectedSessionId} before switching to ${sessionId}`);
+      // Wave 4 review follow-up: drop pending acks BEFORE the await — a batch
+      // timer firing mid-await would flush the old session's ids into the new one.
+      ackBatcher.reset();
       await cancelStream(lastConnectedSessionId);
       isStreaming.set(false);
     }
