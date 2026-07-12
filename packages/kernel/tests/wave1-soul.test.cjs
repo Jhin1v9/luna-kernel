@@ -180,3 +180,43 @@ test('W6-T4: _buildContext calls inside the stream catch are guarded', () => {
   assert.ok(/try\s*\{/.test(cancelWindow.slice(Math.max(0, cancelBcIdx - 300), cancelBcIdx)),
     '_buildContext in the STREAM_CANCELLED branch must be try-guarded');
 });
+
+// W6-T5: the executed-action cache must be loop-proof — one replay per real
+// execution, failures never cached, and a bounded FIFO size. Without this,
+// a duplicate tool action replays the cached result forever (Kimi re-sends →
+// replay → re-sends → replay...) and stale failures echo back as fresh errors.
+test('W6-T5a: cached action results are fed back at most once', () => {
+  const { LunaSoul } = require('../luna-soul.cjs');
+  const soul = new LunaSoul({});
+  const result = { success: true, output: 'ok' };
+  soul._markActionExecuted('sess-t5a', 'hash-1', result);
+  const first = soul._getRecentActionResult('sess-t5a', 'hash-1');
+  assert.strictEqual(first, result, 'first duplicate read must replay the cached result');
+  const second = soul._getRecentActionResult('sess-t5a', 'hash-1');
+  assert.strictEqual(second, null, 'second read of the same hash must NOT replay (already fed back)');
+});
+
+test('W6-T5b: failures are never cached for replay', () => {
+  const { LunaSoul } = require('../luna-soul.cjs');
+  const soul = new LunaSoul({});
+  soul._markActionExecuted('sess-t5b', 'hash-f', { success: false, error: 'boom' });
+  assert.strictEqual(soul._getRecentActionResult('sess-t5b', 'hash-f'), null,
+    'a failed action must not be cached — it re-executes instead of replaying a stale error');
+});
+
+test('W6-T5c: action cache is size-bounded (FIFO eviction)', () => {
+  const { LunaSoul, ACTION_CACHE_MAX } = require('../luna-soul.cjs');
+  assert.ok(Number.isInteger(ACTION_CACHE_MAX) && ACTION_CACHE_MAX > 0,
+    'ACTION_CACHE_MAX must be exported as a positive integer');
+  const soul = new LunaSoul({});
+  // Insert ACTION_CACHE_MAX + 1 distinct hashes into one session.
+  for (let i = 0; i <= ACTION_CACHE_MAX; i++) {
+    soul._markActionExecuted('sess-t5c', `hash-${i}`, { success: true, i });
+  }
+  const sessionCache = soul._executedActionCache.get('sess-t5c');
+  assert.strictEqual(sessionCache.size, ACTION_CACHE_MAX, 'cache must be capped at ACTION_CACHE_MAX');
+  assert.strictEqual(soul._getRecentActionResult('sess-t5c', 'hash-0'), null,
+    'the oldest entry must be evicted FIFO');
+  const last = soul._getRecentActionResult('sess-t5c', `hash-${ACTION_CACHE_MAX}`);
+  assert.ok(last && last.i === ACTION_CACHE_MAX, 'the newest entry must still be present');
+});

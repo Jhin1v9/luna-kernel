@@ -16,7 +16,7 @@
 
 **Why:** if `.segment-assistant` is renamed by a Kimi deploy or Enter silently fails to submit, this loop never exits, never yields, ignores `stopConsuming`, and `session.processing` stays true — bricking every future message from that user (drain wait at `:7229-7235`). The #1 candidate for "ela para do nada".
 
-- [ ] **T1.1. Failing test (source-slice pattern, cf. `extractPollWithTimeoutBody` at wave2 `:31-52`)**
+- [x] **T1.1. Failing test (source-slice pattern, cf. `extractPollWithTimeoutBody` at wave2 `:31-52`)**
 
 ```js
 test('W6-T1: new-assistant wait loop is bounded and cancellable', () => {
@@ -31,7 +31,7 @@ test('W6-T1: new-assistant wait loop is bounded and cancellable', () => {
 });
 ```
 
-- [ ] **T1.2. Implement**
+- [x] **T1.2. Implement**
 
 Add near the other send constants: `const NEW_ASSISTANT_TIMEOUT_MS = 120_000;` (2 min — a real Kimi response starts in seconds). Inside the `while (true)` loop at `:7416-7439`:
   - start: `const newAssistantDeadline = Date.now() + NEW_ASSISTANT_TIMEOUT_MS;` (before the loop)
@@ -40,7 +40,7 @@ Add near the other send constants: `const NEW_ASSISTANT_TIMEOUT_MS = 120_000;` (
 
 The throw lands in the soul catch (`luna-soul.cjs:2565`); non-bridge errors yield `error` at `:2665` — visible, correct, no new plumbing. Keep the existing `newAssistantWaitCount > 100` log.
 
-- [ ] **T1.3. Verify + commit** — wave2 suite + full regression (177→178). `fix(bridge): bound new-assistant detection loop (120s) + cancel check - one broken selector no longer bricks the user forever`.
+- [x] **T1.3. Verify + commit** — wave2 suite + full regression (177→178). `fix(bridge): bound new-assistant detection loop (120s) + cancel check - one broken selector no longer bricks the user forever`.
 
 ---
 
@@ -50,7 +50,7 @@ The throw lands in the soul catch (`luna-soul.cjs:2565`); non-bridge errors yiel
 
 **Why:** a tool promise that never settles (stuck CDP call, blocking computer-use) hangs the turn forever with zero events; cancel can't reach it. The Wave 4 frontend watchdog unlocks the UI but the backend turn leaks.
 
-- [ ] **T2.1. Failing test (direct unit — LunaSoul constructs with plain defaults)**
+- [x] **T2.1. Failing test (direct unit — LunaSoul constructs with plain defaults)**
 
 ```js
 test('W6-T2: _waitPromisesWithDrain force-resolves hung tools after DRAIN_TIMEOUT_MS', async () => {
@@ -70,11 +70,11 @@ test('W6-T2: _waitPromisesWithDrain force-resolves hung tools after DRAIN_TIMEOU
 
 (Adapt the pending-map entry shape to the real one at `:4013-4032` — read the function first; if entries are plain promises, adjust. The test must drive the REAL generator.)
 
-- [ ] **T2.2. Implement**
+- [x] **T2.2. Implement**
 
 In `_waitPromisesWithDrain`: `const DRAIN_TIMEOUT_MS = this._drainTimeoutMs || 10 * 60 * 1000;` + `const deadline = Date.now() + DRAIN_TIMEOUT_MS;`. In the 100ms tick: on expiry, for each pending entry push `{ type: 'action_end', tool: <name>, result: { success: false, error: 'Tool expirou após 10 min sem resposta (drain timeout).' } }` into `eventBus.queue`, set `domResult.result` to the same failure, then drain the queue one final time and `return`. Also check `this._cancelled`/session cancel flag if one exists at the call sites (verify; if none, timeout-only).
 
-- [ ] **T2.3. Verify + commit** — wave1 suite + full regression (178→179). `fix(soul): bound _waitPromisesWithDrain (10min) - hung tools force-resolve with a visible action_end instead of hanging the turn forever`.
+- [x] **T2.3. Verify + commit** — wave1 suite + full regression (178→179). `fix(soul): bound _waitPromisesWithDrain (10min) - hung tools force-resolve with a visible action_end instead of hanging the turn forever`.
 
 ---
 
@@ -84,7 +84,7 @@ In `_waitPromisesWithDrain`: `const DRAIN_TIMEOUT_MS = this._drainTimeoutMs || 1
 
 **Why:** (a) drain-wait inherits any prior wedge — infinite pre-send hang with no event; (b) Phase 0 has cancel check but no timeout (silent send failure = wait forever); (c) Phase 1's 24h safety is commented out.
 
-- [ ] **T3.1. Failing tests**
+- [x] **T3.1. Failing tests**
 
 ```js
 test('W6-T3: pre-send processing drain is bounded and self-healing', () => {
@@ -105,13 +105,13 @@ test('W6-T3: Phase 1 safety timeout is re-enabled (large but real)', () => {
 
 (`sliceAround` helper: add if missing — `const sliceAround = (s, needle, span) => { const i = s.indexOf(needle); return i === -1 ? '' : s.slice(Math.max(0, i - span/2), i + span/2); };`)
 
-- [ ] **T3.2. Implement**
+- [x] **T3.2. Implement**
 
 - Drain wait (`:7229-7235`): cap 60s (`PROCESSING_DRAIN_TIMEOUT_MS = 60_000`); on expiry log warn + `session.processing = false` (the previous stream is provably dead past the cap) and continue.
 - Phase 0 (`:7478-7513`): `GENERATION_START_TIMEOUT_MS = 5 * 60_000`; on expiry `throw new Error('GENERATION_NEVER_STARTED: Kimi did not start generating in 5 minutes')`.
 - Phase 1: re-enable as `MESSAGE_SAFETY_TIMEOUT_MS = 60 * 60 * 1000` (60 min — large-file generations survive); on expiry run the existing final-extraction tail (`:7789-7900`) and yield what exists plus a `system` warning event; do NOT silently truncate.
 
-- [ ] **T3.3. Verify + commit** — wave2 + full regression (179→182). `fix(bridge): bound the three infinite send waits - drain 60s self-heal, Phase 0 5min start timeout, Phase 1 60min safety net re-enabled`.
+- [x] **T3.3. Verify + commit** — wave2 + full regression (179→182). `fix(bridge): bound the three infinite send waits - drain 60s self-heal, Phase 0 5min start timeout, Phase 1 60min safety net re-enabled`.
 
 ---
 
@@ -121,7 +121,7 @@ test('W6-T3: Phase 1 safety timeout is re-enabled (large but real)', () => {
 
 **Why:** `MAX_LOOPS = Number.MAX_SAFE_INTEGER` makes the ceiling dead; the exhaustion tail emits only `warning` and returns WITHOUT `done` (latent — goes live the moment the ceiling is real); the error path at `:2665` has no trailing `done` (some consumers key turn-end off `done` only); `_buildContext` throws inside the catch escape the generator.
 
-- [ ] **T4.1. Failing tests**
+- [x] **T4.1. Failing tests**
 
 ```js
 test('W6-T4: MAX_LOOPS is a finite literal and exhaustion emits done', () => {
@@ -143,14 +143,14 @@ test('W6-T4: _buildContext calls inside the stream catch are guarded', () => {
 });
 ```
 
-- [ ] **T4.2. Implement**
+- [x] **T4.2. Implement**
 
 1. `const MAX_LOOPS = 50;` at `:2384`.
 2. At `:2857-2859`, after the warning yield: `yield { type: 'done', result: { success: false, response: 'Limite de iterações atingido — encerrando para evitar loop.', sessionId }, sessionId }; return;` (Wave 1 A4 pattern).
 3. After the `error` yield at `:2665`: yield a matching `done` (success:false) before `return`.
 4. Wrap the `_buildContext` calls reachable from the catch (`:2656`, and `:2604/:2732/:2839/:2853` if inside the same catch scope — verify per site) in try/catch yielding `error` + `done` on failure.
 
-- [ ] **T4.3. Verify + commit** — wave1 + full regression (182→185). `fix(soul): real MAX_LOOPS ceiling (50) + done on every exhaustion/error path - no more generator returns without a terminal event`.
+- [x] **T4.3. Verify + commit** — wave1 + full regression (182→185). `fix(soul): real MAX_LOOPS ceiling (50) + done on every exhaustion/error path - no more generator returns without a terminal event`.
 
 ---
 
@@ -160,7 +160,7 @@ test('W6-T4: _buildContext calls inside the stream catch are guarded', () => {
 
 **Why (investigation A-Q1, the live repro mechanism):** the cache stores failures too and replays them with no "already fed back" flag → every loop turn re-detects the same tool JSON, replays the SAME stale result (identical log timestamp), and `hasOutput` is always true → infinite auto-continue. Also folds the 🟡 "cache grows unbounded" item.
 
-- [ ] **T5.1. Failing tests**
+- [x] **T5.1. Failing tests**
 
 ```js
 test('W6-T5: cached action results are fed back at most once', () => {
@@ -186,13 +186,13 @@ test('W6-T5: action cache is size-bounded', () => {
 
 (Adapt to the real signatures at `:1639-1669`/`:4062-4075` — read them first; `_getRecentActionResult` may take different args. The semantics are the contract, not the exact call shape.)
 
-- [ ] **T5.2. Implement**
+- [x] **T5.2. Implement**
 
 1. Cache entry gains `fedBack: false`; `_getRecentActionResult` returns the entry only if `!fedBack`, then sets `fedBack = true`; a second lookup returns `null` (treated as "already answered — skip", do NOT push to `domActionResults`).
 2. `_markActionExecuted`: skip caching when `result.success === false` (failures re-execute next time — correct, since the tool never ran to a real result; the live ENOENT case would have re-run instead of replaying garbage).
 3. Cap: `const ACTION_CACHE_MAX = 200;` — on insert beyond cap, evict oldest (Map insertion order) in one pass.
 
-- [ ] **T5.3. Verify + commit** — wave1 + full regression (185→188). `fix(soul): action cache single-feedback + no failure replay + 200-entry cap - kills the stale tool-result replay loop at the root`.
+- [x] **T5.3. Verify + commit** — wave1 + full regression (185→188). `fix(soul): action cache single-feedback + no failure replay + 200-entry cap - kills the stale tool-result replay loop at the root`.
 
 ---
 

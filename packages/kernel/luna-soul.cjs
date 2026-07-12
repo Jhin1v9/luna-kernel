@@ -147,6 +147,9 @@ const MASTER_PROMPT_PATH = lunaConfig.PATHS.masterPrompt;
 // ============================================================
 const AGENTS_MD_MAX_BYTES = 32 * 1024; // 32 KiB budget, same as kimi-cli
 
+// W6-T5: per-session executed-action cache cap (FIFO eviction by Map insertion order).
+const ACTION_CACHE_MAX = 200;
+
 function findProjectRoot(startDir) {
   // Simple heuristic: find the nearest .git directory or package.json
   let current = path.resolve(startDir);
@@ -1638,14 +1641,18 @@ class LunaSoul extends EventEmitter {
     this.projectValidator = new ProjectHealthValidator();
     // v9.5-fix: Global action execution cache per session to prevent duplicate tool execution
     // across retries, auto-continues, and bridge reconnects.
-    // NOW stores {timestamp, result} so skipped actions can return the previous result.
-    this._executedActionCache = new Map(); // sessionId -> Map<toolHash, {timestamp, result}>
+    // W6-T5: entries store {timestamp, result, fedBack} — each execution grants exactly
+    // one replay; failures are never cached; FIFO-capped at ACTION_CACHE_MAX.
+    this._executedActionCache = new Map(); // sessionId -> Map<toolHash, {timestamp, result, fedBack}>
     // v10.3: TurnManager para arquitetura duplo-loop
     this.turnManager = new TurnManager();
   }
 
   // v9.5-fix: Check if an action was already executed recently.
   // Returns the stored result object if found and not expired, otherwise null.
+  // W6-T5: each real execution grants exactly ONE replay — the first duplicate
+  // read delivers the cached result and marks it fedBack; further duplicates
+  // miss the cache and re-execute for real (bounded by MAX_LOOPS).
   _getRecentActionResult(sessionId, toolHash) {
     const sessionCache = this._executedActionCache.get(sessionId);
     if (!sessionCache) return null;
@@ -1657,15 +1664,25 @@ class LunaSoul extends EventEmitter {
       sessionCache.delete(toolHash);
       return null;
     }
+    if (entry.fedBack === true) return null; // replay already delivered once for this execution
+    entry.fedBack = true;
     return entry.result;
   }
 
-  // v9.5-fix: Mark an action as executed, storing its result for potential replay
+  // v9.5-fix: Mark an action as executed, storing its result for potential replay.
+  // W6-T5: failures are NEVER cached (they must re-execute, not replay stale errors),
+  // and the per-session cache is capped FIFO at ACTION_CACHE_MAX entries.
   _markActionExecuted(sessionId, toolHash, result) {
+    if (result?.success === false) return;
     if (!this._executedActionCache.has(sessionId)) {
       this._executedActionCache.set(sessionId, new Map());
     }
-    this._executedActionCache.get(sessionId).set(toolHash, { timestamp: Date.now(), result });
+    const sessionCache = this._executedActionCache.get(sessionId);
+    if (!sessionCache.has(toolHash) && sessionCache.size >= ACTION_CACHE_MAX) {
+      const oldest = sessionCache.keys().next().value;
+      if (oldest !== undefined) sessionCache.delete(oldest);
+    }
+    sessionCache.set(toolHash, { timestamp: Date.now(), result, fedBack: false });
   }
 
   /** Initialize git for workspace if available */
@@ -2501,7 +2518,7 @@ class LunaSoul extends EventEmitter {
                 const cachedEndEvent = { type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: cachedResult, source: event.source || 'dom_mirror', sessionId, cached: true };
                 eventBus.push(cachedEndEvent);
                 eventBus.push(cachedResult);
-                domActionResults.push({ tool: parsedAction.tool, result: cachedResult });
+                domActionResults.push({ tool: parsedAction.tool, result: cachedResult, cached: true });
                 break;
               }
 
@@ -2966,7 +2983,7 @@ REGRAS:
                 yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId, cached: true };
                 eventBus.push({ type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: cachedResult, source: event.source || 'dom_mirror', sessionId, cached: true });
                 eventBus.push(cachedResult);
-                domActionResults.push({ tool: parsedAction.tool, result: cachedResult });
+                domActionResults.push({ tool: parsedAction.tool, result: cachedResult, cached: true });
                 break;
               }
 
@@ -4113,8 +4130,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         };
       }
 
-      // v10.24-fix: Store result in cache so skipped duplicates can replay it,
-      // including failures so the Kimi sees the error and can fix it.
+      // v10.24-fix: Store result in cache so skipped duplicates can replay it.
+      // W6-T5: failures are NOT cached — a duplicate of a failed action
+      // re-executes for real instead of replaying a stale error.
       this._markActionExecuted(sessionId, toolHash, actionResult);
 
       // Update the placeholder result for auto-continue
@@ -5371,4 +5389,5 @@ module.exports = {
   isBalancedBraces,
   MetaExecutorSecure,
   PathValidator,
+  ACTION_CACHE_MAX,
 };
