@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const crypto = require('crypto');
+const { clampExecTimeout } = require('./lib/exec-timeout.cjs');
 const path = require('path');
 
 // ── Config ──
@@ -457,6 +458,25 @@ class ToolGuard {
     // 4. Schema validation
     validateToolCall(toolName, params);
 
+    // 5. Timeout budget — computed BEFORE the circuit check because the
+    // executeShell clamp below mutates params.timeout, and check/record must
+    // sign the SAME params or the breaker can never trip (Wave 3 review I1).
+    const timeoutMs = toolName === 'executeShell' && params.command?.includes('test')
+      ? SHELL_TIMEOUT_MS
+      : TOOL_TIMEOUT_MS;
+
+    // Wave 3 (Fix H4): alinha o timeout do guard com o kill real do executeShell.
+    // safeExec (Fix D) mata o process group quando opts.timeout > 0; sem o clamp,
+    // o guard rejeitaria a promise mas o filho continuaria vivo até o default
+    // interno. `params` aqui é a MESMA referência `p` que a toolFn lambda do soul
+    // fecha sobre (luna-soul.cjs execute dispatch), então mutar params.timeout
+    // limita o timer interno. Outros toolFns são cooperativos (sem handle de
+    // processo para matar). clampExecTimeout sanitizes garbage/negatives (M4).
+    if (toolName === 'executeShell') {
+      const budgetSec = Math.floor(timeoutMs / 1000);
+      params.timeout = Math.min(clampExecTimeout(params.timeout) / 1000, budgetSec);
+    }
+
     // 2. Circuit breaker check
     this.circuit.check(toolName, params);
 
@@ -467,6 +487,11 @@ class ToolGuard {
     const isMutating = MUTATING_TOOL_RE.test(toolName);
     if (isMutating && this.idempotency.isProcessed(idemKey) && options.idempotent !== false) {
       console.log(`[tool-guard] Idempotency: skipping duplicate ${label}`);
+      // Wave 3 (review I1): skipped duplicates still feed the circuit breaker —
+      // 3 identical calls in 60s IS an LLM loop even when idempotency answers
+      // them, and a runaway shell loop must trip CIRCUIT_OPEN instead of
+      // getting silent fake-success forever.
+      this.circuit.record(toolName, params);
       return { success: true, skipped: true, reason: 'already processed', idempotencyKey: idemKey, message: 'Operação idêntica já executada recentemente (idempotência).' };
     }
 
@@ -478,23 +503,6 @@ class ToolGuard {
         err.code = 'FILE_DRIFT';
         throw err;
       }
-    }
-
-    // 5. Timeout
-    const timeoutMs = toolName === 'executeShell' && params.command?.includes('test')
-      ? SHELL_TIMEOUT_MS
-      : TOOL_TIMEOUT_MS;
-
-    // Wave 3 (Fix H4): alinha o timeout do guard com o kill real do executeShell.
-    // safeExec (Fix D) mata o process group quando opts.timeout > 0; sem o clamp,
-    // o guard rejeitaria a promise mas o filho continuaria vivo até o default
-    // interno. `params` aqui é a MESMA referência `p` que a toolFn lambda do soul
-    // fecha sobre (luna-soul.cjs execute dispatch), então mutar params.timeout
-    // limita o timer interno. Outros toolFns são cooperativos (sem handle de
-    // processo para matar).
-    if (toolName === 'executeShell') {
-      const budgetSec = Math.floor(timeoutMs / 1000);
-      params.timeout = Math.min(Number(params.timeout) || budgetSec, budgetSec);
     }
 
     // 1. Retry + execute

@@ -4085,8 +4085,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
     // Wave 3 (Fix H): resolve o usuário da sessão para o ToolGuard ter o
     // workspace correto (web/Telegram antes ficavam sem guard nenhum).
-    const session = this.sessionManager.loadSession(sessionId);
-    const actionUserId = session?.userId || 'luna-cli';
+    // options.userId vem do transport (web: 'web-<sessionId>'); sessions não
+    // persistem userId — loadSession por chamada seria só I/O desperdiçado.
+    const actionUserId = options?.userId || 'luna-cli';
 
     // ── Plan Mode Tool Filter ──
     // When in plan mode, only read-only tools are allowed

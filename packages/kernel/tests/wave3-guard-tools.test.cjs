@@ -1042,7 +1042,44 @@ test('H2: _ensureToolGuard has a workspaceBase fallback and the call site passes
     'the execute call site must pass the session user'
   );
   assert.ok(
-    soulSrc.includes("session?.userId || 'luna-cli'"),
-    '_handleAction must resolve actionUserId from the session with a luna-cli fallback'
+    soulSrc.includes("options?.userId || 'luna-cli'"),
+    '_handleAction must resolve actionUserId from options.userId (transport-provided) with a luna-cli fallback'
   );
+  assert.ok(
+    !soulSrc.includes('const session = this.sessionManager.loadSession(sessionId);\n    const actionUserId'),
+    'actionUserId must not come from a per-call loadSession (sessions do not persist userId — pure wasted I/O)'
+  );
+});
+
+// H5: review follow-ups — clamp hoisted above circuit.check so check/record
+// sign the same params (the breaker could never trip for executeShell), and
+// garbage timeouts are sanitized via clampExecTimeout.
+test('H5: circuit breaker trips for repeated identical executeShell calls', async () => {
+  const guard = new ToolGuard(process.cwd());
+  const params = { command: 'echo loop-test' };
+  const toolFn = async () => ({ success: true, stdout: 'ok' });
+
+  // Budget allows 3 identical calls/60s; the 4th/5th must throw CIRCUIT_OPEN.
+  // Pre-fix: check signed {command} but record signed {command,timeout:30}
+  // after the clamp — the breaker never tripped.
+  let tripped = false;
+  for (let i = 0; i < 6 && !tripped; i++) {
+    try {
+      await guard.execute('executeShell', { ...params }, toolFn);
+    } catch (e) {
+      if (/circuit|CIRCUIT/i.test(e.message)) tripped = true;
+      else throw e;
+    }
+  }
+  assert.ok(tripped, 'circuit breaker must trip on repeated identical executeShell calls');
+});
+
+test('H5: negative/garbage executeShell timeout is sanitized, not passed through', async () => {
+  const guard = new ToolGuard(process.cwd());
+  let seenTimeout;
+  const toolFn = async () => ({ success: true });
+  const params = { command: 'echo x', timeout: -5 };
+  await guard.execute('executeShell', params, toolFn);
+  assert.ok(params.timeout > 0, `clamped timeout must be positive, got ${params.timeout}`);
+  assert.ok(params.timeout <= 30, `clamped timeout must respect the guard budget, got ${params.timeout}`);
 });
