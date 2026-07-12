@@ -70,6 +70,7 @@
 - [x] Fix with defense in depth: after typing, verify the input actually contains the text before submitting; submit via the strategy chain (Enter → send-button click → form requestSubmit if applicable); after submit, VERIFY the input was cleared / a new assistant turn started within a bounded window; if not, retry submit once; if still stuck, fail the turn with a visible error (never hang silently — Wave 6 contract).
 - [x] Tests (+4 → 221): unit/source-slice for the verify-after-submit logic in wave2-bridge.test.cjs.
 - [x] Commit: `fix(bridge): verify-and-retry submit - typed messages can no longer sit unsent in the Kimi input`.
+- [x] Review follow-up: verification hardened to TRANSITIONS vs a pre-submit baseline (stop-button/disabled-button leftovers no longer false-confirm; input clear only counts after the text was observed in the box), whitespace-normalized prefix compare, dead non-Kimi best-effort branch removed, `injectSteer` moved to `_fillContentEditable`, `sendMessageNoWait` delivery poll accepts the same transition signals (no false 30s timeout after a confirmed send). Tests +2 → 223 (W7-T4e/f). Residual accepted: pathological "sent but input retained" + >10s generation start could re-submit (duplicate user message) — no echo-based dedup guard yet.
 
 ## Task 5 — Close the wave: bugs.md bookkeeping
 

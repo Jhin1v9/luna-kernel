@@ -628,3 +628,40 @@ test('W7-T4d: error-path input cleanup uses _fillContentEditable(locator, \'\') 
   assert.ok(lexicalClears >= 5,
     `all 5 catch cleanups must use _fillContentEditable(locator, '') (found ${lexicalClears})`);
 });
+
+test('W7-T4e: submit verification is transition-based against a pre-submit baseline (no pre-existing DOM state counts)', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const defIdx = src.indexOf('async _submitWithVerification(page, inputLocator, text');
+  assert.notStrictEqual(defIdx, -1, '_submitWithVerification must be defined');
+  const body = src.slice(defIdx, defIdx + 6000);
+
+  // Baseline captured BEFORE the strategy loop: stop-button leftover from a
+  // previous turn or a send button disabled on an empty input must never
+  // count as a successful submit (review follow-up — the initial version
+  // confirmed on any disabled button / any generating state, even ones that
+  // pre-dated the submit).
+  assert.ok(body.includes('baseline.generating'),
+    'generating signal must be gated on the pre-submit baseline (false→true transition)');
+  assert.ok(body.includes('baseline.sendDisabled'),
+    'send-disabled signal must be gated on the pre-submit baseline (false→true transition)');
+  assert.ok(body.includes('state.assistants > baseline.assistants'),
+    'assistant signal must be a count increase vs the pre-submit baseline');
+  // An input clear only proves the send if the box was OBSERVED holding the
+  // typed text first — a silent fill failure must not look like a submit.
+  assert.ok(body.includes('inputHeldPrefix'),
+    'input-clear signal must require the text to have been observed in the box first');
+});
+
+test('W7-T4f: injectSteer also fills via the Lexical-safe helper (no desync-prone fill(text) left in any submit path)', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const steerIdx = src.indexOf('async injectSteer(userId, text)');
+  assert.notStrictEqual(steerIdx, -1, 'injectSteer must exist');
+  const endIdx = src.indexOf('async *sendMessageStream(', steerIdx);
+  assert.notStrictEqual(endIdx, -1, 'sendMessageStream must follow injectSteer');
+  const window = src.slice(steerIdx, endIdx);
+
+  assert.ok(window.includes('this._fillContentEditable(inputLocator, text)'),
+    'steer must fill via the Lexical-safe helper — a desynced fill() makes the send-button click a silent no-op');
+  assert.ok(!window.includes('inputLocator.fill(text)'),
+    'no submit path may use Playwright fill(text) directly (desyncs the Lexical EditorState)');
+});

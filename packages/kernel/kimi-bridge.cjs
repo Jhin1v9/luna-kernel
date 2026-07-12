@@ -3815,16 +3815,46 @@ class KimiBridge {
    *   1. synthetic KeyboardEvent Enter (_pressEnterOnInput);
    *   2. Lexical-safe re-fill + TRUSTED Enter (Playwright click + keyboard);
    *   3. click the .send-button-container (same selector the steer uses).
-   * Verification succeeds when the input no longer contains the sent-text
-   * prefix, a new .segment-assistant appears, or the send button turns
-   * disabled / the stop (generating) button shows up. Throws
-   * SEND_NOT_CONFIRMED when all attempts fail so the turn errors visibly
-   * instead of hanging silently (Wave 6 contract).
+   * Verification only fires on TRANSITIONS measured against a pre-submit
+   * baseline — never on pre-existing DOM state: the input clearing after it
+   * was OBSERVED holding the typed text, the assistant-segment count
+   * increasing, the stop (generating) button appearing, or the send button
+   * flipping to disabled. Throws SEND_NOT_CONFIRMED when all attempts fail
+   * so the turn errors visibly instead of hanging silently (Wave 6 contract).
    */
   async _submitWithVerification(page, inputLocator, text, options = {}) {
-    const provider = options.provider || 'kimi';
     const prefix = (text || '').slice(0, 100);
-    const baselineAssistants = await page.evaluate(() => document.querySelectorAll('.segment-assistant').length).catch(() => 0);
+    // Whitespace-normalized comparison: contenteditable innerText can render
+    // whitespace differently from the inserted string (collapsed runs, NBSP).
+    const normPrefix = prefix.replace(/\s+/g, ' ').trim();
+    const readInput = async () => {
+      if (!normPrefix) return '';
+      const current = await inputLocator.inputValue().catch(() =>
+        inputLocator.evaluate((el) => el.innerText || el.textContent || '').catch(() => '')
+      );
+      return (current || '').replace(/\s+/g, ' ').trim();
+    };
+    const readState = () => page.evaluate(() => {
+      const assistants = document.querySelectorAll('.segment-assistant').length;
+      const sendBtn = document.querySelector('.send-button-container');
+      const sendDisabled = sendBtn
+        ? (sendBtn.classList.contains('disabled') || sendBtn.getAttribute('aria-disabled') === 'true')
+        : false;
+      const generating = !!document.querySelector('.stop-button-container');
+      return { assistants, sendDisabled, generating };
+    }).catch(() => null);
+
+    // Pre-submit baseline. Only CHANGES relative to this state confirm the
+    // submit — a stop button left over from a previous turn or a send button
+    // disabled on an empty input must not count as success.
+    const baseline = await readState() || { assistants: 0, sendDisabled: false, generating: false };
+    // Sticky: true once the box is OBSERVED holding the typed text. An input
+    // clear only proves the send if the text was there before — otherwise a
+    // silent fill failure would look exactly like a successful submit.
+    let inputHeldPrefix = normPrefix ? (await readInput()).includes(normPrefix) : false;
+    if (normPrefix && !inputHeldPrefix) {
+      log.warn('[_submitWithVerification] typed text not visible in the input at baseline — pre-submit fill may have failed');
+    }
     const strategies = ['synthetic-enter', 'trusted-enter', 'send-button-click'];
 
     for (let attempt = 0; attempt < strategies.length; attempt++) {
@@ -3837,6 +3867,13 @@ class KimiBridge {
           // the EditorState actually holds the text, then send a TRUSTED Enter
           // via a real Playwright click + keyboard press.
           await this._fillContentEditable(inputLocator, text || '');
+          if (normPrefix && !inputHeldPrefix) {
+            // Read the box back: only trust the re-fill if the text stuck.
+            inputHeldPrefix = (await readInput()).includes(normPrefix);
+            if (!inputHeldPrefix) {
+              log.warn('[_submitWithVerification] re-fill did not stick — input still missing the typed text');
+            }
+          }
           await page.waitForTimeout(300);
           await inputLocator.click({ timeout: 5000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
           await page.keyboard.press('Enter');
@@ -3852,43 +3889,31 @@ class KimiBridge {
         log.warn(`[_submitWithVerification] strategy '${strategy}' threw: ${e.message}`);
       }
 
-      // Verify the submit: poll ~10s for the message to leave the input.
+      // Empty-text sends (image/file without caption) have no input-text
+      // signal; delivery is verified downstream by the response wait.
+      if (!normPrefix) {
+        log.info(`[_submitWithVerification] empty-text submit via '${strategy}' (attempt ${attempt + 1}) — no input signal to verify`);
+        return { confirmed: true, strategy, weak: true };
+      }
+
+      // Verify the submit: poll ~10s for a transition vs the baseline.
       const verifyDeadline = Date.now() + 10_000;
       while (Date.now() < verifyDeadline) {
-        let stillThere = false;
-        if (prefix) {
-          const current = await inputLocator.inputValue().catch(() =>
-            inputLocator.evaluate((el) => el.innerText || el.textContent || '').catch(() => '')
-          );
-          stillThere = !!(current && current.includes(prefix));
-        }
-        const state = await page.evaluate(() => {
-          const assistants = document.querySelectorAll('.segment-assistant').length;
-          const sendBtn = document.querySelector('.send-button-container');
-          const sendDisabled = sendBtn
-            ? (sendBtn.className.includes('disabled') || sendBtn.getAttribute('aria-disabled') === 'true')
-            : false;
-          const generating = !!document.querySelector('.stop-button-container');
-          return { assistants, sendDisabled, generating };
-        }).catch(() => null);
+        const current = await readInput();
+        if (current.includes(normPrefix)) inputHeldPrefix = true;
+        const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+        const state = await readState();
 
-        if (!stillThere
-          || (state && state.assistants > baselineAssistants)
-          || (state && (state.generating || state.sendDisabled))) {
+        if (inputCleared
+          || (state && state.assistants > baseline.assistants)
+          || (state && !baseline.generating && state.generating)
+          || (state && !baseline.sendDisabled && state.sendDisabled)) {
           log.info(`[_submitWithVerification] submit confirmed via '${strategy}' (attempt ${attempt + 1})`);
           return { confirmed: true, strategy };
         }
         await page.waitForTimeout(300);
       }
-      log.warn(`[_submitWithVerification] attempt ${attempt + 1} ('${strategy}') NOT confirmed — text still in the input`);
-
-      // Empty-text sends on non-Kimi providers (image/file without caption)
-      // have no generic DOM signal to verify — accept best-effort rather than
-      // throwing a false SEND_NOT_CONFIRMED.
-      if (provider !== 'kimi' && !prefix) {
-        log.warn(`[_submitWithVerification] no DOM signal for empty-text ${provider} send — accepting best-effort after '${strategy}'`);
-        return { confirmed: true, strategy, weak: true };
-      }
+      log.warn(`[_submitWithVerification] attempt ${attempt + 1} ('${strategy}') NOT confirmed — no submit transition observed`);
     }
 
     throw new Error('SEND_NOT_CONFIRMED: texto permanece no input da Kimi — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)');
@@ -4120,8 +4145,11 @@ class KimiBridge {
   /**
    * Send a message to the provider Web UI without waiting for the full response.
    * Use this for checkpoint messages where we only need delivery confirmation.
-   * Returns once the message is submitted and the input no longer contains the original text.
-   * @throws If delivery cannot be confirmed within 30 seconds.
+   * Returns once the submit is verified (input cleared / assistant segment /
+   * generating signal) — W7-T4: up to 3 submit attempts (~10s verification
+   * each) plus a 30s belt-and-suspenders delivery poll.
+   * @throws SEND_NOT_CONFIRMED if all 3 submit attempts fail; 'Delivery
+   *   confirmation timed out' if the post-submit poll sees no transition.
    */
   async sendMessageNoWait(userId, text, options = {}) {
     if (!text || !text.trim()) {
@@ -4169,25 +4197,36 @@ class KimiBridge {
       await page.waitForTimeout(500);
 
       // W7-T4: verify-and-retry submit (Enter → trusted Enter → send-button
-      // click). The 30s delivery poll below then confirms immediately once
-      // the input has cleared.
+      // click). The 30s delivery poll below is belt-and-suspenders and
+      // confirms immediately once the submit transition is visible.
+      const preSubmitAssistants = await page.evaluate(() => document.querySelectorAll('.segment-assistant').length).catch(() => 0);
       await this._submitWithVerification(page, inputLocator, text);
       log.info(`[sendMessageNoWait] Submitted message for user ${hashUserId(userId)}`);
 
+      // Delivery poll: input cleared, a new assistant segment, or the stop
+      // (generating) button — the same transitions the submit helper accepts,
+      // so a confirmed send can never time out here just because the input
+      // visually retained the text.
       let confirmed = false;
       const deliveryDeadline = Date.now() + 30000;
       while (Date.now() < deliveryDeadline) {
+        let inputCleared = false;
         try {
           const currentValue = await inputLocator.inputValue().catch(async () => {
             return await inputLocator.evaluate((el) => el.innerText || el.textContent || '');
           });
-          if (!currentValue || !currentValue.includes(text.slice(0, 100))) {
-            confirmed = true;
-            log.info(`[sendMessageNoWait] Delivery confirmed for user ${hashUserId(userId)}`);
-            break;
-          }
+          inputCleared = !currentValue || !currentValue.includes(text.slice(0, 100));
         } catch (e) {
           // ignore transient read errors
+        }
+        const state = await page.evaluate((base) => ({
+          assistantsGrew: document.querySelectorAll('.segment-assistant').length > base,
+          generating: !!document.querySelector('.stop-button-container'),
+        }), preSubmitAssistants).catch(() => null);
+        if (inputCleared || (state && (state.assistantsGrew || state.generating))) {
+          confirmed = true;
+          log.info(`[sendMessageNoWait] Delivery confirmed for user ${hashUserId(userId)}`);
+          break;
         }
         await page.waitForTimeout(300);
       }
@@ -7310,9 +7349,11 @@ class KimiBridge {
         return { success: false, error: 'Send button disabled — cannot steer right now' };
       }
 
-      // Find input and inject text
+      // Find input and inject text. W7-T4 review follow-up: Lexical-safe
+      // fill — fill() desyncs the Lexical EditorState, and the send-button
+      // click below would then silently send nothing.
       const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-      await inputLocator.fill(text);
+      await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(300);
 
       // Click send or press Enter
