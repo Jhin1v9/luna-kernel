@@ -165,7 +165,7 @@ function validateToolCall(toolName, params) {
   if (!schema) {
     if (!validateToolCall._warned.has(toolName)) {
       validateToolCall._warned.add(toolName);
-      console.warn(`[tool-guard] Sem schema estrito para "${toolName}" — validação permissiva (Wave 5 cobrirá todos os tools).`);
+      console.warn(`[tool-guard] Sem schema estrito para "${toolName}" — validação permissiva (fail-open; schemas vivem em lib/tool-registry.cjs).`);
     }
     schema = DEFAULT_SCHEMA;
   }
