@@ -7719,6 +7719,11 @@ class KimiBridge {
               // Wave2-fix: right after Enter the PREVIOUS turn's response is still
               // on screen and stable, so the poller can re-fire a stale candidate
               // before any text of this turn has streamed. Ignore it.
+              // Assumption: every legit turn streams SOME visible text before
+              // completing (tool calls render as code blocks in the polled text).
+              // A hypothetical zero-text turn (text-less tool card only) would be
+              // ignored until hard-cancel — fails safe vs. the old instant-done
+              // with stale content.
               if (isPrematureCompletion({ lastResponse, lastThinking })) {
                 log.info(`[sendMessageStream] Ignoring completion candidate — nothing streamed yet this turn (stale)`);
                 break;
