@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { shellQuote } = require('./lib/shell-quote.cjs');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. JSX BALANCE CHECKER
@@ -549,10 +550,10 @@ function typeScriptValidate(filePath) {
     let cmd;
     if (foundTsconfig) {
       // Usa o tsconfig do projeto — mais preciso
-      cmd = `npx tsc --noEmit --skipLibCheck -p ${tsconfigDir}`;
+      cmd = `npx tsc --noEmit --skipLibCheck -p ${shellQuote(tsconfigDir)}`;
     } else {
       // Sem tsconfig — valida só o arquivo
-      cmd = `npx tsc --noEmit --skipLibCheck --jsx react --esModuleInterop --target ES2020 --moduleResolution node ${filePath}`;
+      cmd = `npx tsc --noEmit --skipLibCheck --jsx react --esModuleInterop --target ES2020 --moduleResolution node ${shellQuote(filePath)}`;
     }
 
     execSync(cmd, {

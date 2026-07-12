@@ -3,6 +3,7 @@
 // Fix B: atomic writeFile via tmp+rename (lib/atomic-write.cjs + luna-tools.cjs + luna-soul.cjs)
 // Fix C: IdempotencyStore TTL + mark-on-success + success:true on skip (luna-tool-guard.cjs)
 // Fix D: safeExec default 60s/600s cap + dashboardApi 15s abort (lib/exec-timeout.cjs + luna-tools.cjs)
+// Fix E: command injection — shell-quote + numeric clamps + name whitelist (lib/shell-quote.cjs + luna-tools.cjs + luna-code-validator.cjs)
 // Run: node --test packages/kernel/tests/wave3-guard-tools.test.cjs
 'use strict';
 
@@ -349,4 +350,96 @@ test('D2: a short-timeout exec of sleep actually terminates (no 30s hang)', () =
 test('D3: dashboardApi fetch carries a 15s AbortSignal (content assertion)', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
   assert.ok(src.includes('AbortSignal.timeout(15000)'), 'dashboardApi fetch must use AbortSignal.timeout(15000)');
+});
+
+// ── Fix E: command injection — shell-quote + clamps (lib/shell-quote.cjs) ────
+
+const { shellQuote, toNonNegInt, assertSafeName } = require('../lib/shell-quote.cjs');
+const { searchFiles, installPackages, gitLog } = require('../luna-tools.cjs');
+
+test('E1: shellQuote round-trips hostile strings through bash with no injection', () => {
+  const { execFileSync } = require('node:child_process');
+  for (const payload of ['a"b$c`d`', "'; rm -rf /; '", '$(touch /tmp/x)', 'linha\ncom quebra']) {
+    const out = execFileSync('bash', ['-c', 'printf %s ' + shellQuote(payload)], { encoding: 'utf8' });
+    assert.strictEqual(out, payload, `shellQuote must preserve ${JSON.stringify(payload)} byte-exactly through bash`);
+  }
+});
+
+test('E1: toNonNegInt rejects garbage and negatives, honors default and cap', () => {
+  assert.strictEqual(toNonNegInt('2;rm -rf /', 2), 2, 'injection string must fall back to default');
+  assert.strictEqual(toNonNegInt(5, 2), 5);
+  assert.strictEqual(toNonNegInt('7', 2), 7, 'numeric strings are accepted');
+  assert.strictEqual(toNonNegInt(-1, 2), 2);
+  assert.strictEqual(toNonNegInt(2.5, 2), 2, 'non-integers fall back to default');
+  assert.strictEqual(toNonNegInt(99999, 2, 100), 100, 'values above max are clamped');
+});
+
+test('E1: assertSafeName accepts package/process names, rejects shell metachars', () => {
+  assert.strictEqual(assertSafeName('left-pad'), 'left-pad');
+  assert.strictEqual(assertSafeName('a/b@c'), 'a/b@c', 'scoped npm names must pass');
+  assert.strictEqual(assertSafeName('luna-server'), 'luna-server');
+  assert.throws(() => assertSafeName('x;y'), /inválido/, 'semicolon must be rejected');
+  assert.throws(() => assertSafeName('$(id)'), /inválido/);
+  assert.throws(() => assertSafeName('a b'), /inválido/, 'spaces must be rejected');
+  assert.throws(() => assertSafeName('../../etc'), /inválido/, 'dot-dot traversal must be rejected');
+  assert.throws(() => assertSafeName(''), /inválido/, 'empty name must be rejected');
+});
+
+test('E2: installPackages rejects an injected package name and runs nothing', () => {
+  withTmpDir((dir) => {
+    const marker = path.join(dir, 'pwned');
+    const result = installPackages([`lodash;touch ${marker}`], { cwd: dir });
+    assert.strictEqual(result.success, false, 'unsafe package name must return success:false');
+    assert.ok(result.error.includes('inválido'), `error must explain the rejection (got: ${result.error})`);
+    assert.strictEqual(fs.existsSync(marker), false, 'injected command must NOT have executed');
+  });
+});
+
+test('E2: gitLog clamps an injected n to the default and runs plain git log', () => {
+  withTmpDir((dir) => {
+    const { execSync } = require('node:child_process');
+    execSync('git init -q', { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'hello\n');
+    execSync('git add a.txt && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: dir });
+
+    const marker = path.join(dir, 'pwned');
+    const result = gitLog({ cwd: dir, n: `1; touch ${marker}` });
+    assert.strictEqual(result.success, true, `git log -10 must run cleanly (got: ${result.error})`);
+    assert.strictEqual(result.commits.length, 1, 'the single fixture commit must be listed');
+    assert.strictEqual(fs.existsSync(marker), false, 'injected command must NOT have executed');
+  });
+});
+
+test('E2: searchFiles clamps an injected context param and runs the search', () => {
+  withTmpDir((dir) => {
+    fs.writeFileSync(path.join(dir, 'hay.txt'), 'line1\nneedle here\nline3\n');
+    const marker = path.join(dir, 'pwned');
+    const result = searchFiles('needle', { cwd: dir, context: `2;touch ${marker}` });
+    assert.strictEqual(result.success, true, `search must succeed with the default -C 2 (got: ${result.error})`);
+    assert.ok(result.results.some(l => l.includes('needle here')), 'the match must be found');
+    assert.strictEqual(fs.existsSync(marker), false, 'injected command must NOT have executed');
+  });
+});
+
+test('E3: all six injection sites use the helpers (content assertion)', () => {
+  const toolsSrc = fs.readFileSync(path.join(__dirname, '..', 'luna-tools.cjs'), 'utf8');
+  const validatorSrc = fs.readFileSync(path.join(__dirname, '..', 'luna-code-validator.cjs'), 'utf8');
+
+  assert.ok(toolsSrc.includes('cd ${shellQuote(cwd)}'), 'executeShellVisible must shell-quote the cwd in the script');
+  const ctxClamps = toolsSrc.match(/-C \$\{toNonNegInt\(opts\['-C'\] \?\? opts\.context, 2, 100\)\}/g) || [];
+  assert.strictEqual(ctxClamps.length, 4, 'searchFiles and grep must clamp -C in both rg and grep branches');
+  assert.ok(toolsSrc.includes("assertSafeName(p, 'pacote')"), 'installPackages must whitelist package names');
+  assert.ok(toolsSrc.includes('toNonNegInt(opts.n ?? opts.limit, 10, 1000)'), 'gitLog must clamp n');
+  assert.ok(toolsSrc.includes("assertSafeName(targetProcess, 'processo pm2')"), 'openDebugTerminal must whitelist the pm2 process name');
+  assert.ok(toolsSrc.includes('toNonNegInt(lines, 50, 5000)'), 'openDebugTerminal must clamp --lines');
+
+  assert.ok(validatorSrc.includes('-p ${shellQuote(tsconfigDir)}'), 'typeScriptValidate must quote the tsconfig path');
+  assert.ok(validatorSrc.includes('--moduleResolution node ${shellQuote(filePath)}'), 'typeScriptValidate must quote the file path');
+});
+
+test('E3: shell-quote.cjs reuses the Fix D shQuote implementation (no duplicate quoting helper)', () => {
+  const { shQuote } = require('../lib/exec-timeout.cjs');
+  assert.strictEqual(shellQuote, shQuote, 'shellQuote must be the same function as shQuote');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'shell-quote.cjs'), 'utf8');
+  assert.strictEqual(src.match(/replace\(\/'/g), null, 'shell-quote.cjs must not re-implement the quoting regex');
 });

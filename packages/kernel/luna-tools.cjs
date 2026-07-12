@@ -26,6 +26,7 @@ const lunaConfig = require('./config/luna-config');
 const { looksBinary } = require('./lib/text-file.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { clampExecTimeout, shQuote } = require('./lib/exec-timeout.cjs');
+const { shellQuote, toNonNegInt, assertSafeName } = require('./lib/shell-quote.cjs');
 
 // Wave3-fix D: GNU `timeout` runs the command in its own process group and
 // signals the whole group — execSync's native timeout only kills the direct
@@ -613,9 +614,9 @@ function searchFiles(pattern, opts = {}) {
     const hasRg = (() => { try { execSync('which rg', { stdio: 'ignore' }); return true; } catch { return false; } })();
     let cmd;
     if (hasRg) {
-      cmd = `rg -n --color=never -C ${opts.context || opts['-C'] || 2} --glob '!{node_modules/*,.git/*,dist/*,build/*,coverage/*,*.lock,*.log,*.min.*}' ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      cmd = `rg -n --color=never -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --glob '!{node_modules/*,.git/*,dist/*,build/*,coverage/*,*.lock,*.log,*.min.*}' ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     } else {
-      cmd = `grep -rn --color=never -C ${opts.context || opts['-C'] || 2} --exclude-dir={node_modules,.git,dist,build,coverage,venv,.venv,__pycache__} --exclude={*.lock,*.log,*.min.*} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      cmd = `grep -rn --color=never -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --exclude-dir={node_modules,.git,dist,build,coverage,venv,.venv,__pycache__} --exclude={*.lock,*.log,*.min.*} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     }
     const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
@@ -644,9 +645,9 @@ function grep(pattern, opts = {}) {
     const includeGlob = opts.glob ? `--include=${JSON.stringify(opts.glob)}` : (opts.include ? `--include=${JSON.stringify(opts.include)}` : '');
     if (hasRg) {
       const rgGlob = opts.glob ? `-g ${JSON.stringify(opts.glob)}` : '';
-      cmd = `rg -n --color=never ${rgGlob} -C ${opts['-C'] || opts.context || 2} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      cmd = `rg -n --color=never ${rgGlob} -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     } else {
-      cmd = `grep -rn --color=never ${includeGlob} -C ${opts['-C'] || opts.context || 2} --exclude-dir={node_modules,.git,dist,build} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
+      cmd = `grep -rn --color=never ${includeGlob} -C ${toNonNegInt(opts['-C'] ?? opts.context, 2, 100)} --exclude-dir={node_modules,.git,dist,build} ${JSON.stringify(pattern)} ${JSON.stringify(cwd)}`;
     }
     const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
@@ -832,7 +833,7 @@ function executeShellVisible(command, opts = {}, onProgress) {
     // Script that runs the command, streams output to both terminal and tmpFile via tee
     const scriptContent = `#!/bin/bash
 set -o pipefail
-cd "${cwd}"
+cd ${shellQuote(cwd)}
 ${command} 2>&1 | tee "${tmpFile}"
 EXIT_CODE=$?
 echo ""
@@ -1127,7 +1128,12 @@ function installPackages(packages, opts = {}) {
   const hasCargo = fs.existsSync(path.join(cwd, 'Cargo.toml'));
 
   let cmd;
-  const pkgList = Array.isArray(packages) ? packages.join(' ') : packages;
+  let pkgList;
+  try {
+    pkgList = (Array.isArray(packages) ? packages : [packages]).map(p => assertSafeName(p, 'pacote')).join(' ');
+  } catch (e) {
+    return err(e.message);
+  }
 
   if (hasPackageJson) cmd = `npm install ${pkgList}`;
   else if (hasRequirements) cmd = `pip install ${pkgList}`;
@@ -1167,7 +1173,7 @@ function gitDiff(opts = {}) {
 
 function gitLog(opts = {}) {
   const cwd = resolvePath(opts.cwd || '.');
-  const n = opts.n || opts.limit || 10;
+  const n = toNonNegInt(opts.n ?? opts.limit, 10, 1000);
   const result = safeExec(`git log --oneline -${n}`, { cwd });
   if (!result.success) return err(result.error);
   const lines = result.stdout.trim().split('\n').filter(Boolean);
@@ -1382,6 +1388,15 @@ function openDebugTerminal(params = {}) {
   const { spawn } = require('child_process');
   const os = require('os');
 
+  // LLM-controllable params: pm2 process name and --lines go into a shell command.
+  let target, nLines;
+  try {
+    target = assertSafeName(targetProcess, 'processo pm2');
+    nLines = toNonNegInt(lines, 50, 5000);
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+
   // Detect available terminal emulator
   const terminals = [
     { cmd: 'gnome-terminal', args: (command) => ['--', 'bash', '-c', command] },
@@ -1408,8 +1423,8 @@ function openDebugTerminal(params = {}) {
     return { success: false, error: 'Nenhum terminal gráfico encontrado. Instale gnome-terminal, konsole, xterm, etc.' };
   }
 
-  const followFlag = follow ? '--lines 100 --timestamp' : `--lines ${lines}`;
-  const command = `echo "🚀 Luna Debug Terminal — ${targetProcess}" && echo "========================================" && pm2 logs ${targetProcess} ${followFlag}; echo; echo "[Pressione ENTER para fechar]"; read`;
+  const followFlag = follow ? '--lines 100 --timestamp' : `--lines ${nLines}`;
+  const command = `echo "🚀 Luna Debug Terminal — ${target}" && echo "========================================" && pm2 logs ${target} ${followFlag}; echo; echo "[Pressione ENTER para fechar]"; read`;
 
   const child = spawn(detected.cmd, detected.args(command), {
     detached: true,
@@ -1419,8 +1434,8 @@ function openDebugTerminal(params = {}) {
 
   return ok({
     terminal: detected.cmd,
-    target: targetProcess,
-    message: `✅ Terminal de debug aberto: ${detected.cmd}\n📋 Processo: ${targetProcess}\n💡 Comando: pm2 logs ${targetProcess} ${followFlag}\n🖥️  PID: ${child.pid}`,
+    target,
+    message: `✅ Terminal de debug aberto: ${detected.cmd}\n📋 Processo: ${target}\n💡 Comando: pm2 logs ${target} ${followFlag}\n🖥️  PID: ${child.pid}`,
     pid: child.pid,
   });
 }
