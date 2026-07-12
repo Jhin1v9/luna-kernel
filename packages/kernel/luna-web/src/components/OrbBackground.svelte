@@ -130,17 +130,24 @@
     animationId = requestAnimationFrame(animate);
   }
 
+  function handleResize() {
+    resize();
+    initOrbs();
+    initParticles();
+  }
+
   onMount(() => {
     ctx = canvas.getContext('2d');
     resize();
     initOrbs();
     initParticles();
     animate();
-    window.addEventListener('resize', () => { resize(); initOrbs(); initParticles(); });
+    window.addEventListener('resize', handleResize);
   });
 
   onDestroy(() => {
     cancelAnimationFrame(animationId);
+    window.removeEventListener('resize', handleResize);
   });
 </script>
 

@@ -42,3 +42,12 @@ test('T1: ChatArea has no per-event [SSE] / [done] debug logs', () => {
   assert.ok(!src.includes("'[done] finalResponse length:'"), 'done content dump must be gone');
   assert.ok(!src.includes('[DEBUG-LUNA]'), 'DEBUG-LUNA log must be gone');
 });
+
+// ── T2: OrbBackground resize listener cleanup ────────────────────────────────
+
+test('T2: OrbBackground registers a NAMED resize handler and removes it in onDestroy', () => {
+  const src = fs.readFileSync(ORB_BG, 'utf8');
+  assert.ok(!src.includes("addEventListener('resize', () =>"), 'anonymous resize listener must be gone');
+  assert.ok(src.includes("addEventListener('resize', handleResize)"), 'named handler must be registered');
+  assert.ok(src.includes("removeEventListener('resize', handleResize)"), 'handler must be removed in onDestroy');
+});
