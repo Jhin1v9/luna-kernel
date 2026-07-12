@@ -2434,7 +2434,7 @@ class LunaSoul extends EventEmitter {
           // v10.27-fix: Only force newChat for Kimi — other providers may lose login state on reload.
           const provider = options.provider || 'kimi';
           const shouldForceNewChat = provider === 'kimi' && isFirstMessage && bridgeRetryCount === 0;
-          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: shouldForceNewChat }, provider);
+          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: shouldForceNewChat, isAutoContinue: safety > 1 }, provider);
 
           for await (const event of stream) {
             // v10.13: Drain any completed background actions BEFORE processing stream event
@@ -2938,7 +2938,7 @@ REGRAS:
 
         console.log(`[PLAN MODE] Turn ${turn + 1}/${MAX_TURNS} starting (toolsSoFar=${totalToolCalls}, promptLen=${turnPrompt.length})`);
 
-        const stream = this.kimiBridge.sendMessageStream(userId, turnPrompt, { mode: 'thinking' }, options.provider || 'kimi');
+        const stream = this.kimiBridge.sendMessageStream(userId, turnPrompt, { mode: 'thinking', isAutoContinue: turn > 0 }, options.provider || 'kimi');
 
         for await (const event of stream) {
           while (eventBus.queue.length > 0) {

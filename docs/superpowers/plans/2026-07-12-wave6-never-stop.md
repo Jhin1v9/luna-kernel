@@ -202,7 +202,7 @@ test('W6-T5: action cache is size-bounded', () => {
 
 **Why (A-Q2):** every loop turn creates fresh dedup sets, but the DOM still shows the PREVIOUS turn's last assistant segment — four detectors scan it and re-emit its tool JSON as new actions. Wave 2's `initialText`/Phase 0 guards protect only the state_change text channel; `action_detected`/`response_detected` have no turn-scoping.
 
-- [ ] **T6.1. Failing tests**
+- [x] **T6.1. Failing tests**
 
 ```js
 test('W6-T6: dom-event enqueue dedups across turns per user', () => {
@@ -217,13 +217,13 @@ test('W6-T6: sendMessageStream records the pre-send assistant marker', () => {
 });
 ```
 
-- [ ] **T6.2. Implement**
+- [x] **T6.2. Implement**
 
 1. At send start (after the queue purge `:7403-7404`), capture `session._turnAssistantMarker` = current count (or last-segment identity hash) of `.segment-assistant` nodes, evaluated once.
 2. In the dom-structure poll and `_extractJsonBlocksFromDOM`: only scan assistant segments at index >= marker (or strictly newer than the marker hash).
 3. At `_enqueueDomEvent` (`:5657`): maintain `session._domEventSeen` (keyed by event type + content hash); drop duplicates; clear the set when a real user message is sent (same place the marker is captured). Cap the set (e.g. 500) with FIFO eviction.
 
-- [ ] **T6.3. Verify + commit** — wave2 + full regression (188→190). `fix(bridge): turn-scoped phantom detection - pre-send assistant marker + cross-turn dom-event dedup kill the re-detected-previous-turn loop`.
+- [x] **T6.3. Verify + commit** — wave2 + full regression (188→190). `fix(bridge): turn-scoped phantom detection - pre-send assistant marker + cross-turn dom-event dedup kill the re-detected-previous-turn loop`.
 
 ---
 

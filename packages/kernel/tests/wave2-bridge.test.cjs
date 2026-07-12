@@ -407,9 +407,13 @@ test('W6-T1: new-assistant wait loop is bounded and cancellable', () => {
   const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
   // Anchor on the generator definition (plain 'sendMessageStream' also appears
   // in earlier comments), then locate the loop's own selector probe.
+  // W6-T6 adaptation: the pre-send marker capture added an EARLIER
+  // querySelectorAll('.segment-assistant') inside sendMessageStream, so the
+  // loop is now anchored on its unique 'New assistant detected' log line
+  // (all four needles sit within -1293..-849 chars of it).
   const streamIdx = src.indexOf('async *sendMessageStream');
   assert.notStrictEqual(streamIdx, -1, 'sendMessageStream must exist');
-  const loopIdx = src.indexOf("querySelectorAll('.segment-assistant')", streamIdx);
+  const loopIdx = src.indexOf('New assistant detected', streamIdx);
   assert.notStrictEqual(loopIdx, -1, 'new-assistant loop must exist');
   const window = src.slice(Math.max(0, loopIdx - 1500), loopIdx + 1500);
   assert.ok(window.includes('NEW_ASSISTANT_TIMEOUT_MS = 120_000'), 'loop must have a timeout constant');
@@ -445,4 +449,48 @@ test('W6-T3: Phase 1 safety timeout is re-enabled (large but real)', () => {
   const window = src.slice(checkIdx, checkIdx + 600);
   assert.ok(window.includes('isComplete = true'), 'expiry must force completion');
   assert.ok(window.includes('break'), 'expiry must break the wait loop into the final-extraction tail');
+});
+
+// ── W6-T6: turn-scoped phantom-action detection ──
+// NOTE (adaptation): plain '_enqueueDomEvent' / 'sendMessageStream' first match
+// call sites and comments OUT OF SCOPE (same problem W6-T1/T3 hit). Anchored on
+// the definition signatures instead.
+
+test('W6-T6a: _enqueueDomEvent consults a cross-turn seen-set', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const defIdx = src.indexOf('_enqueueDomEvent(userId, event)');
+  assert.notStrictEqual(defIdx, -1, '_enqueueDomEvent definition must exist');
+  const window = src.slice(Math.max(0, defIdx - 500), defIdx + 2500);
+  assert.ok(/_domEventSeen|seenDomEvents/.test(window), 'enqueue must consult a cross-turn seen-set');
+});
+
+test('W6-T6b: sendMessageStream captures the pre-send assistant marker and dom detectors use it', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const markerRe = /_turnAssistant(Marker|Index|Count)|preSendAssistant/;
+
+  const streamIdx = src.indexOf('async *sendMessageStream');
+  assert.notStrictEqual(streamIdx, -1, 'sendMessageStream definition must exist');
+  const streamWindow = src.slice(streamIdx, streamIdx + 16000);
+  // Pin the actual assignment — the unrelated v7.7 variable preSendAssistantCount
+  // used to satisfy the old markerRe and made this assertion vacuous.
+  assert.ok(/session\._turnAssistantMarker\s*=/.test(streamWindow),
+    'a pre-send assistant marker must be assigned at send start');
+  // W6-T6 review follow-up: the marker must come from the pre-Enter snapshot
+  // count — a post-Enter evaluate races Kimi's optimistic placeholder render
+  // and can exclude the whole turn from DOM scanning.
+  // (Needle must include 'resolvedProvider': bare 'session._turnAssistantMarker ='
+  // is a prefix of the poll's '===  'number' check and anchors on the wrong site.)
+  const assignWindow = sliceAround(src, 'session._turnAssistantMarker = resolvedProvider', 400);
+  assert.ok(assignWindow.includes('preSendAssistantCount'),
+    'marker must reuse the race-free pre-send snapshot count');
+
+  // 'dom-structure' first occurs at the source tag; the marker-scoped evaluate
+  // sits ~7.5k chars before it — span 20000 covers both.
+  const domWindow = sliceAround(src, 'dom-structure', 20000);
+  assert.ok(markerRe.test(domWindow), 'dom-structure poll must use the marker to skip pre-turn segments');
+
+  // '_extractJsonBlocksFromDOM' first occurs at its poller call site, which must
+  // pass the session marker (definition keeps the param optional).
+  const jsonWindow = sliceAround(src, '_extractJsonBlocksFromDOM', 3000);
+  assert.ok(markerRe.test(jsonWindow), '_extractJsonBlocksFromDOM must receive/use the marker');
 });

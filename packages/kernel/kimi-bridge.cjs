@@ -5584,7 +5584,7 @@ class KimiBridge {
             // code blocks are still mutating while streaming and produce partial tools.
             if (provider !== 'deepseek') {
               try {
-                const jsonBlocks = await this._extractJsonBlocksFromDOM(session.page);
+                const jsonBlocks = await this._extractJsonBlocksFromDOM(session.page, session?._turnAssistantMarker);
                 for (const action of jsonBlocks.actions) {
                   this._enqueueDomEvent(userId, { type: 'action_detected', action, source: 'json_block', timestamp: Date.now() });
                 }
@@ -5660,6 +5660,37 @@ class KimiBridge {
       // v7.0-fix: Auto-create queue if poller runs before sendMessageStream
       queue = { events: [], lastReadIndex: 0, createdAt: Date.now(), queueId: `auto-${Date.now()}` };
       this.domEventQueues.set(userId, queue);
+    }
+    // W6-T6: cross-turn dedup for phantom-prone content events. Per-stream dedup
+    // sets are recreated every loop turn, but the DOM still shows the PREVIOUS
+    // turn's last assistant segment, so some detectors can re-emit its tool JSON
+    // as new actions. A stable content hash (same logical event, different
+    // timestamp) catches those re-emissions. Scoped to action_detected/
+    // response_detected only: state_change/deltas are handled by per-source
+    // cursors, and completion_candidate has no content (constant key) —
+    // deduping it would break completion on every later turn.
+    // Cleared on real user sends (sendMessageStream, !options.isAutoContinue).
+    // Entries expire after SEEN_TTL_MS WITHOUT refresh: phantoms are re-emitted
+    // seconds after the original (next turn's poll start), so they stay dropped
+    // across consecutive turns, while a legitimate identical re-issue in a later
+    // loop turn (e.g. re-run `npm test` after a fix — the soul's policy is
+    // one replay then re-execute for real) is only suppressed inside this window.
+    if (event.type === 'action_detected' || event.type === 'response_detected') {
+      const session = this.userSessions.get(userId);
+      if (session) {
+        const SEEN_TTL_MS = 120 * 1000;
+        if (!session._domEventSeen) session._domEventSeen = new Map();
+        const seen = session._domEventSeen;
+        const key = event.type + ':' + crypto.createHash('sha256')
+          .update(JSON.stringify({ t: event.type, a: event.action, r: event.response, c: event.code }))
+          .digest('hex').slice(0, 16);
+        const now = Date.now();
+        const seenAt = seen.get(key);
+        if (seenAt !== undefined && now - seenAt < SEEN_TTL_MS) return; // phantom re-detection — drop
+        if (seen.has(key)) seen.delete(key); // keep FIFO order honest on re-insert
+        if (seen.size >= 500) seen.delete(seen.keys().next().value); // FIFO eviction
+        seen.set(key, now);
+      }
     }
     queue.events.push(event);
     // Circular buffer: trim to max 2000 events
@@ -5850,9 +5881,15 @@ class KimiBridge {
       // v10.0-fix: Filter out tool JSON code blocks from response text to prevent
       // tool JSON from leaking into the chat. Detected tools are returned separately
       // and enqueued as action_detected events by the caller.
-      const structureBased = await page.evaluate(() => {
+      // W6-T6: when the session has a pre-send assistant marker, only scan
+      // assistant segments at index >= marker — the previous turn's last segment
+      // is still in the DOM and must not be re-detected. null marker => scan
+      // everything, exactly as before (non-Kimi providers, no active send).
+      const turnAssistantMarker = (session && typeof session._turnAssistantMarker === 'number') ? session._turnAssistantMarker : null;
+      const structureBased = await page.evaluate((assistantMarker) => {
         const assistants = document.querySelectorAll('.segment-assistant');
-        const lastAssistant = assistants[assistants.length - 1];
+        const scoped = typeof assistantMarker === 'number' ? Array.from(assistants).slice(assistantMarker) : Array.from(assistants);
+        const lastAssistant = scoped[scoped.length - 1];
         if (!lastAssistant) return null;
 
         let thinking = '';
@@ -6006,22 +6043,22 @@ class KimiBridge {
           return { thinking, response: response.trim(), detectedTools, source: 'dom-structure' };
         }
         return null;
-      });
+      }, turnAssistantMarker);
 
       if (structureBased) {
         const { canSteer, isGenerating } = await this._detectUiState(page, provider);
         // v10.0-fix: Enqueue detected tools as action_detected events so they are
         // processed separately from the response text.
         if (structureBased.detectedTools && structureBased.detectedTools.length > 0 && userId) {
-          const queue = this.domEventQueues.get(userId);
-          if (queue) {
-            for (const toolAction of structureBased.detectedTools) {
-              queue.events.push({
-                type: 'action_detected',
-                action: toolAction,
-                source: 'dom_structure_tool_filter',
-              });
-            }
+          // W6-T6 review: route through _enqueueDomEvent so cross-turn dedup and
+          // queue management apply uniformly to every action_detected event.
+          for (const toolAction of structureBased.detectedTools) {
+            this._enqueueDomEvent(userId, {
+              type: 'action_detected',
+              action: toolAction,
+              source: 'dom_structure_tool_filter',
+              timestamp: Date.now(),
+            });
           }
         }
         log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}, tools=${(structureBased.detectedTools || []).length}`);
@@ -6499,10 +6536,13 @@ class KimiBridge {
    * v5.3: Extract JSON code blocks from the DOM in REAL-TIME.
    * Returns { responses: [], actions: [] } for FIFO streaming.
    * Detects {"response": "..."} and {"tool": "...", "params": {...}} blocks.
+   * W6-T6: optional assistantMarker (count of pre-send .segment-assistant nodes)
+   * scopes the scan to segments created by the current turn; when null/undefined
+   * the behavior is exactly as before (scan the last assistant match).
    */
-  async _extractJsonBlocksFromDOM(page) {
+  async _extractJsonBlocksFromDOM(page, assistantMarker = null) {
     try {
-      return await page.evaluate(() => {
+      return await page.evaluate((marker) => {
         const responses = [];
         const actions = [];
         const seen = new Set();
@@ -6547,7 +6587,19 @@ class KimiBridge {
         let lastAssistant = null;
         for (const sel of assistantSelectors) {
           const els = document.querySelectorAll(sel);
-          if (els.length) { lastAssistant = els[els.length - 1]; break; }
+          if (!els.length) continue;
+          // W6-T6: the marker counts .segment-assistant nodes present before the
+          // current send. When set, only segments beyond it belong to this turn;
+          // if none exist yet, there is nothing new to extract — do NOT fall
+          // through to broader selectors (they would re-match the same stale
+          // nodes, e.g. [class*="assistant"][class*="segment"] also matches
+          // .segment-assistant elements). null marker => today's behavior.
+          if (sel === '.segment-assistant' && typeof marker === 'number') {
+            if (els.length > marker) lastAssistant = els[els.length - 1];
+            break;
+          }
+          lastAssistant = els[els.length - 1];
+          break;
         }
         if (!lastAssistant) return { responses, actions };
 
@@ -6827,7 +6879,7 @@ class KimiBridge {
         }
 
         return { responses, actions };
-      });
+      }, assistantMarker);
     } catch (e) {
       log.warn(`_extractJsonBlocksFromDOM failed: ${e.message}`);
       return { responses: [], actions: [] };
@@ -7160,6 +7212,10 @@ class KimiBridge {
       }
 
       log.success(`Steer injected for user ${hashUserId(userId)}`);
+      // W6-T6: a steer is real user input mid-stream — let identical tool JSON
+      // be delivered again. Marker intentionally untouched: the in-flight
+      // assistant segment must keep streaming.
+      if (session) session._domEventSeen = new Map();
       return { success: true };
     } catch (err) {
       log.error(`Steer injection failed: ${err.message}`);
@@ -7414,6 +7470,27 @@ class KimiBridge {
       queue.events.length = 0;
       queue.lastReadIndex = 0;
       if (session) session._completionState = null;
+      // W6-T6: turn-scoped phantom-action detection.
+      // (1) Pre-send assistant marker: number of .segment-assistant nodes that
+      //     existed BEFORE this message was sent. Reuses the v7.7 pre-send
+      //     snapshot count (captured pre-fill/pre-Enter above) — a post-Enter
+      //     evaluate would race Kimi's optimistic render of this turn's
+      //     placeholder segment and could exclude the whole turn from scanning.
+      //     DOM detectors (dom-structure poll, _extractJsonBlocksFromDOM) only
+      //     scan segments at index >= marker, so the previous turn's last
+      //     assistant segment — still visible in the DOM — cannot be re-emitted
+      //     as new actions. .segment-assistant is Kimi-only: other providers
+      //     get null = "scan everything" (today's behavior).
+      // (2) Cross-turn dom-event dedup reset: a REAL user send starts a new
+      //     topic, so tool JSON identical to an earlier conversation must be
+      //     allowed again. The soul marks its auto-continue loop sends with
+      //     options.isAutoContinue (luna-soul.cjs); every other send clears.
+      if (session) {
+        session._turnAssistantMarker = resolvedProvider === 'kimi' ? preSendAssistantCount : null;
+        if (!options.isAutoContinue) {
+          session._domEventSeen = new Map();
+        }
+      }
       log.info(`[DEBUG-LUNA] Step 7: Message sent, starting v7.0 stream consumer`);
 
       // v7.7: Keep assistant detection for logging/compatibility, but extraction
