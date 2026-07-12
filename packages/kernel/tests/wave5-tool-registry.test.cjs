@@ -28,7 +28,7 @@ function rejects(tool, params, re) {
 
 // ── P0: per-schema accept/reject matrix (12 schemas, current definitions) ────
 // Wave 3 H1 already pins: fail-open warn-once, writeFile filePath/file aliases
-// (required + absolute + pathMustNotContain on the alias value). Not repeated here.
+// (required + absolute on the alias value). Not repeated here.
 
 test('P0-1: readFile — path required (string), numeric offsets, pathMustExist NOT enforced', () => {
   assert.strictEqual(validateToolCall('readFile', { path: '/etc/hostname' }), true);
