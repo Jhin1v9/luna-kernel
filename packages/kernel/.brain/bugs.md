@@ -17,11 +17,6 @@
 
 ### Bridge (`kimi-bridge.cjs` + extension)
 
-- [ ] 🔴 **Duplicated/triplicated text during streaming** (owner-reported symptom #3) — 3 concurrent text producers (extension, DOM poll, ultra-light observer) feed ONE shared `lastResponse` cursor with `slice(length)` diff (`:7532-7664`); no soul→bridge handshake exists.
-- [ ] 🟠 **Parent+child selector duplication** — `luna-extension/injected.js:34` and `kimi-dom-observer.js:17` match `.markdown-container` (parent) AND `.segment-text` (child) → same paragraph concatenated twice per event.
-- [ ] 🟠 **ReferenceError: `session` out of scope** (`:6002` declared inside `if`, referenced at `:6044`) — swallowed by catch → `empty-wait` branch is dead code; poller logs "error" whenever all extraction layers fail.
-- [ ] 🔴 **Cross-user event theft** — `global.__lunaExtensionEventBuffers` (`:5174`) drained without userId/sessionId filter (`:5179-5182`): first poller steals events from other users' sessions.
-- [ ] 🟠 **DOM poller never stops** (`:7827-7828`) — stale events from the previous turn feed the next message's queue (`:7201`, Phase 0 `:7422-7451`).
 - [ ] 🟠 **Tools lost: `_extractJsonToolCalls` counts braces inside strings** (`:6846-6852`) — writeFile with HTML/JS content breaks the slice → JSON.parse fails → tool silently dropped. The string-aware `extractFirstCompleteJsonObject` (`:2483-2521`) exists but isn't used here.
 - [ ] 🟠 **Tools lost: extension fallback regex can't parse nested params** (`injected.js:92-93`) — non-greedy `\{[\s\S]*?\}` stops at first `}`; no jsonrepair in the extension.
 - [ ] 🟠 **DeepSeek tools may never be delivered** — generic path only enqueues tools after 5 stable response cycles (`:6004-6036`); if completion heuristics never fire, tools never reach the soul.
@@ -71,6 +66,14 @@
 - [x] 🟠 **Tool cards transport causes (3 of 4)** — dedup key includes `toolInstanceId || id` for action_* events; `toolInstanceId` persisted and forwarded on both SSE paths; event ids now `ev-${Date.now()}-${seq}` collision-free. (`62c4c96`, `838b758`; tests `wave1-chat-routes.test.cjs`)
 - [x] 🟠 **Transport dropped error/system event text** — content extracted from `ev.error || ev.message || ...`; SSE payloads match ChatArea handlers. (`62c4c96`)
 - [x] 🔴 **Append bug — quadratic text duplication** — `responseBuffer` cleared after every successful flush (and on duplicate-guard paths); dist rebuilt. (`0f5023d`, `4a781f8`, `1195fd6`)
+
+### Wave 2 (2026-07-12) — bridge/stream correctness
+
+- [x] 🟠 **ReferenceError: `session` out of scope** — declaration hoisted to the top of `pollWithTimeout`'s try; `empty-wait` branch and log throttle live again. (`0a6fff3`; tests `wave2-bridge.test.cjs` A1/A1b)
+- [x] 🟠 **Parent+child selector duplication** — `.markdown-container` dropped from `textContent` in `injected.js` + `kimi-dom-observer.js`; extension VERSION bumped to 2.1.1-wave2 (owner must reload the extension). (`a248677`, `337fb3e`; tests B1/B1b)
+- [x] 🔴 **Cross-user event theft** — `_consumeExtensionEvents(expectedUrl)` filters buffers by normalized tab URL; non-matching events stay buffered; fail-closed on ambiguity. (`be52a5c`, `542c824`; tests C1a–C2). Agent/swarm mode caveat tracked separately (open).
+- [x] 🟠 **DOM poller never stops / stale events** — poller stopped in `sendMessageStream` finally before `processing=false`; queue + completion state purged right after Enter; premature `completion_candidate` ignored via `lib/stream-completion-guard.cjs`. (`ae12ff6`, `8a0f2bf`, `84be75a`; tests D1–D3)
+- [x] 🔴 **Duplicated/triplicated text during streaming** — per-source response cursors with cross-source prefix guard (`lib/stream-text-cursor.cjs`) replace the single shared `lastResponse` diff; wired into Phase 0 seed, `state_change`, `response_delta`. Passed adversarial fuzz (200 randomized multi-source rounds, zero duplicated characters). (`0150d4f`; tests E1a–E1f). Known residual: a legit mid-stream regeneration freezes the stream until the turn-end done-replace (strictly better than the old corrupted output).
 
 ---
 
