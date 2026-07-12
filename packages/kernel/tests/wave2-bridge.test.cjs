@@ -494,3 +494,32 @@ test('W6-T6b: sendMessageStream captures the pre-send assistant marker and dom d
   const jsonWindow = sliceAround(src, '_extractJsonBlocksFromDOM', 3000);
   assert.ok(markerRe.test(jsonWindow), '_extractJsonBlocksFromDOM must receive/use the marker');
 });
+
+// ── W6-T9: {"script"} JSON must never be silently dropped ──
+// Kimi's DOM renders script JSON with LITERAL newlines inside string values.
+// Strict JSON.parse rejects that; the recovered object must expose .script.
+
+test('W6-T9a: extractResponseFromCompleteJson recovers script with literal newlines', () => {
+  const { extractResponseFromCompleteJson } = require(BRIDGE_PATH);
+  // Literal \n INSIDE the string value — exactly what the Kimi DOM delivers.
+  const raw = '{"script": "#!/bin/bash\nset -e\nmkdir -p /tmp/x", "language": "bash"}';
+  const r = extractResponseFromCompleteJson(raw);
+  assert.ok(r && r.type === 'script' && typeof r.script === 'string',
+    'script must be recovered, got ' + JSON.stringify(r));
+  assert.ok(r.script.includes('mkdir -p'), 'script body must survive the newline walker');
+
+  // Same recovery must hold for a chat response with a literal newline.
+  const r2 = extractResponseFromCompleteJson('{"response": "linha um\nlinha dois"}');
+  assert.ok(r2 && r2.type === 'response' && r2.text.includes('linha dois'),
+    'response with literal newline must be recovered, got ' + JSON.stringify(r2));
+});
+
+test('W6-T9b: _extractJsonToolCalls Strategy 2 matches the script key', () => {
+  const { _extractJsonToolCalls } = require(BRIDGE_PATH);
+  const tools = _extractJsonToolCalls('text before {"script": "echo oi", "language": "bash"} text after');
+  assert.strictEqual(tools.length, 1, 'exactly one tool call expected, got ' + JSON.stringify(tools));
+  assert.strictEqual(tools[0].tool, 'executeScript',
+    'script JSON must map to executeScript, got ' + JSON.stringify(tools[0]));
+  assert.ok(tools[0].params.code.includes('echo oi'),
+    'executeScript params.code must carry the script body');
+});

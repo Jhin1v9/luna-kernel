@@ -260,3 +260,77 @@ test('W6-T8a: response_detected does not persist — _handleChat is the sole wri
   assert.ok(!window.includes('.appendEvent('),
     'response_detected must not call appendEvent (_handleChat is the sole writer)');
 });
+
+// ── W6-T9c: soul backstop — raw tool/script JSON is never persisted as chat ──
+// The pure helper interprets a response that IS a JSON payload; prose (even
+// with embedded JSON) passes through; broken intent-JSON yields an invalid
+// marker so _processModeResult can swap in a friendly PT-BR error.
+
+test('W6-T9c: _tryExtractRawToolJson classifies raw JSON responses', () => {
+  const { _tryExtractRawToolJson } = require('../luna-soul.cjs');
+
+  // Raw script JSON → the exact shape parseKimiResponse produces for scripts
+  // (mode SCRIPT + script field — _processModeResult's SCRIPT case dispatches
+  // it as executeScript).
+  const script = _tryExtractRawToolJson('{"script": "echo oi", "language": "bash"}');
+  assert.deepStrictEqual(script, { mode: 'SCRIPT', script: 'echo oi', language: 'bash' },
+    'script JSON must re-dispatch in parseKimiResponse SCRIPT shape');
+
+  // Raw tool JSON → ACTION shape with params.
+  const tool = _tryExtractRawToolJson('{"tool": "readFile", "params": {"path": "/tmp/x"}}');
+  assert.deepStrictEqual(tool, { mode: 'ACTION', tool: 'readFile', params: { path: '/tmp/x' } },
+    'tool JSON must re-dispatch as ACTION');
+
+  // Prose that merely embeds JSON must NOT match — the whole response has to
+  // be the JSON object.
+  assert.strictEqual(_tryExtractRawToolJson('olha aqui {"tool": "readFile"} legal'), null,
+    'prose with embedded JSON must pass through untouched');
+  assert.strictEqual(_tryExtractRawToolJson('oi tudo bem?'), null,
+    'plain prose must pass through untouched');
+
+  // W6-T9 review (Major 1): valid JSON that is NOT a tool/script payload is
+  // legitimate chat content (user asked to SEE a JSON example) — never eat it.
+  assert.strictEqual(_tryExtractRawToolJson('{"name": "demo", "version": "1.0"}'), null,
+    'valid non-tool JSON must fall through to normal chat');
+  assert.strictEqual(_tryExtractRawToolJson('```json\n{"name": "demo"}\n```'), null,
+    'fenced non-tool JSON must fall through to normal chat');
+
+  // W6-T9 review (Minor): flat {tool, ...fields} JSON folds into params like
+  // parseKimiResponse's ACTION case does.
+  const flat = _tryExtractRawToolJson('{"tool": "readFile", "path": "/tmp/y"}');
+  assert.deepStrictEqual(flat, { mode: 'ACTION', tool: 'readFile', params: { path: '/tmp/y' } },
+    'flat tool JSON must fold extra fields into params');
+
+  // W6-T9 review (accepted risk, pinned): a WHOLE fenced tool-JSON reply — no
+  // prose at all — dispatches as an action. Any prose defeats the gate (above).
+  const fencedTool = _tryExtractRawToolJson('```json\n{"tool": "readFile", "params": {"path": "/etc/hosts"}}\n```');
+  assert.ok(fencedTool && fencedTool.mode === 'ACTION' && fencedTool.tool === 'readFile',
+    'whole-response fenced tool JSON dispatches as ACTION (pinned accepted behavior)');
+
+  // Clearly intended JSON but unparseable → invalid marker (never persist raw).
+  const broken = _tryExtractRawToolJson('{ "tool": ]');
+  assert.ok(broken && broken.invalid === true,
+    'broken intent-JSON must yield the invalid marker, got ' + JSON.stringify(broken));
+
+  // Source-pin: the backstop must actually be wired inside _processModeResult.
+  // Anchor on the call expression (parsed.response) — the helper definition
+  // uses (text), so this uniquely hits the call site.
+  const src = fs.readFileSync(SOUL, 'utf8');
+  const callIdx = src.indexOf('_tryExtractRawToolJson(parsed.response)');
+  assert.notStrictEqual(callIdx, -1,
+    '_tryExtractRawToolJson must be called on parsed.response — wiring removed?');
+  const window = src.slice(Math.max(0, callIdx - 2000), callIdx + 2000);
+  assert.ok(window.includes('_processModeResult'),
+    'the backstop call must live inside _processModeResult');
+  // And it must sit BEFORE the mode switch, so re-dispatch covers every mode path.
+  const switchIdx = src.indexOf('switch (mode)', callIdx);
+  assert.ok(switchIdx !== -1 && switchIdx - callIdx < 2000,
+    'backstop must run before the mode switch in _processModeResult');
+  // W6-T9 review (Major 2): re-dispatch must MUTATE parsed in place — recursing
+  // with a fresh object leaves the outer frame as CHAT, so `done` carries the
+  // raw JSON and the agent loop terminates without feeding the result back.
+  assert.ok(!window.includes('return this._processModeResult(rawToolJson'),
+    're-dispatch must not recurse with a fresh object (outer frame stays CHAT)');
+  assert.ok(window.includes('Object.assign(parsed, rawToolJson)'),
+    're-dispatch must mutate parsed in place');
+});

@@ -404,6 +404,56 @@ ${masterPrompt || '(master prompt not loaded)'}
 // JSON PARSER (robusto, 5 estratégias + graceful fallback)
 // ============================================================
 
+// W6-T9: backstop parser for CHAT responses that are actually raw tool/script
+// JSON. Kimi's DOM sometimes delivers the {"tool":...} / {"script":...} payload
+// as plain text (strict parsers fail on literal newlines inside strings), and
+// the soul would persist that raw JSON as a chat reply. When the ENTIRE cleaned
+// response is a single JSON object, interpret it. Returns one of:
+//   { mode: 'ACTION', tool, params }   — parseKimiResponse-compatible shape for tool JSON
+//   { mode: 'SCRIPT', script, language? } — parseKimiResponse shape for script JSON
+//   { invalid: true }                  — clearly intended JSON but UNPARSEABLE
+//   null                               — plain prose (incl. embedded JSON) or valid
+//                                        JSON that is NOT a tool/script payload
+//                                        (e.g. the user asked to SEE a JSON example —
+//                                        never eat legitimate chat content)
+function _tryExtractRawToolJson(text) {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  // Intent gate: the whole response must BE a JSON payload. Prose that merely
+  // embeds JSON must never match.
+  const intendedJson = trimmed.startsWith('{') || /^```(?:json)?(?:\s|$)/i.test(trimmed);
+  if (!intendedJson) return null;
+  // Same simple cleaning rules as _extractParsedText: strip code fences and
+  // Kimi DOM headers like "JSON\nCopy\n".
+  const cleaned = trimmed
+    .replace(/^\s*```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+    .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '')
+    .trim();
+  if (!cleaned.startsWith('{')) return { invalid: true };
+  let obj = null;
+  try { obj = JSON.parse(cleaned); } catch {}
+  if (!obj) obj = tolerantJsonParse(cleaned);
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { invalid: true };
+  if (typeof obj.tool === 'string' && obj.tool) {
+    // Accept nested params AND flat {tool, ...fields} — parseKimiResponse's
+    // case 'ACTION' folds flat fields into params the same way.
+    const { tool: _t, params: _p, ...rest } = obj;
+    return { mode: 'ACTION', tool: obj.tool, params: obj.params || (Object.keys(rest).length > 0 ? rest : {}) };
+  }
+  if (typeof obj.script === 'string' && obj.script) {
+    const result = { mode: 'SCRIPT', script: obj.script };
+    if (typeof obj.language === 'string') result.language = obj.language;
+    return result;
+  }
+  // Intended tool/script JSON that lost its payload in parsing (e.g. jsonrepair
+  // turned `"tool": ]` into {"tool": null}) — never persist raw JSON as chat.
+  if (/"(?:tool|script)"\s*:/.test(cleaned)) return { invalid: true };
+  // Valid JSON that is not a tool/script payload: legitimate chat content.
+  return null;
+}
+
 function parseKimiResponse(text) {
   if (!text) return null;
 
@@ -3424,6 +3474,26 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
    */
   async _processModeResult(parsed, sessionId, originalInput, options, eventBus = null) {
     console.log(`[DEBUG-LUNA] _processModeResult started mode=${parsed.mode || 'CHAT'}`);
+    // W6-T9: backstop — a CHAT turn whose "response" is actually raw tool/script
+    // JSON (the Kimi DOM can deliver it as plain text) is re-dispatched as an
+    // action instead of being persisted as a chat reply. Raw JSON is NEVER
+    // persisted: intent-JSON that fails validation becomes a friendly PT-BR error.
+    if ((!parsed.mode || parsed.mode === 'CHAT') && typeof parsed.response === 'string') {
+      const rawToolJson = _tryExtractRawToolJson(parsed.response);
+      if (rawToolJson && rawToolJson.invalid) {
+        parsed.response = '⚠️ Recebi um comando em formato inválido e não consegui executá-lo. Tentei ler: formato JSON de ferramenta corrompido.';
+        // W6-T9 review: bare-JSON replies can arrive modeless (parseKimiResponse
+        // returns a modeless object for them) — pin CHAT so isPureChat and the
+        // stop gate fire and the friendly error is delivered, never fed back.
+        parsed.mode = 'CHAT';
+      } else if (rawToolJson) {
+        // W6-T9 review: mutate parsed IN PLACE (do not recurse with a fresh
+        // object) so processMessageStream's outer frame sees ACTION/SCRIPT —
+        // the tool result is fed back to Kimi and `done` never carries raw JSON.
+        delete parsed.response;
+        Object.assign(parsed, rawToolJson);
+      }
+    }
     const mode = parsed.mode || 'CHAT';
     const events = [];
     const pendingPromises = [];
@@ -5382,6 +5452,7 @@ module.exports = {
   LunaSoul,
   parseKimiResponse,
   parseTagResponse,
+  _tryExtractRawToolJson, // W6-T9: exported for unit tests
   isIncompleteResponse,
   buildSystemPrompt,
   loadSkillIndex,

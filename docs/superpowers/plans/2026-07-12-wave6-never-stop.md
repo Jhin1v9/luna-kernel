@@ -283,7 +283,7 @@ test('W6-T8: done events are content-deduped in the transport loop', () => {
 
 **Why (A-Q3):** Kimi's DOM renders script JSON with literal newlines inside strings → strict `JSON.parse` fails → regex fallback covers only `response`/`message` → null → nothing yielded, buffer discarded → soul treats raw script JSON as CHAT text and persists it (or hits empty-response). `_extractJsonToolCalls` Strategy 2 requires the `"tool"` key.
 
-- [ ] **T9.1. Failing tests (unit, real functions)**
+- [x] **T9.1. Failing tests (unit, real functions)**
 
 ```js
 test('W6-T9: extractResponseFromCompleteJson recovers script with literal newlines', () => {
@@ -306,13 +306,13 @@ test('W6-T9: soul never persists raw script JSON as a chat reply', () => {
 
 (If the two bridge functions aren't exported, add them to `module.exports` — wave2 tests already import internals this way; verify.)
 
-- [ ] **T9.2. Implement**
+- [x] **T9.2. Implement**
 
 1. `extractResponseFromCompleteJson`: before strict parse, pre-escape literal newlines/tabs inside JSON strings using the existing walker (`:6664-6699` — factor it out if needed); extend the regex fallback (`:301-308`) to cover `"script"` (and `"language"`).
 2. `_extractJsonToolCalls` Strategy 2 (`:6887`): accept `"script"` as a tool-object key alongside `"tool"`.
 3. Soul `_handleChat` (`:829` area): if the CHAT fallback's `response` text parses as a `{"script"}`/`{"tool"}` object, dispatch it as an action instead of persisting raw JSON; only persist if dispatch fails validation (then persist a friendly PT-BR error, never raw JSON).
 
-- [ ] **T9.3. Verify + commit** — wave2 + wave1 + full regression (193→196). `fix(bridge,soul): script JSON recovered from mangled DOM text - newline walker, script regex fallback, Strategy 2 key, soul re-dispatch backstop`.
+- [x] **T9.3. Verify + commit** — wave2 + wave1 + full regression (193→196). `fix(bridge,soul): script JSON recovered from mangled DOM text - newline walker, script regex fallback, Strategy 2 key, soul re-dispatch backstop`.
 
 ---
 

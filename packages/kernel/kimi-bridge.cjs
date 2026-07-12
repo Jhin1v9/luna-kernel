@@ -271,6 +271,41 @@ function extractWriteFileFromText(text) {
   return { type: 'tool', tool, params };
 }
 
+// W6-T9: Node-side character walker — escapes RAW newline/CR/tab characters
+// that appear INSIDE JSON string values (Kimi's DOM renders script JSON with
+// literal newlines, which strict JSON.parse rejects). Characters outside
+// strings are left untouched. Ported from the in-page tolerantJsonParse.
+function _preEscapeJsonStringNewlines(str) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\n') { out += '\\n'; continue; }
+      if (ch === '\r') { out += '\\r'; continue; }
+      if (ch === '\t') { out += '\\t'; continue; }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 function extractResponseFromCompleteJson(text) {
   if (!text) return null;
   // v10.24-fix: Strip DOM-extracted code block headers before parsing
@@ -280,8 +315,7 @@ function extractResponseFromCompleteJson(text) {
     .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
     .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '')
     .trim();
-  try {
-    const parsed = JSON.parse(cleaned);
+  const mapParsed = (parsed) => {
     if (parsed.response !== undefined && typeof parsed.response === 'string') {
       return { type: 'response', text: parsed.response };
     }
@@ -295,6 +329,18 @@ function extractResponseFromCompleteJson(text) {
     if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
       return { type: 'response', text: parsed.message };
     }
+    return null;
+  };
+  try {
+    const mapped = mapParsed(JSON.parse(cleaned));
+    if (mapped) return mapped;
+  } catch {}
+  // W6-T9: strict parse failed — the DOM may have emitted literal newlines/tabs
+  // inside string values (common for {"script": "#!/bin/bash\n..."}). Escape
+  // control characters inside strings and try again before the regex fallback.
+  try {
+    const mapped = mapParsed(JSON.parse(_preEscapeJsonStringNewlines(cleaned)));
+    if (mapped) return mapped;
   } catch {}
   // Fallback regex extraction for malformed but complete JSON
   try {
@@ -305,6 +351,14 @@ function extractResponseFromCompleteJson(text) {
     const msgMatch = cleaned.match(/"message"\s*:\s*"([\s\S]*?)"\s*[,}]/);
     if (msgMatch) {
       return { type: 'response', text: msgMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\') };
+    }
+    // W6-T9: recover {"script": "...", "language": "..."} from malformed JSON
+    const scriptMatch = cleaned.match(/"script"\s*:\s*"([\s\S]*?)"\s*[,}]/);
+    if (scriptMatch) {
+      const langMatch = cleaned.match(/"language"\s*:\s*"([^"]*)"/);
+      const result = { type: 'script', script: scriptMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\') };
+      if (langMatch) result.language = langMatch[1];
+      return result;
     }
   } catch {}
   // v11.1-fix: Last resort for file-write tool JSONs with unescaped quotes inside content.
@@ -6935,8 +6989,9 @@ class KimiBridge {
     }
 
     // Strategy 2: Extract raw JSON objects from text
-    // Look for { ... } blocks that contain "tool" field
-    const jsonRegex = /\{[\s\S]*?"tool"[\s\S]*?\}/g;
+    // Look for { ... } blocks that contain "tool" or "script" field (W6-T9:
+    // script-only JSON in prose must reach tryParse, which maps it to executeScript)
+    const jsonRegex = /\{[\s\S]*?"(?:tool|script)"[\s\S]*?\}/g;
     while ((match = jsonRegex.exec(text)) !== null) {
       // Try to find the complete JSON by counting braces
       const start = match.index;
@@ -8444,4 +8499,8 @@ module.exports = {
   closeKimiBridge,
   KimiLogger,
   KimiSessionStore,
+  // W6-T9: exported for unit tests. _extractJsonToolCalls is a pure method
+  // (verified: no `this` usage in its body), so a prototype-level wrapper is safe.
+  extractResponseFromCompleteJson,
+  _extractJsonToolCalls: (text) => KimiBridge.prototype._extractJsonToolCalls.call(null, text),
 };
