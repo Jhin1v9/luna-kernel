@@ -2381,7 +2381,7 @@ class LunaSoul extends EventEmitter {
 
     let loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage });
     let safety = 0;
-    const MAX_LOOPS = Number.MAX_SAFE_INTEGER; // ILIMITADO — o usuário pediu zero limites
+    const MAX_LOOPS = 50; // W6-T4: teto real — o loop nunca pode rodar para sempre
     let autoContinues = 0;
     const MAX_AUTO_CONTINUES = 3; // v10.16-fix: teto real para evitar loop infinito
 
@@ -2604,7 +2604,15 @@ class LunaSoul extends EventEmitter {
             // The miniReminder + _buildContext already enforce JSON-only output.
             // Including format examples here causes Kimi to echo them literally.
             loopInput = `${statusEmoji} FERRAMENTA EXECUTADA — ${toolsUsed}\n\n🎯 O QUE ACONTECEU:\nVocê enviou: ${toolsUsed}\nLuna executou no PC real do usuário.\nEste é o resultado REAL.\n\n📊 STATUS: ${successCount}/${totalCount} sucesso(s)\n\n📝 RESULTADO:\n${outputText}\n\nREGRAS:\n- Se o resultado acima já tem a informação que você precisava → responda ao usuário.\n- Se precisa de MAIS informações → use readFile/grep/searchFiles com PARÂMETROS DIFERENTES.\n- NUNCA repita ${toolsUsed} com os mesmos parâmetros.`;
-            loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
+            // W6-T4: a context-rebuild throw inside the catch must not escape the generator
+            try {
+              loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
+            } catch (ctxErr) {
+              console.error(`[LUNA-SOUL] _buildContext failed after stream cancel: ${ctxErr.message}`);
+              yield { type: 'error', error: `❌ Falha ao reconstruir contexto: ${ctxErr.message}`, sessionId };
+              yield { type: 'done', result: { success: false, error: ctxErr.message, sessionId }, sessionId };
+              return;
+            }
             continue; // Continue loop — send result back to Kimi
           }
           // v5.3-fix: User cancelled — not an error, just stop gracefully
@@ -2656,7 +2664,15 @@ class LunaSoul extends EventEmitter {
           }
 
           // Rebuild context with autocontinue
-          loopContext = await this._buildContext(sessionId, autoContinueText, { ...options, isFirstMessage: false, isToolResult: domActionResults.length > 0 });
+          // W6-T4: a context-rebuild throw inside the catch must not escape the generator
+          try {
+            loopContext = await this._buildContext(sessionId, autoContinueText, { ...options, isFirstMessage: false, isToolResult: domActionResults.length > 0 });
+          } catch (ctxErr) {
+            log.error(`[CRASH-RECOVERY] _buildContext failed: ${ctxErr.message}`);
+            yield { type: 'error', error: `❌ Falha ao reconstruir contexto após crash: ${ctxErr.message}`, sessionId };
+            yield { type: 'done', result: { success: false, error: ctxErr.message, sessionId }, sessionId };
+            return;
+          }
           log.info(`[CRASH-RECOVERY] Autocontinue prepared with ${domActionResults.length} tool result(s), retrying...`);
           continue; // Retry the while loop with new context
         }
@@ -2666,6 +2682,8 @@ class LunaSoul extends EventEmitter {
           yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.com e faça login.', sessionId };
         } else {
           yield { type: 'error', error: err.message, sessionId };
+          // W6-T4: consumers that key turn-end off `done` only must still see a terminal event
+          yield { type: 'done', result: { success: false, error: err.message, sessionId }, sessionId };
         }
         return;
       }
@@ -2859,6 +2877,9 @@ REGRAS:
 
     if (safety >= MAX_LOOPS) {
       yield { type: 'warning', message: '⚠️ Limite de iterações atingido. Encerrando.', sessionId };
+      // wave1-fix A4 / W6-T4: never exit silently — always emit a terminal done
+      yield { type: 'done', result: { success: false, response: 'Limite de iterações atingido — encerrando para evitar loop.', sessionId }, sessionId };
+      return;
     }
   }
 

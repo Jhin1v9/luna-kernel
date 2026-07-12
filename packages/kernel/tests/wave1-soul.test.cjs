@@ -136,3 +136,40 @@ test('W6-T2: _waitPromisesWithDrain force-resolves hung tools after the drain ti
   assert.ok(domResult.result && domResult.result.success === false,
     'domResult must be filled with the failure payload for downstream loop-back, got: ' + JSON.stringify(domResult.result));
 });
+
+// W6-T4: turn-termination guarantees in processMessageStream.
+// Source-assertion tests: the generator itself needs a live bridge to run,
+// so we pin the terminal-event structure directly on the source.
+const SOUL = path.join(__dirname, '..', 'luna-soul.cjs');
+const sliceAround = (s, needle, span) => {
+  const i = s.indexOf(needle);
+  return i === -1 ? '' : s.slice(Math.max(0, i - span / 2), i + span / 2);
+};
+
+test('W6-T4: MAX_LOOPS is a finite literal and exhaustion emits done', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  assert.ok(/MAX_LOOPS\s*=\s*50\b/.test(src), 'MAX_LOOPS must be a real ceiling (50)');
+  assert.ok(!src.includes('MAX_LOOPS = Number.MAX_SAFE_INTEGER'), 'unbounded ceiling must be gone');
+  const tail = sliceAround(src, 'Limite de iterações atingido', 900);
+  assert.ok(tail.includes("type: 'done'"), 'loop exhaustion must yield done');
+});
+
+test('W6-T4: retry-exhaustion error is followed by done', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  // Anchor on login_required (sibling branch of the error yield) with a tight
+  // window so a *later* unrelated done cannot satisfy the assertion.
+  const window = sliceAround(src, 'login_required', 1200);
+  const errIdx = window.indexOf("type: 'error'");
+  assert.ok(errIdx !== -1, 'error yield must exist');
+  assert.ok(window.slice(errIdx).includes("type: 'done'"), 'error emission must be followed by done');
+});
+
+test('W6-T4: _buildContext calls inside the stream catch are guarded', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  const window = sliceAround(src, 'Stream error:', 2500);
+  const bcIdx = window.indexOf('_buildContext');
+  if (bcIdx !== -1) {
+    assert.ok(/try\s*\{/.test(window.slice(Math.max(0, bcIdx - 300), bcIdx)),
+      '_buildContext in catch scope must be try-guarded');
+  }
+});
