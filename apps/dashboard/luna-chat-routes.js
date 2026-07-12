@@ -656,6 +656,8 @@ router.get('/api/chat/stream', async (req, res) => {
         if (msg.tool) eventData.tool = msg.tool;
         if (msg.params) eventData.params = msg.params;
         if (msg.result) eventData.result = msg.result;
+        if (msg.plan) eventData.plan = msg.plan; // Wave 7: plan card content
+        if (msg.planPath) eventData.planPath = msg.planPath; // Wave 7: plan file path
         if (msg.messageId) eventData.messageId = msg.messageId;
         if (msg.toolInstanceId) eventData.toolInstanceId = msg.toolInstanceId; // Wave 1 Fix B2
         if (msg.chunk) eventData.chunk = msg.chunk; // Wave 4 Fix: live tool output
@@ -703,6 +705,8 @@ router.get('/api/chat/stream', async (req, res) => {
       if (msg.tool) eventData.tool = msg.tool;
       if (msg.params) eventData.params = msg.params;
       if (msg.result) eventData.result = msg.result;
+      if (msg.plan) eventData.plan = msg.plan; // Wave 7: plan card content
+      if (msg.planPath) eventData.planPath = msg.planPath; // Wave 7: plan file path
       if (msg.messageId) eventData.messageId = msg.messageId;
       if (msg.toolInstanceId) eventData.toolInstanceId = msg.toolInstanceId; // Wave 1 Fix B2
       if (msg.chunk) eventData.chunk = msg.chunk; // Wave 4 Fix: live tool output
@@ -1182,6 +1186,19 @@ router.get('/api/test/chrome', (req, res) => {
 // ============================================================
 const planModeSessions = new Map(); // sessionId -> { status, plan, planPath, createdAt }
 
+// Wave 7: lazy TTL for plan sessions — entries older than 30min are dropped
+// on access so approve/reject/revise answer 404 instead of acting on a stale plan.
+const PLAN_SESSION_TTL_MS = 30 * 60 * 1000;
+function getActivePlanSession(sessionId) {
+  const meta = planModeSessions.get(sessionId);
+  if (!meta) return null;
+  if (meta.createdAt && Date.now() - meta.createdAt > PLAN_SESSION_TTL_MS) {
+    planModeSessions.delete(sessionId);
+    return null;
+  }
+  return meta;
+}
+
 // ============================================================
 // Plan Mode Routes
 // ============================================================
@@ -1196,19 +1213,27 @@ router.post('/api/plan', async (req, res) => {
     session = createWebSession('🔍 Plano: ' + message.slice(0, 30), 'thinking');
   }
 
+  // Wave 7: refuse to start while a response stream is active in this session —
+  // plan mode now shares the same Kimi chat (userId web-<id>), so starting
+  // anyway would queue silently behind the active stream.
+  if (activeStreams.has(session.id)) {
+    console.log(`[PLAN MODE] Refusing to start: session ${session.id} already has an active stream`);
+    return res.status(409).json({ ok: false, error: 'Já existe uma resposta em andamento nesta sessão. Aguarde terminar (ou cancele) antes de iniciar um plano.' });
+  }
+
   // Mark session in plan mode
   planModeSessions.set(session.id, { status: 'investigating', plan: null, planPath: null, createdAt: Date.now() });
 
   res.json({ ok: true, sessionId: session.id, status: 'investigating' });
 
   // Process in background
-  console.log(`[PLAN MODE] Starting plan mode for session ${session.id}, userId: web-plan-${session.id}`);
+  console.log(`[PLAN MODE] Starting plan mode for session ${session.id}, userId: web-${session.id}`);
   try {
     const luna = await getLunaSoul();
     console.log(`[PLAN MODE] Got LunaSoul, starting stream...`);
     const stream = luna.processPlanModeStream(message, {
       sessionId: session.id,
-      userId: 'web-plan-' + session.id,
+      userId: 'web-' + session.id,
     });
 
     let eventCount = 0;
@@ -1256,9 +1281,19 @@ router.post('/api/plan', async (req, res) => {
         });
       }
     }
+
+    // Wave 7: stream ended without reaching awaiting_approval (cancel, bridge
+    // failure or turn exhaustion) — mark the entry as 'error' so approve/reject
+    // answer coherently instead of acting on a dead plan.
+    const planMetaEnd = planModeSessions.get(session.id);
+    if (planMetaEnd && planMetaEnd.status === 'investigating') {
+      planMetaEnd.status = 'error';
+      planMetaEnd.error = 'Stream do plano encerrado antes de produzir um plano (cancelado ou erro).';
+    }
   } catch (e) {
     console.error('[PLAN MODE] Error:', e.message, e.stack);
-    planModeSessions.set(session.id, { status: 'error', error: e.message });
+    const prev = planModeSessions.get(session.id) || {};
+    planModeSessions.set(session.id, { ...prev, status: 'error', error: e.message });
     addMessageToSession(session.id, {
       id: 'plan-err-' + Date.now(),
       role: 'assistant',
@@ -1274,8 +1309,11 @@ router.post('/api/plan/approve', (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) return res.status(400).json({ ok: false, error: 'sessionId obrigatório' });
 
-  const planMeta = planModeSessions.get(sessionId);
+  const planMeta = getActivePlanSession(sessionId);
   if (!planMeta) return res.status(404).json({ ok: false, error: 'Nenhum plano ativo para esta sessão' });
+  if (planMeta.status === 'error') {
+    return res.status(409).json({ ok: false, error: 'A investigação do plano falhou ou foi cancelada. Gere o plano novamente.' });
+  }
 
   planMeta.status = 'approved';
 
@@ -1302,8 +1340,11 @@ router.post('/api/plan/reject', (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) return res.status(400).json({ ok: false, error: 'sessionId obrigatório' });
 
-  const planMeta = planModeSessions.get(sessionId);
+  const planMeta = getActivePlanSession(sessionId);
   if (!planMeta) return res.status(404).json({ ok: false, error: 'Nenhum plano ativo para esta sessão' });
+  if (planMeta.status === 'error') {
+    return res.status(409).json({ ok: false, error: 'A investigação do plano falhou ou foi cancelada. Gere o plano novamente.' });
+  }
 
   planMeta.status = 'rejected';
 
@@ -1329,8 +1370,11 @@ router.post('/api/plan/revise', (req, res) => {
   const { sessionId, revisedPlan } = req.body;
   if (!sessionId) return res.status(400).json({ ok: false, error: 'sessionId obrigatório' });
 
-  const planMeta = planModeSessions.get(sessionId);
+  const planMeta = getActivePlanSession(sessionId);
   if (!planMeta) return res.status(404).json({ ok: false, error: 'Nenhum plano ativo para esta sessão' });
+  if (planMeta.status === 'error') {
+    return res.status(409).json({ ok: false, error: 'A investigação do plano falhou ou foi cancelada. Gere o plano novamente.' });
+  }
 
   planMeta.plan = revisedPlan || planMeta.plan;
   planMeta.status = 'awaiting_approval';

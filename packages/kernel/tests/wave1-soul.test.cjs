@@ -351,3 +351,49 @@ test('W6e-a: soul dispatches setVisibleMode/getVisibleMode', () => {
   assert.ok(window.includes('getVisibleMode'),
     'the dispatch window must also read back getVisibleMode');
 });
+
+// ── Wave 7 Task 2 (d): honest plan-mode prompt ──────────────────────────────
+// The old prompt advertised ipython/python as tools, which collided with
+// Kimi's internal IPython ("Execute Python code") — she either used HER
+// sandbox believing it was the user's PC, or refused ("não posso acessar").
+// The prompt must state the JSON-only mechanism and advertise no ipython tool.
+test('W7-T2d: plan-mode prompt — JSON-only mechanism, no ipython tool, ends with json examples', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  const start = src.indexOf('_buildPlanModePrompt(userInput)');
+  assert.notStrictEqual(start, -1, '_buildPlanModePrompt must exist');
+  const end = src.indexOf('_stripJsonResponseWrapper', start);
+  assert.notStrictEqual(end, -1, 'window end anchor (_stripJsonResponseWrapper) must exist');
+  const body = src.slice(start, end);
+
+  // (1) The mechanism sentence: no own tools, JSON blocks executed by Luna on
+  // the real PC, refusal is forbidden.
+  assert.ok(body.includes('Você NÃO tem ferramentas próprias, nem ipython, nem terminal'),
+    'prompt must open with the mechanism sentence (no own tools / no ipython / JSON only)');
+  assert.ok(body.includes('a Luna executa no PC Linux real'),
+    'mechanism must say Luna executes on the real Linux PC');
+
+  // (2) ipython/python must NOT be advertised as tools. The word "ipython"
+  // legitimately appears in the mechanism sentence ("nem ipython"), so assert
+  // on the advertised-tools section and on tool entries only.
+  const toolsStart = body.indexOf('FERRAMENTAS DE LEITURA PERMITIDAS');
+  const toolsEnd = body.indexOf('SINTAXE OBRIGATÓRIA', toolsStart);
+  assert.notStrictEqual(toolsStart, -1, 'tools section must exist');
+  assert.notStrictEqual(toolsEnd, -1, 'tools section end anchor must exist');
+  const toolsSection = body.slice(toolsStart, toolsEnd);
+  assert.ok(!/ipython/i.test(toolsSection),
+    'advertised read-only tools must not include ipython');
+  assert.ok(!/\bpython\b/i.test(toolsSection),
+    'advertised read-only tools must not include python');
+  assert.ok(!/- ipython/.test(body), 'no ipython tool entry anywhere in the prompt');
+  assert.ok(!body.includes('glob, ipython, python'),
+    'rule 5 read-only list must not end with ipython/python');
+
+  // (3) Ends with EXACT json examples (tool + response) — owner's standing rule.
+  const tail = body.slice(-900);
+  assert.ok(tail.includes('EXEMPLOS EXATOS'),
+    'prompt tail must contain the exact-examples block');
+  assert.ok(tail.includes('json\n{"tool": "readFile"'),
+    'prompt tail must contain a fenced json tool example');
+  assert.ok(tail.includes('json\n{"response": "# Plano'),
+    'prompt tail must contain a fenced json response (plan) example');
+});

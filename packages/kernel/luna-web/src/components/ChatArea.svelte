@@ -1422,32 +1422,82 @@
     }
   }
 
+  // Wave 7: show a visible PT-BR system message when a plan action fails
+  // (e.g. server restarted and planModeSessions was lost — previously console-only).
+  function showPlanError(msg) {
+    messages.update(msgs => [...msgs, {
+      id: 'sys-' + Date.now(),
+      type: 'system',
+      content: '⚠️ ' + msg,
+      timestamp: new Date().toISOString()
+    }]);
+  }
+
+  // Wave 7: after a plan action, continue the SAME Kimi chat by sending a
+  // normal message (same pattern as handleSend: optimistic user bubble,
+  // sendMessage + connectSSE so the streaming response is received).
+  async function sendPlanFollowUp(text) {
+    messages.update(msgs => [...msgs, {
+      id: 'user-' + Date.now(),
+      type: 'user',
+      content: text,
+      files: [],
+      timestamp: new Date().toISOString()
+    }]);
+    userMessageAdded = true;
+    isStreaming.set(true);
+    await sendMessage(text, sessionId, $currentMode, [], null, sessionProvider);
+    await connectSSE();
+  }
+
   async function handleApprovePlan() {
     if (!sessionId) return;
     try {
-      await approvePlan(sessionId);
+      const res = await approvePlan(sessionId);
+      if (!res || !res.ok) {
+        planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null }));
+        showPlanError((res && res.error) || 'Nenhum plano ativo encontrado (o servidor pode ter reiniciado). Gere o plano novamente.');
+        return;
+      }
       planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null }));
+      // Approval actually executes: ask the model to run the plan in this chat.
+      await sendPlanFollowUp('✅ Plano aprovado. Execute agora o plano acima, passo a passo, nesta mesma conversa.');
     } catch (e) {
       console.error('Approve plan error:', e);
+      showPlanError('Falha ao aprovar o plano: ' + e.message);
     }
   }
 
   async function handleRejectPlan() {
     if (!sessionId) return;
     try {
-      await rejectPlan(sessionId);
+      const res = await rejectPlan(sessionId);
+      if (!res || !res.ok) {
+        // Dead/expired plan — close the card so the buttons don't 404 again.
+        planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null }));
+        showPlanError((res && res.error) || 'Nenhum plano ativo encontrado (o servidor pode ter reiniciado). Gere o plano novamente.');
+        return;
+      }
       planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null }));
     } catch (e) {
       console.error('Reject plan error:', e);
+      showPlanError('Falha ao rejeitar o plano: ' + e.message);
     }
   }
 
   async function handleRevisePlan(revisedPlan) {
     if (!sessionId) return;
     try {
-      await submitRevision(sessionId, revisedPlan);
+      const res = await submitRevision(sessionId, revisedPlan);
+      if (!res || !res.ok) {
+        showPlanError((res && res.error) || 'Nenhum plano ativo encontrado (o servidor pode ter reiniciado). Gere o plano novamente.');
+        return;
+      }
+      // The model must SEE the revision: send it as a normal message in this chat.
+      await sendPlanFollowUp('📝 Plano revisado pelo usuário:\n\n' + revisedPlan);
     } catch (e) {
       console.error('Revise plan error:', e);
+      showPlanError('Falha ao revisar o plano: ' + e.message);
     }
   }
 

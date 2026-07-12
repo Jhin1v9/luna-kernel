@@ -116,3 +116,44 @@ test('W6-T8b: persist loop skips response_detected and dedupes done', () => {
   assert.ok(/activeStreams\.get\(finalSessionId\)\s*===\s*myStreamMeta/.test(delAround),
     'stream-meta delete must be ownership-guarded');
 });
+
+// ── Wave 7 Task 2 (b): SSE serializers must forward plan/planPath ───────────
+// Both eventData whitelists (ledger replay + live polling) dropped msg.plan /
+// msg.planPath, so plan_display reached the browser without content and the
+// card always rendered "(plano vazio)".
+test('W7-T2b: both SSE serializers copy plan/planPath into eventData', () => {
+  const src = fs.readFileSync(CHAT_ROUTES, 'utf8');
+
+  for (const anchor of ['for (const msg of missedEvents)', 'for (const msg of newMessages)']) {
+    const idx = src.indexOf(anchor);
+    assert.notStrictEqual(idx, -1, `SSE loop anchor must exist: ${anchor}`);
+    const window = src.slice(idx, idx + 1400);
+    assert.ok(window.includes('const eventData = {'),
+      `window after ${anchor} must cover the eventData serializer — anchor drifted?`);
+    assert.ok(window.includes('eventData.plan = msg.plan'),
+      `serializer after ${anchor} must copy msg.plan`);
+    assert.ok(window.includes('eventData.planPath = msg.planPath'),
+      `serializer after ${anchor} must copy msg.planPath`);
+  }
+
+  // Exactly two copy sites (replay + live) — no more, no less.
+  const count = (src.match(/eventData\.plan = msg\.plan/g) || []).length;
+  assert.strictEqual(count, 2, 'plan copy must exist in exactly the two serializers');
+});
+
+// ── Wave 7 Task 2 (a): /api/plan shares the same Kimi chat ──────────────────
+// userId 'web-plan-<id>' made the bridge navigate Kimi to a DIFFERENT chat, so
+// approving the plan returned to the old chat without context. Plan mode must
+// reuse 'web-<id>' — only the prompt changes.
+test('W7-T2a: /api/plan builds web-<id> userId (same chat), never web-plan-', () => {
+  const src = fs.readFileSync(CHAT_ROUTES, 'utf8');
+  const start = src.indexOf("router.post('/api/plan',");
+  const end = src.indexOf("router.post('/api/plan/approve'", start);
+  assert.notStrictEqual(start, -1, '/api/plan route must exist');
+  assert.notStrictEqual(end, -1, '/api/plan/approve route must exist (window anchor)');
+  const route = src.slice(start, end);
+  assert.ok(!route.includes('web-plan'),
+    '/api/plan must not build a web-plan- userId (separate Kimi chat bug)');
+  assert.ok(route.includes("userId: 'web-' + session.id"),
+    '/api/plan must reuse the same web-<id> userId as normal chat');
+});
