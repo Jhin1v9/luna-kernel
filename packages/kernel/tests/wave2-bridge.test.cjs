@@ -1,4 +1,4 @@
-// wave2-bridge.test.cjs — Wave 2 regression tests (Fix A, Fix B)
+// wave2-bridge.test.cjs — Wave 2 regression tests (Fix A, Fix B, Fix C)
 // Run: node --test packages/kernel/tests/wave2-bridge.test.cjs
 'use strict';
 
@@ -127,5 +127,91 @@ test('B1b: DeepSeek textContent selector is intentionally left unchanged pending
   assert.ok(
     dsLine.includes('.ds-markdown, .message-content'),
     'DeepSeek selector must be unchanged (only a comment documents the unverified nesting assumption)'
+  );
+});
+
+// ── Fix C: extension event buffers filtered by tab URL (cross-user theft) ──
+
+const { KimiBridge } = require(BRIDGE_PATH);
+
+// _consumeExtensionEvents only reads global.__lunaExtensionEventBuffers and
+// the module-scoped logger — no `this` state is touched, so a bare {} is a
+// sufficient fake receiver.
+const consume = (url) => KimiBridge.prototype._consumeExtensionEvents.call({}, url);
+
+function seedBuffers(entries) {
+  // entries: Array<[extSessionId, events[]]>
+  global.__lunaExtensionEventBuffers = new Map(entries);
+}
+
+function streamStateEvent(urlFields, response) {
+  return { eventType: 'stream_state', data: { response, thinking: '' }, ...urlFields };
+}
+
+test.afterEach(() => {
+  delete global.__lunaExtensionEventBuffers;
+});
+
+test('C1a: two buffers — consuming for URL A returns only A\u2019s events, B\u2019s buffer untouched', () => {
+  const urlA = 'https://kimi.com/chat/thread-a';
+  const urlB = 'https://kimi.com/chat/thread-b';
+  seedBuffers([
+    ['ext-A', [streamStateEvent({ url: urlA, tabUrl: urlA }, 'A text')]],
+    ['ext-B', [streamStateEvent({ url: urlB, tabUrl: urlB }, 'B text')]],
+  ]);
+
+  const events = consume(urlA);
+
+  assert.strictEqual(events.length, 1, 'exactly one event consumed');
+  assert.strictEqual(events[0].type, 'state_change');
+  assert.strictEqual(events[0].response, 'A text');
+
+  const buffers = global.__lunaExtensionEventBuffers;
+  assert.ok(!buffers.has('ext-A') || buffers.get('ext-A').length === 0, 'A buffer emptied or deleted');
+  assert.deepStrictEqual(
+    buffers.get('ext-B'),
+    [streamStateEvent({ url: urlB, tabUrl: urlB }, 'B text')],
+    'B buffer must be UNTOUCHED'
+  );
+});
+
+test('C1b: tracking query string (?utm=...) still matches the same thread', () => {
+  const clean = 'https://kimi.com/chat/thread-x';
+  const dirty = 'https://kimi.com/chat/thread-x?utm_source=telegram&ref=abc#frag';
+  seedBuffers([
+    ['ext-1', [streamStateEvent({ url: dirty, tabUrl: dirty + '/' }, 'tracked')]],
+  ]);
+
+  const events = consume(clean);
+
+  assert.strictEqual(events.length, 1, 'event with tracking params must be consumed for the same thread');
+  assert.strictEqual(events[0].response, 'tracked');
+});
+
+test('C1c: no-url events + two buffers → none consumed (ownership unknown)', () => {
+  seedBuffers([
+    ['ext-1', [streamStateEvent({}, 'orphan-1')]],
+    ['ext-2', [streamStateEvent({}, 'orphan-2')]],
+  ]);
+
+  const events = consume('https://kimi.com/chat/anything');
+
+  assert.strictEqual(events.length, 0, 'no-url events must NOT be consumed when multiple buffers exist');
+  assert.strictEqual(global.__lunaExtensionEventBuffers.get('ext-1').length, 1, 'buffer 1 untouched');
+  assert.strictEqual(global.__lunaExtensionEventBuffers.get('ext-2').length, 1, 'buffer 2 untouched');
+});
+
+test('C1d: no-url events + exactly one buffer → consumed (single-user dev preserved)', () => {
+  seedBuffers([
+    ['ext-1', [streamStateEvent({}, 'orphan')]],
+  ]);
+
+  const events = consume('https://kimi.com/chat/anything');
+
+  assert.strictEqual(events.length, 1, 'no-url events must be consumed when only one buffer exists');
+  assert.strictEqual(events[0].response, 'orphan');
+  assert.ok(
+    !global.__lunaExtensionEventBuffers.has('ext-1') || global.__lunaExtensionEventBuffers.get('ext-1').length === 0,
+    'single buffer emptied or deleted after consumption'
   );
 });

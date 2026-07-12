@@ -5168,19 +5168,51 @@ class KimiBridge {
    * The extension runs in the MAIN world of kimi.com and streams DOM events
    * directly via HTTP to luna-extension-handler.cjs, which buffers them in
    * global.__lunaExtensionEventBuffers. This is Layer 0 — highest priority.
+   *
+   * Wave2-fix (cross-user event theft): events are filtered by tab URL so a
+   * poller only consumes events from ITS OWN page. The extension sessionId
+   * has no relation to the luna userId, so draining every buffer let one
+   * user's poller steal another user's streamed text/tool events.
    */
-  _consumeExtensionEvents() {
+  _consumeExtensionEvents(expectedUrl) {
     try {
       const buffers = global.__lunaExtensionEventBuffers;
       if (!buffers || buffers.size === 0) return [];
 
+      // Same chat thread, tolerant of tracking params: strip query, hash,
+      // and trailing slashes before comparing.
+      const normalizeUrl = (u) => {
+        if (!u || typeof u !== 'string') return '';
+        return u.split('#')[0].split('?')[0].replace(/\/+$/, '');
+      };
+      const expected = normalizeUrl(expectedUrl);
+      const multiBuffer = buffers.size > 1;
+      let loggedNoUrl = false;
+
       const allEvents = [];
-      // Consume from ALL active extension sessions (usually just one)
       for (const [sessionId, buf] of buffers) {
         if (!buf || buf.length === 0) continue;
-        // Clear buffer as we read it
-        buffers.set(sessionId, []);
+        // Partition: matching events are consumed, the rest STAY in the
+        // buffer for the poller that owns their tab.
+        const remaining = [];
         for (const raw of buf) {
+          const rawUrl = raw.tabUrl || raw.url || '';
+          let belongs;
+          if (!rawUrl) {
+            // No URL info (older extension build): only safe to consume when
+            // exactly one buffer exists (single-user dev scenario preserved).
+            belongs = !multiBuffer;
+            if (!loggedNoUrl) {
+              log.debug(`[ChromeExt] Event without url/tabUrl — ${belongs ? 'consuming (single buffer)' : 'skipping (multiple buffers, ownership unknown)'}`);
+              loggedNoUrl = true;
+            }
+          } else {
+            belongs = expected !== '' && normalizeUrl(rawUrl) === expected;
+          }
+          if (!belongs) {
+            remaining.push(raw);
+            continue;
+          }
           // Translate extension event format to bridge internal format
           switch (raw.eventType) {
             case 'stream_state': {
@@ -5269,6 +5301,8 @@ class KimiBridge {
             }
           }
         }
+        if (remaining.length > 0) buffers.set(sessionId, remaining);
+        else buffers.delete(sessionId); // fully drained — drop the empty buffer
       }
       return allEvents;
     } catch (e) {
@@ -5298,7 +5332,11 @@ class KimiBridge {
           // These come directly from the extension's injected.js DOM observer,
           // bypassing all Playwright overhead and network interception fallbacks.
           try {
-            const extEvents = this._consumeExtensionEvents();
+            // Wave2-fix: pass this poller's page URL so only events from its
+            // own tab are consumed (cross-user event theft fix).
+            let pageUrl = '';
+            try { pageUrl = session.page.url(); } catch (_) { pageUrl = ''; }
+            const extEvents = this._consumeExtensionEvents(pageUrl);
             for (const ev of extEvents) {
               // v11.1-fix: DeepSeek's DOM observer emits partial tool_call events while
               // the JSON code block is still streaming. Each mutation yields a different
