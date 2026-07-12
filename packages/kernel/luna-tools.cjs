@@ -156,7 +156,10 @@ function readFile(filePath, opts = {}) {
       buffer = Buffer.alloc(maxBytes);
       const fd = fs.openSync(resolved, 'r');
       try {
-        fs.readSync(fd, buffer, 0, maxBytes, 0);
+        // Slice to the bytes actually read: if the file shrinks between
+        // statSync and readSync, the zero-filled tail would trip looksBinary.
+        const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0);
+        buffer = buffer.subarray(0, bytesRead);
       } finally {
         fs.closeSync(fd);
       }
@@ -169,6 +172,8 @@ function readFile(filePath, opts = {}) {
     }
     const content = buffer.toString('utf8');
     const lines = content.split('\n');
+    // On truncated reads this is the CHUNK's line count, not the file's —
+    // content beyond maxBytes is unreachable via this tool (see note below).
     const totalLines = lines.length;
     let offset = (opts.offset || opts.line_offset || 1) - 1;
     let limit = opts.limit || opts.n_lines || 1000;
@@ -191,7 +196,7 @@ function readFile(filePath, opts = {}) {
       linesRead: Math.max(0, limit),
       truncatedBytes: truncatedBytes || undefined,
       note: truncatedBytes
-        ? `Arquivo tem ${stat.size} bytes; exibidos apenas os primeiros ${maxBytes}. Use line_offset para paginar.`
+        ? `Arquivo tem ${stat.size} bytes; exibidos apenas os primeiros ${buffer.length} (~${totalLines} linhas). O restante NÃO é acessível via readFile — use executeShell (sed/tail) ou grep/searchFiles para o conteúdo além desse limite.`
         : undefined,
     });
   } catch (e) {

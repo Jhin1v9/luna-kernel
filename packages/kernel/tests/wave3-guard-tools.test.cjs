@@ -57,7 +57,10 @@ test('A2: readFile caps files over 2MB (truncatedBytes, no full read)', () => {
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.truncatedBytes, true, 'truncatedBytes must be true for files over the cap');
     assert.ok(result.content.length < fileSize, 'returned content must be smaller than the file (no full read)');
-    assert.ok(result.note && result.note.includes('line_offset'), 'note must tell Kimi to page with line_offset');
+    assert.ok(
+      result.note && result.note.includes('executeShell') && result.note.includes('NÃO é acessível'),
+      'note must warn that the rest is unreachable via readFile and point to executeShell/grep'
+    );
   });
 });
 
