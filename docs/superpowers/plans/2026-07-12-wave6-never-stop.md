@@ -437,8 +437,8 @@ Extract pure helper `_shouldForceGenericComplete({firstSeenAt, lastLengthChangeA
 
 **Files:** `packages/kernel/.brain/bugs.md`.
 
-- [ ] Move to Resolved (new `### Wave 6 — hotfixes` entries appended to the existing Wave 6 section): silent exits #1/#2/#4 (bridge waits, drain, MAX_LOOPS), auto-continue pure-response (bridge part), stale replay loop, script swallowed, history duplication, DeepSeek delivery, terminal robustness. Keep Open (Wave 7 candidates): parser duplication refactor, extension nested-params regex, heuristic validators, cross-user agent/swarm (needs live observation), frontend chunk-replay dedup (cosmetic), `invalidatePromptCache` wiring, workspace hardcoded, config keys (miniReminder/toolResultPrompt/loopRules), `dashboardCommandRouter` success:true, non-atomic soul writeFileSync sites, anonymousConsult/legacy `_waitForResponse`/runTask bounded-wait sweep (lower-priority paths found in investigation B).
-- [ ] Commit: `docs(brain): close Wave 6 - never-stop guarantee, replay loop killed, system terminal, script recovered`.
+- [x] Move to Resolved (new `### Wave 6 — hotfixes` entries appended to the existing Wave 6 section): silent exits #1/#2/#4 (bridge waits, drain, MAX_LOOPS), auto-continue pure-response (bridge part), stale replay loop, script swallowed, history duplication, DeepSeek delivery, terminal robustness. Keep Open (Wave 7 candidates): parser duplication refactor, extension nested-params regex, heuristic validators, cross-user agent/swarm (needs live observation), frontend chunk-replay dedup (cosmetic), `invalidatePromptCache` wiring, workspace hardcoded, config keys (miniReminder/toolResultPrompt/loopRules), `dashboardCommandRouter` success:true, non-atomic soul writeFileSync sites, anonymousConsult/legacy `_waitForResponse`/runTask bounded-wait sweep (lower-priority paths found in investigation B).
+- [x] Commit: `docs(brain): close Wave 6 - never-stop guarantee, replay loop killed, system terminal, script recovered`.
 
 ---
 
