@@ -28,6 +28,7 @@ const { ToolGuard, validatePythonCode, checkDestructivePattern } = require('./lu
 const { ResponseStreamParser, safeJsonParse, isBalancedBraces } = require('./response-stream-parser.cjs');
 const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
+const { checkPathWithinRoots, PATH_PARAM_KEYS } = require('./lib/path-guard.cjs');
 const lunaConfig = require('./config/luna-config');
 const {
   checkJsxBalanced,
@@ -4169,14 +4170,20 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       category: isFileTool ? 'file' : isDesktopTool ? 'desktop' : 'unknown',
     });
 
-    // ── Path Traversal Protection ──
-    // Ensure file paths stay within workspace (if workspace is set)
+    // ── Path Traversal Protection (wave3: aliases + realpath + tmp allowlist) ──
     const ws = workspaceManager.getWorkspace('luna-cli');
-    if (ws && params.path) {
-      const resolved = path.resolve(params.path);
-      const wsResolved = path.resolve(ws.path);
-      if (!resolved.startsWith(wsResolved) && !params.path.startsWith('/tmp')) {
-        result = { success: false, error: `Path traversal bloqueado: "${params.path}" está fora do workspace "${ws.path}".` };
+    {
+      const allowedRoots = [];
+      for (const root of [ws?.path, lunaConfig.PATHS.tmp, os.tmpdir()]) {
+        if (root) { try { allowedRoots.push(fs.realpathSync(root)); } catch {} }
+      }
+      for (const key of PATH_PARAM_KEYS) {
+        if (!params[key]) continue;
+        const check = checkPathWithinRoots(params[key], allowedRoots);
+        if (!check.ok) {
+          result = { success: false, error: `Path traversal bloqueado (${key}): ${check.reason}.` };
+          break;
+        }
       }
     }
 

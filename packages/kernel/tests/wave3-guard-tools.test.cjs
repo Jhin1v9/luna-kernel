@@ -4,6 +4,7 @@
 // Fix C: IdempotencyStore TTL + mark-on-success + success:true on skip (luna-tool-guard.cjs)
 // Fix D: safeExec default 60s/600s cap + dashboardApi 15s abort (lib/exec-timeout.cjs + luna-tools.cjs)
 // Fix E: command injection — shell-quote + numeric clamps + name whitelist (lib/shell-quote.cjs + luna-tools.cjs + luna-code-validator.cjs)
+// Fix F: path traversal — alias-aware, realpath-resolved, tmp allowlist (lib/path-guard.cjs + luna-soul.cjs)
 // Run: node --test packages/kernel/tests/wave3-guard-tools.test.cjs
 'use strict';
 
@@ -486,4 +487,127 @@ test('E4: no JSON.stringify interpolation remains in shell command strings (cont
     !l.includes('node -e ${shellQuote')  // JS-level quoting inside a shell-quoted arg
   );
   assert.deepStrictEqual(offenders, [], `JSON.stringify-in-shell sites remain: ${offenders.join(' | ')}`);
+});
+
+// ── Fix F: path traversal — alias-aware, realpath-resolved (lib/path-guard.cjs)
+
+const { realpathLoose, isInside, checkPathWithinRoots, PATH_PARAM_KEYS } = require('../lib/path-guard.cjs');
+
+function allowedRootsFor(workspaceDir) {
+  const roots = [];
+  for (const root of [workspaceDir, os.tmpdir()]) {
+    if (root) { try { roots.push(fs.realpathSync(root)); } catch {} }
+  }
+  return roots;
+}
+
+test('F1: realpathLoose resolves a nonexistent tail through the nearest existing ancestor', () => {
+  withTmpDir((dir) => {
+    const real = fs.realpathSync(dir);
+    const target = path.join(dir, 'no-such-dir', 'deep', 'file.txt');
+    assert.strictEqual(realpathLoose(target), path.join(real, 'no-such-dir', 'deep', 'file.txt'));
+  });
+});
+
+test('F1: isInside accepts the root itself and children, rejects siblings and parents', () => {
+  withTmpDir((dir) => {
+    const real = fs.realpathSync(dir);
+    assert.strictEqual(isInside(real, real), true, 'root itself is inside');
+    assert.strictEqual(isInside(path.join(real, 'sub', 'file.txt'), real), true);
+    assert.strictEqual(isInside(path.join(real, '..', 'sibling'), real), false);
+    assert.strictEqual(isInside('/etc/hosts', real), false);
+  });
+});
+
+test('F1: checkPathWithinRoots accepts a real file inside the workspace', () => {
+  withTmpDir((dir) => {
+    const file = path.join(dir, 'real.txt');
+    fs.writeFileSync(file, 'x');
+    const check = checkPathWithinRoots(file, allowedRootsFor(dir));
+    assert.strictEqual(check.ok, true, `real file inside workspace must pass (got: ${check.reason})`);
+  });
+});
+
+test('F1: checkPathWithinRoots accepts a not-yet-existing file inside the workspace', () => {
+  withTmpDir((dir) => {
+    const target = path.join(dir, 'new-dir', 'new-file.txt');
+    const check = checkPathWithinRoots(target, allowedRootsFor(dir));
+    assert.strictEqual(check.ok, true, `new writeFile target must pass (got: ${check.reason})`);
+  });
+});
+
+test('F1: checkPathWithinRoots accepts a legit temp path under os.tmpdir()', () => {
+  withTmpDir((dir) => {
+    const tmpFile = path.join(os.tmpdir(), `luna-w3-f1-${process.pid}.txt`);
+    const check = checkPathWithinRoots(tmpFile, allowedRootsFor(dir));
+    assert.strictEqual(check.ok, true, `path under os.tmpdir() must pass (got: ${check.reason})`);
+  });
+});
+
+test('F1: checkPathWithinRoots rejects /tmp/../../etc/passwd (decision on resolved path)', () => {
+  withTmpDir((dir) => {
+    const check = checkPathWithinRoots('/tmp/../../etc/passwd', allowedRootsFor(dir));
+    assert.strictEqual(check.ok, false, 'raw-string /tmp prefix must NOT save a resolved escape');
+    assert.ok(check.reason.includes('/tmp/../../etc/passwd'), 'reason must name the raw path');
+  });
+});
+
+test('F1: checkPathWithinRoots rejects /etc/hosts outright', () => {
+  withTmpDir((dir) => {
+    const check = checkPathWithinRoots('/etc/hosts', allowedRootsFor(dir));
+    assert.strictEqual(check.ok, false);
+  });
+});
+
+test('F1: checkPathWithinRoots rejects a symlink inside the workspace pointing to /etc', () => {
+  withTmpDir((dir) => {
+    const link = path.join(dir, 'escape-link');
+    try {
+      fs.symlinkSync('/etc', link);
+    } catch (err) {
+      console.log(`F1 symlink fixture skipped: ${err.code || err.message}`);
+      return; // environment cannot create symlinks — skip
+    }
+    const check = checkPathWithinRoots(path.join(link, 'passwd'), allowedRootsFor(dir));
+    assert.strictEqual(check.ok, false, 'symlink escape must resolve outside the workspace and be rejected');
+  });
+});
+
+test('F1: checkPathWithinRoots rejects empty and non-string paths', () => {
+  withTmpDir((dir) => {
+    const roots = allowedRootsFor(dir);
+    assert.strictEqual(checkPathWithinRoots('', roots).ok, false);
+    assert.strictEqual(checkPathWithinRoots(null, roots).ok, false);
+    assert.strictEqual(checkPathWithinRoots(42, roots).ok, false);
+  });
+});
+
+test('F1: PATH_PARAM_KEYS covers every alias used by the soul tool dispatch', () => {
+  for (const key of ['path', 'filePath', 'file', 'source', 'from', 'destination', 'to', 'dirPath']) {
+    assert.ok(PATH_PARAM_KEYS.includes(key), `PATH_PARAM_KEYS must include "${key}"`);
+  }
+});
+
+test('F2: soul guard loop blocks EVERY alias key, not just params.path', () => {
+  withTmpDir((dir) => {
+    const roots = allowedRootsFor(dir);
+    // Mirror of the luna-soul.cjs guard loop (F2) — every key must be gated.
+    for (const key of PATH_PARAM_KEYS) {
+      const params = { [key]: '/etc/hosts' };
+      let blocked = false;
+      for (const k of PATH_PARAM_KEYS) {
+        if (!params[k]) continue;
+        if (!checkPathWithinRoots(params[k], roots).ok) { blocked = true; break; }
+      }
+      assert.strictEqual(blocked, true, `alias key "${key}" carrying /etc/hosts must be blocked`);
+    }
+  });
+});
+
+test('F3: luna-soul.cjs uses the new guard and dropped the raw /tmp hatch (content assertion)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'luna-soul.cjs'), 'utf8');
+  assert.ok(!src.includes("params.path.startsWith('/tmp')"), 'raw-string /tmp escape hatch must be deleted');
+  assert.ok(src.includes('PATH_PARAM_KEYS'), 'soul must iterate all path alias keys');
+  assert.ok(src.includes('checkPathWithinRoots'), 'soul must realpath-check via checkPathWithinRoots');
+  assert.ok(src.includes("require('./lib/path-guard.cjs')"), 'soul must import lib/path-guard.cjs');
 });
