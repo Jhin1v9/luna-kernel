@@ -933,7 +933,7 @@ test('H1: unschema\'d tool validates against the permissive default (no throw), 
 
   assert.strictEqual(warnings.length, 1, 'warning must fire exactly once per tool');
   assert.match(warnings[0], /dashboardListTasks/);
-  assert.match(warnings[0], /Wave 5/);
+  assert.match(warnings[0], /fail-open/);
   validateToolCall._warned.delete('dashboardListTasks');
 });
 
