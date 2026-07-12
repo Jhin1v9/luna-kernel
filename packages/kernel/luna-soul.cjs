@@ -29,6 +29,7 @@ const { ResponseStreamParser, safeJsonParse, isBalancedBraces } = require('./res
 const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { checkPathWithinRoots, PATH_PARAM_KEYS } = require('./lib/path-guard.cjs');
+const { makeProgressEvent } = require('./lib/progress-event.cjs');
 const lunaConfig = require('./config/luna-config');
 const {
   checkJsxBalanced,
@@ -4035,7 +4036,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
    * This allows the main stream to keep flowing while tools run.
    */
   async _executeActionAsync(parsedAction, sessionId, options, toolHash, toolInstanceId, kimiResult, kimiImages, source, eventBus, domResult) {
-    const emitProgress = (ev) => eventBus.push({ type: 'action_progress', toolInstanceId, tool: parsedAction.tool, ...ev, sessionId });
+    // Wave 4 bug 6: tools call onProgress(chunkString, streamName) positionally —
+    // spreading the string produced garbage keys and no chunk field.
+    const emitProgress = (chunk, stream) => eventBus.push(makeProgressEvent({ toolInstanceId, tool: parsedAction.tool, chunk, stream, sessionId }));
     try {
       let actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress);
 

@@ -421,3 +421,30 @@ test('T8: ChatArea acks backend-ledger event ids and resets the batcher on recon
   assert.ok(src.includes('ackBatcher.push(event.id)'), 'received events must be acked');
   assert.ok(src.includes('ackBatcher.reset()'), 'session switch must drop pending ids from the old session');
 });
+
+// ── T9: action_progress chunk transport ──────────────────────────────────────
+
+const { makeProgressEvent } = require('../lib/progress-event.cjs');
+
+test('T9: makeProgressEvent normalizes positional tool progress into a chunk event', () => {
+  const ev = makeProgressEvent({ toolInstanceId: 'inst-1', tool: 'executeShell', chunk: 'hello\n', stream: 'stdout', sessionId: 's1' });
+  assert.deepStrictEqual(ev, { type: 'action_progress', toolInstanceId: 'inst-1', tool: 'executeShell', chunk: 'hello\n', stream: 'stdout', sessionId: 's1' });
+  assert.strictEqual(makeProgressEvent({ chunk: null }).chunk, '', 'null chunk becomes empty string');
+  assert.strictEqual(makeProgressEvent({ chunk: 42 }).chunk, '42', 'non-string chunk is stringified');
+  assert.strictEqual(makeProgressEvent({}).stream, 'stdout', 'stream defaults to stdout');
+});
+
+test('T9: soul emitProgress uses makeProgressEvent (no string spread)', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  const emitLine = src.split('\n').find(l => l.includes('const emitProgress ='));
+  assert.ok(emitLine && emitLine.includes('makeProgressEvent'), 'emitProgress must build the event via the helper');
+  assert.ok(!emitLine.includes('...ev'), 'string spread into the event must be gone');
+});
+
+test('T9: chat-routes stores and forwards chunk, and does not dedup action_progress', () => {
+  const src = fs.readFileSync(CHAT_ROUTES, 'utf8');
+  assert.ok(src.includes("ev.type !== 'action_progress' && emittedEventHashes.has(dedupKey)"), 'progress chunks must bypass the per-instance dedup');
+  assert.ok(src.includes('chunk: ev.chunk'), 'store picklist must persist chunk');
+  const serializerHits = src.split('eventData.chunk').length - 1;
+  assert.ok(serializerHits >= 2, `both SSE serializers (replay + live) must forward chunk (found ${serializerHits})`);
+});

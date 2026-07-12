@@ -506,7 +506,8 @@ router.post('/api/chat', async (req, res) => {
         // v5.4-fix: Skip duplicate non-final events (same type + content within a turn)
         // Wave 1 Fix B1: action_* events dedup by toolInstanceId, not (empty) content
         const dedupKey = makeEventDedupKey(ev, content);
-        if (ev.type !== 'done' && emittedEventHashes.has(dedupKey)) {
+        // Wave 4 bug 6: action_progress chunks are an ordered stream — never dedup them
+        if (ev.type !== 'done' && ev.type !== 'action_progress' && emittedEventHashes.has(dedupKey)) {
           continue;
         }
         emittedEventHashes.add(dedupKey);
@@ -520,6 +521,7 @@ router.post('/api/chat', async (req, res) => {
           fullThinking: ev.fullThinking || undefined,
           tool: ev.tool,
           toolInstanceId: ev.toolInstanceId || undefined, // Wave 1 Fix B2
+          chunk: ev.chunk || undefined, // Wave 4 Fix: live tool output
           params: ev.params,
           result: ev.result,
           messageId: messageId,
@@ -634,6 +636,7 @@ router.get('/api/chat/stream', async (req, res) => {
         if (msg.result) eventData.result = msg.result;
         if (msg.messageId) eventData.messageId = msg.messageId;
         if (msg.toolInstanceId) eventData.toolInstanceId = msg.toolInstanceId; // Wave 1 Fix B2
+        if (msg.chunk) eventData.chunk = msg.chunk; // Wave 4 Fix: live tool output
         if (msg.type === 'error') eventData.error = msg.content;
         if (msg.type === 'system') eventData.message = msg.content; // Wave 1 Fix B5
         if (msg.role === 'user') {
@@ -680,6 +683,7 @@ router.get('/api/chat/stream', async (req, res) => {
       if (msg.result) eventData.result = msg.result;
       if (msg.messageId) eventData.messageId = msg.messageId;
       if (msg.toolInstanceId) eventData.toolInstanceId = msg.toolInstanceId; // Wave 1 Fix B2
+      if (msg.chunk) eventData.chunk = msg.chunk; // Wave 4 Fix: live tool output
       if (msg.type === 'error') eventData.error = msg.content;
       if (msg.type === 'system') eventData.message = msg.content; // Wave 1 Fix B5
       if (msg.role === 'user') {
