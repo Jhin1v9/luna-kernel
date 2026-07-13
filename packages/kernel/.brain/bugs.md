@@ -4,30 +4,26 @@
 > Old audit documents (v10.8, v10.32) are NOT a reliable source — everything below was verified against code on 2026-07-11.
 > Severity: 🔴 critical (breaks the flow / security) · 🟠 high (visible malfunction) · 🟡 medium (hygiene / edge case)
 
-## Open
+## Open — Wave 9: arquitetura (decisões do dono, não bugs)
 
-### Soul (`luna-soul.cjs`)
+> Todos os bugs code-fixable foram varridos nas Waves 1–8. O que resta exige decisão/projeto:
 
-- [ ] 🟡 **`invalidatePromptCache` never called** (`:117-127`) — prompt edits via UI never take effect until process restart.
-- [ ] 🟡 **Workspace `'luna-cli'` hardcoded in follow-up context** (`:3756-3757`) — multi-user isolation violation; same root cause makes the tool guard null for web/Telegram (see Tools section).
-- [ ] 🟡 **Config keys ignored** — `miniReminder`, `toolResultPrompt` (`:2767-2782` hardcoded instead), `loopRules` contradicted by `MAX_AUTO_CONTINUES = 3` (`:2367`).
+- [ ] 🏗️ **Provider abstraction** — a Luna ainda fala só Kimi Web; a interface `provider.send(messages)` (OpenAI/Claude/Gemini/DeepSeek/Ollama como providers plugáveis) não existe. Projeto, não bug.
+- [ ] 🏗️ **Unificação dos parsers de tool-JSON** — 3 cópias com capacidades divergentes (bridge `extractFirstCompleteJsonObject`, soul `parseKimiResponse` Strategy 3b, extensão `extractFirstJsonObject`). Wave 8 T2 tornou todas string-aware (sintomas removidos); unificar num parser compartilhado exige lidar com a extensão (sem dependências) — decisão de bundle.
+- [ ] 🏗️ **Validators heurísticos → parser real** — `checkJsxBalanced`/`checkFileTruncated` (`luna-code-validator.cjs`) têm falsos positivos conhecidos; fail-open default mantido por decisão. Exige decisão de dependência.
+- [ ] 🏗️ **Decomposição dos monólitos** — ChatArea (~53k chars), ToolCard, `luna-soul.cjs`, `kimi-bridge.cjs` (8k+ linhas). Wave 5 criou as fundações (registry, libs); a quebra em si não começou.
+- [ ] 🏗️ **Rename soul → kernel** — cosmético/arquitetural, tocar em tudo que referencia.
+- [ ] 🏗️ **Persistência do toggle de modo visível** entre restarts + propagação Telegram (decisão de produto).
 
-### Bridge (`kimi-bridge.cjs` + extension)
+### Residuals aceitos (documentados, não bloqueantes)
 
-- [ ] 🟠 **Tools lost: `_extractJsonToolCalls` counts braces inside strings** (`:6846-6852`) — writeFile with HTML/JS content breaks the slice → JSON.parse fails → tool silently dropped. The string-aware `extractFirstCompleteJsonObject` (`:2483-2521`) exists but isn't used here.
-- [ ] 🟠 **Tools lost: extension fallback regex can't parse nested params** (`injected.js:92-93`) — non-greedy `\{[\s\S]*?\}` stops at first `}`; no jsonrepair in the extension.
-- [ ] 🟡 **JSON wrapper accumulator misses mid-text wrappers** (`:7556`) — only fires when delta starts with `{`; raw JSON leaks to chat.
-- [ ] 🟡 **Parser duplication** — 3–5 copies of tool-JSON parsing across bridge/extension/observer with divergent capabilities (refactor target).
-
-### Frontend (`luna-web`)
-
-- [ ] 🟡 **Chunk replay duplication on reconnect** (found in Wave 4 T9 review) — `action_progress` chunks have no message-level dedup in ChatArea; if a reconnect's `Last-Event-ID` was already acked out of the ledger, replay-from-0 re-appends already-rendered chunks to ToolCard live output. Cosmetic, self-heals on history reload. Fix candidate: dedup chunk events client-side by id, or keep chunk ids out of the ack-trim path.
-
-### Tools / Guard (`luna-tools.cjs`, `luna-tool-guard.cjs`, `luna-code-validator.cjs`)
-
-- [ ] 🟡 **Heuristic validators with false positives** — `checkJsxBalanced` (char-by-char parser, breaks on TS generics) and `checkFileTruncated` (regex brace counting over strings/comments) in `luna-code-validator.cjs:19-169`. Deferred (needs a real parser); Wave 5 kept the fail-open default by decision.
-- [ ] 🟡 **`dashboardCommandRouter` reports `success:true` on inner failure** (`luna-soul.cjs:2138` ff.) — failed dashboard mutations get marked processed (exposed by mark-on-success idempotency).
-- [ ] 🟡 **~15 direct `fs.writeFileSync` sites in `luna-soul.cjs`** (`:1043, :1074, :1115, :1144, :1174-1178, :1245-1334, :3050, :4749, :4847, :4904`) — personas/skills/memory writes still non-atomic (Fix B covered only the tool paths).
+- W7-T4: janela estreita de re-submit (input retido pós-envio real + início de geração >10s) — sem guard de eco.
+- W8-T2 (review): dupla detecção accumulator→late-action para tools LENTAS com conteúdo de braces desbalanceados (writeFile HTML/JS, executeScript longo) — cache da soul absorve tools rápidas; fix candidato conflita com a política de replay W6-T5.
+- Cards de plano não sobrevivem reload (history load ignora tipos `plan_*`); a mensagem do usuário persiste.
+- Build regex: falsos positivos aceitos em palavras citadas (`git commit -m "make x"` → 300s); falsos negativos aceitos (`npm i`, `yarn build`, `gradlew` → 60s).
+- `MAX_AUTO_CONTINUES` honra o config (produção: MAX_SAFE_INTEGER); `MAX_LOOPS=50` é o teto real.
+- `appendFileSync` em `_editFile` não-atômico (sem leitor concorrente).
+- Mascote anuncia tools hidden transientemente (`Usando think...`).
 
 ## Resolved
 
@@ -103,6 +99,24 @@
 - [x] 🟠 **Plan mode switched Kimi chats — approve lost all context** — plan mode ran as `web-plan-<id>` (separate Kimi conversation); now uses the same `web-<id>` chat, so approval continues with full context. Read-only guard untouched (call-scoped). (`06c21fc`; W7-T2a)
 - [x] 🟠 **Plan approve/revise buttons were decorative** — approve now sends "execute the plan" into the same chat; revise forwards the edited text to the model; 409 (stream busy), error status, 30min TTL, double-submit guard, `planModeState` resets on error/cancel/session-switch (review follow-up `2573df4`). (`06c21fc`, `2573df4`; W7-T2c/e; tests W7-T2e/f)
 - [x] 🟠 **Model used her own ipython sandbox instead of Luna tools / refused "can't access your PC"** — plan-mode prompt no longer advertises ipython/python and states the JSON-only mechanism with exact examples; master prompt gained the "DOIS MUNDOS" section (her sandbox `/mnt/...` vs the user's real PC, reachable ONLY via chat JSON tools). (`06c21fc`; W7-T2d/d2; test W7-T2d)
+
+### Wave 8 (2026-07-12) — final bug sweep
+
+- [x] 🟡 **`invalidatePromptCache` never called** — `getPromptConfig()` is now mtime-aware (self-heals across all PM2 processes) and `POST /api/luna/config` calls `invalidatePromptCache()` after writes; prompt edits via UI take effect without restart. (`bd0b29c`; W8-T1a)
+- [x] 🟡 **Workspace `'luna-cli'` hardcoded in follow-up context** — follow-up/toolLoop context now derives the workspace from the session userId (same derivation as the first message) with `ensureWorkspace`, closing the null-guard gap for web/Telegram after restarts. (`bd0b29c`; W8-T1b)
+- [x] 🟡 **Config keys ignored** — `toolResultPrompt`/`miniReminder` read from config via builders with byte-identical defaults (verified byte-for-byte against the old hardcoded strings); `loopRules.maxAutoContinues` honored (MAX_LOOPS=50 remains the real bound). NOTE for the owner: the shipped config's `toolResultPrompt` differs from the old hardcoded (5-rule "SUA VEZ" section) — it is now LIVE, that was the point. (`bd0b29c`; W8-T1c)
+- [x] 🟡 **`dashboardCommandRouter` reported `success:true` on inner failure** — `_dashRouterResult` propagates inner failure; failed mutations are no longer cached as executed (dup-checks and notify-on-success make retries safe). (`bd0b29c`; W8-T1d)
+- [x] 🟠 **Tools lost: `_extractJsonToolCalls` counted braces inside strings** — Strategy 2 now loops the string-aware `extractFirstCompleteJsonObject` (hoisted module-level with a `startFrom` cursor); writeFile with HTML/JS content parses with full params. (`bc8f70c`; W8-T2a; test W8-T2a)
+- [x] 🟠 **Tools lost: extension fallback regex couldn't parse nested params** — self-contained string-aware `extractFirstJsonObject` in `injected.js` (no dependencies); extension bumped to 2.1.2-wave8 (manifest 2.1.2) — **owner must reload the extension**. (`bc8f70c`; W8-T2b; test W8-T2b)
+- [x] 🟡 **JSON wrapper accumulator missed mid-text wrappers** — deltas containing `{"tool"`/`{"script"`/`{"response"` mid-text split: prose prefix emitted as response_delta, wrapper buffered; cursor-safe (no duplication). (`bc8f70c`; W8-T2c)
+- [x] 🟡 **`language` hardcoded `'bash'` in json_buffer script sites** — propagates `extracted.language || 'bash'` at all three sites + `mapParsed`. (`bc8f70c`; W8-T2d)
+- [x] 🟡 **ToolCard read errors at the wrong level / blank cards** — reads `result.result.error/friendlyMessage` too; falls back to `JSON.stringify(params)` (capped 500 chars) so a card is never blank. (`b3649ac`, `b67ae41`; W8-T3a)
+- [x] 🟡 **Internal tools rendered cards** — `think`, `getCurrentDirectory`, `setVisibleMode`, `getVisibleMode` carry `hidden:true` in the registry; generated meta ships `TOOL_HIDDEN`; ChatArea skips card creation (with a watchdog-only timer and history-load skip from the review follow-up). (`b3649ac`, `b67ae41`; W8-T3b)
+- [x] 🟡 **Chunk replay duplication on reconnect** — `action_progress` chunks deduped client-side by `${sessionId}:${event.id}` (ledger replays reuse the same id). (`b3649ac`; W8-T3c)
+- [x] 🟡 **Plan-mode leftovers** — `/api/plan` persists the user's plan-request message (survives reload); approve rejected unless `status === 'awaiting_approval'` (409); superseded plan cards lose their actions (badge "Substituído"). (`b3649ac`, `b67ae41`; W8-T3d)
+- [x] 🟡 **~15 non-atomic `fs.writeFileSync` sites in the soul** — all converted to the existing `lib/atomic-write.cjs` helper (tmp+rename, preserves file mode); characterization test proves byte-identical content and original-intact on rename failure. (`442f1a3`; W8-T4a)
+- [x] 🟡 **Timeout coupled to visibility** (`isBuildCommand = isVisibleCommand`) — new `lib/build-detect.cjs` detects build/install commands (npm/apt/pip/docker/cargo/make/gradle/mvn…) → 300s; everything else `opts.timeout || 60`; visibility no longer affects timeout; timeout error messages report the real value. Review follow-up tightened word boundaries (`cmake`, `docker buildx ls`, `npm run buildx` pinned). (`442f1a3`, `30b37fa`; W8-T4b)
+- [x] 🟡 **Dead code** — `bridge-libs/message-sender.cjs` and `input-validator.cjs` deleted (zero importers proven by repo-wide grep), orphan `getModeUrls()` removed, `setMode` with invalid mode now warns and falls back to 'instant' instead of silently clicking Thinking. (`442f1a3`; W8-T4c)
 
 ---
 

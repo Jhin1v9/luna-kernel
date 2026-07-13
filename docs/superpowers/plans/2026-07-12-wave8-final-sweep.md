@@ -54,8 +54,8 @@
 
 ## Task 5 — Close the wave: bugs.md bookkeeping
 
-- [ ] Move every fixed item to `### Wave 8 (2026-07-12)` in Resolved with commit SHAs. Keep Open ONLY the Wave 9 architecture items (rewrite the Open section header to say "Wave 9 — architecture decisions (owner)": parser unification, validators→real parser (dependency decision), provider abstraction, monolith decomposition, soul→kernel rename, jsonrepair bundling, visible-mode persistence/Telegram).
-- [ ] Commit: `docs(brain): close Wave 8 - final bug sweep; remaining work is architecture`.
+- [x] Move every fixed item to `### Wave 8 (2026-07-12)` in Resolved with commit SHAs. Keep Open ONLY the Wave 9 architecture items (rewrite the Open section header to say "Wave 9 — architecture decisions (owner)": parser unification, validators→real parser (dependency decision), provider abstraction, monolith decomposition, soul→kernel rename, jsonrepair bundling, visible-mode persistence/Telegram).
+- [x] Commit: `docs(brain): close Wave 8 - final bug sweep; remaining work is architecture`.
 
 ## Final steps (after T5)
 
