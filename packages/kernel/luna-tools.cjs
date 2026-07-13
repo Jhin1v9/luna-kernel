@@ -1588,7 +1588,7 @@ async function dashboardListTasks(params) {
   if (!result_data.success) return result_data;
   const data = result_data.data;
   const tasks = Array.isArray(data) ? data : (data.tasks || []);
-  const lines = tasks.map(t => `- [${t.status}] ${t.title} (P: ${t.priority})`).join('\n');
+  const lines = tasks.map(t => `- [${t.status}] ${t.title} (P: ${t.priority}) (ID: ${t.id})`).join('\n');
   return ok({ stdout: `📋 ${tasks.length} tarefa(s):\n${lines || 'Nenhuma tarefa encontrada.'}` });
 }
 
@@ -1614,7 +1614,7 @@ async function dashboardUpdateTask(params) {
   if (params.projectId !== undefined) body.projectId = params.projectId;
   if (params.assignedTo !== undefined) body.assignedTo = params.assignedTo;
   if (params.dueDate !== undefined) body.dueDate = params.dueDate;
-  const result_result_task = await dashboardApi('/tasks/' + taskId, 'PATCH', body);
+  const result_result_task = await dashboardApi('/tasks/' + taskId, 'PUT', body);
   if (!result_result_task.success) return result_result_task;
   const result_task = result_result_task.data;
   const task = result_task;
@@ -1732,7 +1732,18 @@ async function dashboardListIdeas(params) {
 
 
 async function dashboardDeleteTask(params) {
-  const id = params.id || params.taskId;
+  let id = params.id || params.taskId;
+  if (!id || isNaN(Number(id))) {
+    const searchTitle = params.id || params.taskId || params.title;
+    const result_result_all = await dashboardApi('/tasks?limit=100');
+    if (!result_result_all.success) return result_result_all;
+    const result_all = result_result_all.data;
+    const all = result_all;
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) return err('Task not found: ' + searchTitle);
+    id = match.id;
+  }
   if (!id) return err('ID da tarefa obrigatório');
   const result_result = await dashboardApi(`/tasks/${id}`, 'DELETE');
   if (!result_result.success) return result_result;
@@ -1743,7 +1754,18 @@ async function dashboardDeleteTask(params) {
 }
 
 async function dashboardCompleteTask(params) {
-  const id = params.id || params.taskId;
+  let id = params.id || params.taskId;
+  if (!id || isNaN(Number(id))) {
+    const searchTitle = params.id || params.taskId || params.title;
+    const result_result_all = await dashboardApi('/tasks?limit=100');
+    if (!result_result_all.success) return result_result_all;
+    const result_all = result_result_all.data;
+    const all = result_all;
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) return err('Task not found: ' + searchTitle);
+    id = match.id;
+  }
   if (!id) return err('ID da tarefa obrigatório');
   const result_result = await dashboardApi(`/tasks/${id}`, 'PUT', { status: 'completed' });
   if (!result_result.success) return result_result;
@@ -1754,7 +1776,18 @@ async function dashboardCompleteTask(params) {
 }
 
 async function dashboardAddComment(params) {
-  const id = params.id || params.taskId;
+  let id = params.id || params.taskId;
+  if (!id || isNaN(Number(id))) {
+    const searchTitle = params.id || params.taskId || params.title;
+    const result_result_all = await dashboardApi('/tasks?limit=100');
+    if (!result_result_all.success) return result_result_all;
+    const result_all = result_result_all.data;
+    const all = result_all;
+    const tasks = Array.isArray(all) ? all : (all.tasks || []);
+    const match = tasks.find(t => t.title === searchTitle || t.title.includes(searchTitle));
+    if (!match) return err('Task not found: ' + searchTitle);
+    id = match.id;
+  }
   if (!id) return err('ID da tarefa obrigatório');
   if (!params.comment && !params.text) return err('Comentário obrigatório');
   const result_result = await dashboardApi(`/tasks/${id}/comments`, 'POST', { text: params.comment || params.text });
