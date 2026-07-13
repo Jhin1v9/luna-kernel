@@ -1336,14 +1336,16 @@ test('W8-T4b: build/install command detection drives a 300s timeout, decoupled f
     'npm run build', 'apt install build-essential', 'apt-get install curl',
     'pip install requests', 'pip3 install torch', 'docker build -t img .',
     'cargo build --release', 'make', 'gradle build', 'mvn package',
-    'cd /tmp && npm install', 'NPM INSTALL',
+    'cd /tmp && npm install', 'NPM INSTALL', 'docker buildx build .',
+    'npm run build:css',
   ];
   for (const cmd of buildCases) {
     assert.ok(isBuildLikeCommand(cmd), `must detect build command: ${cmd}`);
     assert.strictEqual(resolveShellTimeout(cmd, {}), 300, `build command gets 300s: ${cmd}`);
     assert.strictEqual(resolveShellTimeout(cmd, { timeout: 120 }), 300, `300s wins over explicit timeout for build: ${cmd}`);
   }
-  const plainCases = ['ls -la', 'echo hello', 'git status', 'node script.js', 'npm run test'];
+  const plainCases = ['ls -la', 'echo hello', 'git status', 'node script.js', 'npm run test',
+    'cmake ..', 'cmake --build .', 'docker buildx ls', 'npm run buildx', 'apt update', 'pip list'];
   for (const cmd of plainCases) {
     assert.ok(!isBuildLikeCommand(cmd), `must NOT detect as build: ${cmd}`);
     assert.strictEqual(resolveShellTimeout(cmd, {}), 60, `default is 60s: ${cmd}`);
