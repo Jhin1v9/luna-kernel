@@ -13,12 +13,12 @@
 
 **Files:** `packages/kernel/luna-soul.cjs`, `packages/kernel/config/luna-config.js`.
 
-- [ ] (a) `invalidatePromptCache` never called (`:117-127`) — find the UI/API path that edits the master prompt (grep callers of the prompt-write route in `apps/dashboard/luna-chat-routes.js` / `luna-server.js`) and call `invalidatePromptCache()` after writes so edits take effect without restart.
-- [ ] (b) Workspace `'luna-cli'` hardcoded in follow-up context (`:3756-3757`) — derive the workspace from the session/userId (same derivation as the main flow uses) instead of the literal. Verify the tool guard (`luna-tool-guard.cjs`) receives the real workspace for web/Telegram sessions (the open item says the guard is null there — confirm and fix the wiring, not the guard itself).
-- [ ] (c) Config keys ignored — `miniReminder` and `toolResultPrompt` (`:2767-2782` hardcoded): read them from config with the current hardcoded text as fallback default. `loopRules` vs `MAX_AUTO_CONTINUES = 3` (`:2367`): reconcile — if `loopRules` in config sets a max, honor it (config wins, constant is the default).
-- [ ] (d) `dashboardCommandRouter` reports `success:true` on inner failure (`:2138` ff.) — propagate the inner failure so failed dashboard mutations are NOT marked processed (mark-on-success idempotency). Keep PT-BR error messages.
-- [ ] Tests (+3): prompt-edit route calls invalidatePromptCache (source-slice); follow-up context has no `'luna-cli'` literal (source-slice); config keys honored (unit: config with custom toolResultPrompt → used; absent → default).
-- [ ] Commit: `fix(soul): wire prompt-cache invalidation, per-session workspace, config keys, honest dashboard results`.
+- [x] (a) `invalidatePromptCache` never called (`:117-127`) — find the UI/API path that edits the master prompt (grep callers of the prompt-write route in `apps/dashboard/luna-chat-routes.js` / `luna-server.js`) and call `invalidatePromptCache()` after writes so edits take effect without restart.
+- [x] (b) Workspace `'luna-cli'` hardcoded in follow-up context (`:3756-3757`) — derive the workspace from the session/userId (same derivation as the main flow uses) instead of the literal. Verify the tool guard (`luna-tool-guard.cjs`) receives the real workspace for web/Telegram sessions (the open item says the guard is null there — confirm and fix the wiring, not the guard itself).
+- [x] (c) Config keys ignored — `miniReminder` and `toolResultPrompt` (`:2767-2782` hardcoded): read them from config with the current hardcoded text as fallback default. `loopRules` vs `MAX_AUTO_CONTINUES = 3` (`:2367`): reconcile — if `loopRules` in config sets a max, honor it (config wins, constant is the default).
+- [x] (d) `dashboardCommandRouter` reports `success:true` on inner failure (`:2138` ff.) — propagate the inner failure so failed dashboard mutations are NOT marked processed (mark-on-success idempotency). Keep PT-BR error messages.
+- [x] Tests (+3): prompt-edit route calls invalidatePromptCache (source-slice); follow-up context has no `'luna-cli'` literal (source-slice); config keys honored (unit: config with custom toolResultPrompt → used; absent → default).
+- [x] Commit: `fix(soul): wire prompt-cache invalidation, per-session workspace, config keys, honest dashboard results`.
 
 ## Task 2 — Bridge/extension: tools lost in parsing
 

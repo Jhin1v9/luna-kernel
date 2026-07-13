@@ -397,3 +397,104 @@ test('W7-T2d: plan-mode prompt — JSON-only mechanism, no ipython tool, ends wi
   assert.ok(tail.includes('json\n{"response": "# Plano'),
     'prompt tail must contain a fenced json response (plan) example');
 });
+
+// ── Wave 8 Task 1 (a): prompt-config edits take effect without restart ──────
+// The nexo-dashboard POST /api/luna/config route writes luna-prompt-config.json
+// — the file the soul caches via getPromptConfig(). Without cache invalidation,
+// UI prompt edits only applied after a process restart.
+test('W8-T1a: prompt-config write route invalidates the soul prompt cache', () => {
+  const SERVER = path.join(__dirname, '..', '..', '..', 'apps', 'dashboard', 'server.js');
+  const src = fs.readFileSync(SERVER, 'utf8');
+  const idx = src.indexOf("app.post('/api/luna/config'");
+  assert.notStrictEqual(idx, -1, 'POST /api/luna/config route must exist in apps/dashboard/server.js');
+  const end = src.indexOf("app.get('/api/luna/diagnose'", idx);
+  assert.notStrictEqual(end, -1, 'diagnose route must follow the config route — anchor drifted?');
+  const window = src.slice(idx, end);
+  assert.ok(window.includes('writeFileSync'), 'route must write the prompt config file');
+  assert.ok(window.includes('invalidatePromptCache'),
+    'route must call invalidatePromptCache() after writing the config');
+
+  // The soul must export the invalidator for the route to require() it...
+  const soulSrc = fs.readFileSync(SOUL, 'utf8');
+  const exportsIdx = soulSrc.indexOf('module.exports');
+  assert.ok(soulSrc.slice(exportsIdx).includes('invalidatePromptCache'),
+    'luna-soul.cjs must export invalidatePromptCache');
+
+  // ...and getPromptConfig must also self-heal cross-process: the writer can
+  // live in another process (nexo-dashboard vs luna-server), so the cache
+  // must reload when the file mtime changes.
+  const gpcIdx = soulSrc.indexOf('function getPromptConfig()');
+  assert.notStrictEqual(gpcIdx, -1, 'getPromptConfig must exist');
+  const gpcWindow = soulSrc.slice(gpcIdx, gpcIdx + 900);
+  assert.ok(gpcWindow.includes('mtime'), 'getPromptConfig must reload on file mtime change');
+});
+
+// ── Wave 8 Task 1 (b): follow-up context uses the session workspace ─────────
+// The follow-up/toolLoop branch hardcoded workspace 'luna-cli', leaking one
+// user's workspace context into every other session AND leaving the tool
+// guard without the session user's workspace root on follow-up turns.
+test('W8-T1b: follow-up context derives workspace from the session, not literal luna-cli', () => {
+  const src = fs.readFileSync(SOUL, 'utf8');
+  const start = src.indexOf('SUBSEQUENT MESSAGES / TOOL LOOP');
+  assert.notStrictEqual(start, -1, 'follow-up branch must exist in _buildContext');
+  const end = src.indexOf('async _processMode', start);
+  assert.notStrictEqual(end, -1, 'window end anchor (_processMode) must exist');
+  const window = src.slice(start, end);
+
+  assert.ok(!window.includes("'luna-cli'"),
+    "follow-up context must not reference the hardcoded 'luna-cli' workspace");
+  assert.ok(window.includes('options.userId || session?.userId'),
+    'follow-up must derive the user from options.userId / session.userId (same as first-message branch)');
+  assert.ok(window.includes('ensureWorkspace(followUpUserId'),
+    'follow-up must ensure the session user workspace exists (feeds the tool guard roots)');
+  assert.ok(window.includes('getFormattedManifest(followUpUserId)'),
+    'workspace manifest must be read for the session user');
+  assert.ok(window.includes('getActiveFilesContext(followUpUserId)'),
+    'active-files context must be read for the session user');
+});
+
+// ── Wave 8 Task 1 (c): config keys honored with hardcoded fallback ──────────
+// toolResultPrompt / miniReminder must be read from luna-prompt-config.json;
+// the pre-Wave-8 hardcoded texts stay as fallback defaults. loopRules.
+// maxAutoContinues must override the MAX_AUTO_CONTINUES constant when set.
+test('W8-T1c: toolResultPrompt/miniReminder come from config with fallback defaults', () => {
+  const { buildToolResultPrompt, buildMiniReminder } = require('../luna-soul.cjs');
+
+  // Custom config wins (explicit cfg injection = oracle for getPromptConfig()).
+  const custom = buildToolResultPrompt(
+    { toolsUsed: 'readFile', successCount: '1', totalCount: '1', outputText: 'OK' },
+    { toolResultPrompt: 'CUSTOM-RESULT-{{toolsUsed}}-{{outputText}}' }
+  );
+  assert.strictEqual(custom, 'CUSTOM-RESULT-readFile-OK', 'custom toolResultPrompt must be used and interpolated');
+
+  // Absent config → the pre-Wave-8 hardcoded text.
+  const dflt = buildToolResultPrompt(
+    { toolsUsed: 'readFile', successCount: '1', totalCount: '2', outputText: 'OUT' },
+    null
+  );
+  assert.ok(dflt.startsWith('✅ FERRAMENTA EXECUTADA — readFile'), 'default toolResultPrompt head changed');
+  assert.ok(dflt.includes('📊 STATUS: 1/2 sucesso(s)'), 'default must interpolate counts');
+  assert.ok(dflt.includes('📝 RESULTADO:\nOUT'), 'default must interpolate outputText');
+  assert.ok(dflt.includes('NUNCA repita readFile com os mesmos parâmetros.'), 'default rules tail changed');
+
+  // miniReminder: custom config wins; absent → shipped default text (interpolated).
+  const mr = buildMiniReminder({ USER_ID: 'u1', WORKSPACE: '/ws' }, { miniReminder: 'CUSTOM-REMINDER-{{USER_ID}}' });
+  assert.strictEqual(mr, 'CUSTOM-REMINDER-u1', 'custom miniReminder must be used and interpolated');
+  const mrDefault = buildMiniReminder({ USER_ID: 'u1', WORKSPACE: '/ws' }, null);
+  assert.ok(mrDefault.includes('[LUNA — CONTINUAÇÃO]'), 'default miniReminder must be the shipped text');
+  assert.ok(mrDefault.includes('User: u1') && mrDefault.includes('Workspace: /ws'),
+    'default miniReminder must interpolate USER_ID/WORKSPACE');
+
+  // Source pins: the helpers must actually be wired into the soul flows.
+  const src = fs.readFileSync(SOUL, 'utf8');
+  assert.ok(src.includes('loopInput = buildToolResultPrompt({'),
+    'tool-loop loopInput must be built via buildToolResultPrompt');
+  assert.ok(src.includes('miniReminder: buildMiniReminder') || /miniReminder[,\n]/.test(sliceAround(src, 'interpolateTemplate(followUpTemplate', 400)),
+    'follow-up interpolation must expose miniReminder');
+  // loopRules.maxAutoContinues must win over the constant.
+  const macIdx = src.indexOf('MAX_AUTO_CONTINUES');
+  assert.notStrictEqual(macIdx, -1, 'MAX_AUTO_CONTINUES must exist');
+  const macWindow = sliceAround(src, 'const MAX_AUTO_CONTINUES', 500);
+  assert.ok(macWindow.includes('loopRules'), 'MAX_AUTO_CONTINUES must read config loopRules');
+  assert.ok(macWindow.includes(': 3'), 'constant 3 must remain as the fallback default');
+});

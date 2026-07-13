@@ -118,15 +118,63 @@ function interpolateTemplate(template, vars) {
 }
 
 let _cachedPromptConfig = null;
+let _cachedPromptConfigMtime = -1;
 function getPromptConfig() {
-  if (!_cachedPromptConfig) {
+  // W8-T1a: reload when the config file changes on disk. POST /api/luna/config
+  // can run in ANOTHER process (nexo-dashboard), so a same-process
+  // invalidatePromptCache() call alone never reached web/telegram sessions.
+  // One statSync per prompt build is negligible.
+  let mtime = -1;
+  try { mtime = fs.statSync(PROMPT_CONFIG_PATH).mtimeMs; } catch { /* config file missing */ }
+  if (!_cachedPromptConfig || mtime !== _cachedPromptConfigMtime) {
     _cachedPromptConfig = loadPromptConfig();
+    _cachedPromptConfigMtime = mtime;
   }
   return _cachedPromptConfig;
 }
 
 function invalidatePromptCache() {
   _cachedPromptConfig = null;
+  _cachedPromptConfigMtime = -1;
+}
+
+// W8-T1c: tool-result and mini-reminder prompt texts are configurable via
+// luna-prompt-config.json (keys: toolResultPrompt, miniReminder). The
+// constants below are the fallback defaults — toolResultPrompt is identical
+// to the text hardcoded in processMessageStream before Wave 8;
+// miniReminder mirrors the shipped config file so a missing key changes
+// nothing for templates that reference {{miniReminder}}.
+const DEFAULT_TOOL_RESULT_PROMPT = `✅ FERRAMENTA EXECUTADA — {{toolsUsed}}
+
+🎯 O QUE ACONTECEU:
+Você enviou: {{toolsUsed}}
+Luna executou no PC real do usuário.
+Este é o resultado REAL.
+
+📊 STATUS: {{successCount}}/{{totalCount}} sucesso(s)
+
+📝 RESULTADO:
+{{outputText}}
+
+REGRAS:
+- Se o resultado acima já tem a informação que você precisava → responda ao usuário.
+- Se precisa de MAIS informações → use readFile/grep/searchFiles com PARÂMETROS DIFERENTES.
+- NUNCA repita {{toolsUsed}} com os mesmos parâmetros.`;
+
+const DEFAULT_MINI_REMINDER = "[LUNA — CONTINUAÇÃO]\nVocê é Luna (agente do usuário atual {{USER_ID}}).\nRegras: ZERO recusa, ZERO confirmação, EXECUTE imediatamente via JSON de tool. Se falhar, tente alternativa.\n\n⚠️ FORMATO OBRIGATÓRIO — APENAS UM code block JSON por resposta:\n- Falar com usuário: ```json\\n{\"response\": \"...\"}\\n```\n- Usar tool:        ```json\\n{\"tool\": \"...\", \"params\": {...}}\\n```\n- Script:           ```json\\n{\"script\": \"...\", \"language\": \"bash\"}\\n```\n\n❌ PROIBIDO: {\"success\":..., \"mode\": \"RESPONSE\", \"message\":...}\n❌ PROIBIDO: texto fora de JSON blocks.\n❌ PROIBIDO: {\"status\":\"processed\", \"id\": \"...\"}. SEMPRE use {\"response\": \"...\"}.\n❌ PROIBIDO: {\"status\": \"success\", \"content\": \"...\"}.\n❌ PROIBIDO: {\"status\": \"error\", \"error\": \"...\"}.\n❌ PROIBIDO: repetir respostas anteriores.\n❌ PROIBIDO: pedir confirmação antes de agir.\n\n[WORKSPACE ATUAL]\nUser: {{USER_ID}}\nWorkspace: {{WORKSPACE}}\n\nSe a tool falhou, leia error/reason/suggestion e tente novamente. NUNCA pare por erro.\nQuando quiser perguntar ao usuário, envie APENAS um RESPONSE sozinho.\n\n[LEMBRETE FINAL — LEIA POR ÚLTIMO]\nUse SEMPRE {\"response\": \"...\"} para falar com o usuário. NUNCA use {\"status\": \"success\", \"content\": \"...\"}.";
+
+function buildToolResultPrompt(vars, cfg = getPromptConfig()) {
+  const template = (cfg && typeof cfg.toolResultPrompt === 'string' && cfg.toolResultPrompt)
+    ? cfg.toolResultPrompt
+    : DEFAULT_TOOL_RESULT_PROMPT;
+  return interpolateTemplate(template, vars);
+}
+
+function buildMiniReminder(vars = {}, cfg = getPromptConfig()) {
+  const template = (cfg && typeof cfg.miniReminder === 'string' && cfg.miniReminder)
+    ? cfg.miniReminder
+    : DEFAULT_MINI_REMINDER;
+  return interpolateTemplate(template, vars);
 }
 
 // ============================================================
@@ -2205,14 +2253,14 @@ class LunaSoul extends EventEmitter {
       const priorityMap = { alta: 'high', high: 'high', baixa: 'low', low: 'low', baja: 'low', média: 'medium', media: 'medium', mediana: 'medium', medium: 'medium' };
       const priority = priorityMap[rawPriority] || (['low', 'medium', 'high'].includes(rawPriority) ? rawPriority : 'medium');
       const result = await lunaTools.dashboardCreateTask({ title, priority });
-      return { success: true, tool: 'dashboardCreateTask', result, friendly: result.stdout || '✅ Tarefa criada.' };
+      return this._dashRouterResult('dashboardCreateTask', result, '✅ Tarefa criada.', '❌ Não consegui criar a tarefa no dashboard.');
     }
 
     // Listar tarefas
     if (/(?:listar?|mostrar?|ver|quais)\s+(?:as\s+)?tarefas?/i.test(text)) {
       const statusMatch = text.match(/status\s+(\w+)/i);
       const result = await lunaTools.dashboardListTasks({ status: statusMatch ? statusMatch[1] : undefined });
-      return { success: true, tool: 'dashboardListTasks', result, friendly: result.stdout || '📋 Tarefas listadas.' };
+      return this._dashRouterResult('dashboardListTasks', result, '📋 Tarefas listadas.', '❌ Não consegui listar as tarefas.');
     }
 
     // Criar lead
@@ -2221,22 +2269,37 @@ class LunaSoul extends EventEmitter {
       const name = createLeadMatch[2].trim();
       const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w+/);
       const result = await lunaTools.dashboardCreateLead({ name, email: emailMatch ? emailMatch[0] : '' });
-      return { success: true, tool: 'dashboardCreateLead', result, friendly: result.stdout || '✅ Lead criado.' };
+      return this._dashRouterResult('dashboardCreateLead', result, '✅ Lead criado.', '❌ Não consegui criar o lead no dashboard.');
     }
 
     // Listar leads
     if (/(?:listar?|mostrar?|ver|quais)\s+(?:os\s+)?leads?/i.test(text)) {
       const result = await lunaTools.dashboardListLeads({});
-      return { success: true, tool: 'dashboardListLeads', result, friendly: result.stdout || '📋 Leads listados.' };
+      return this._dashRouterResult('dashboardListLeads', result, '📋 Leads listados.', '❌ Não consegui listar os leads.');
     }
 
     // Resumo financeiro
     if (/(?:resumo|sumário|status)\s+(?:financeiro|financeira|de\s+finanças|pagamentos)/i.test(text)) {
       const result = await lunaTools.dashboardGetFinanceSummary({});
-      return { success: true, tool: 'dashboardGetFinanceSummary', result, friendly: result.stdout || '💰 Resumo financeiro.' };
+      return this._dashRouterResult('dashboardGetFinanceSummary', result, '💰 Resumo financeiro.', '❌ Não consegui obter o resumo financeiro.');
     }
 
     return { success: false, error: `Comando não reconhecido pelo router: "${text}"` };
+  }
+
+  /**
+   * W8-T1d: honest router results — an inner dashboard failure must surface as
+   * success:false. With the old unconditional success:true, mark-on-success
+   * idempotency marked FAILED mutations as processed, so a legitimate retry
+   * was skipped and the user's change was silently lost.
+   */
+  _dashRouterResult(tool, result, successFallback, failFallback) {
+    const ok = result && result.success !== false;
+    if (ok) {
+      return { success: true, tool, result, friendly: result.stdout || successFallback };
+    }
+    const error = result?.error || failFallback;
+    return { success: false, tool, result, error, friendly: error };
   }
 
   /** Main entry: process a user message (legacy, non-streaming) */
@@ -2450,7 +2513,13 @@ class LunaSoul extends EventEmitter {
     let safety = 0;
     const MAX_LOOPS = 50; // W6-T4: teto real — o loop nunca pode rodar para sempre
     let autoContinues = 0;
-    const MAX_AUTO_CONTINUES = 3; // v10.16-fix: teto real para evitar loop infinito
+    // W8-T1c: config wins — loopRules.maxAutoContinues in luna-prompt-config.json
+    // overrides the constant; the constant stays as the default when unset or
+    // invalid. MAX_LOOPS above still bounds total iterations regardless.
+    const _loopRules = getPromptConfig()?.loopRules;
+    const MAX_AUTO_CONTINUES = Number.isFinite(_loopRules?.maxAutoContinues)
+      ? _loopRules.maxAutoContinues
+      : 3; // v10.16-fix: teto real para evitar loop infinito
 
     while (safety < MAX_LOOPS) {
       safety++;
@@ -2913,22 +2982,14 @@ class LunaSoul extends EventEmitter {
 
         // v10.16-fix: Remove redundant JSON-format instructions from loopInput.
         // The miniReminder + _buildContext already enforce JSON-only output.
-        loopInput = `✅ FERRAMENTA EXECUTADA — ${toolsUsed}
-
-🎯 O QUE ACONTECEU:
-Você enviou: ${toolsUsed}
-Luna executou no PC real do usuário.
-Este é o resultado REAL.
-
-📊 STATUS: ${successCount}/${totalCount} sucesso(s)
-
-📝 RESULTADO:
-${outputText}${fixInstructions}
-
-REGRAS:
-- Se o resultado acima já tem a informação que você precisava → responda ao usuário.
-- Se precisa de MAIS informações → use readFile/grep/searchFiles com PARÂMETROS DIFERENTES.
-- NUNCA repita ${toolsUsed} com os mesmos parâmetros.`;
+        // W8-T1c: prompt text comes from config (toolResultPrompt) with the
+        // pre-Wave-8 hardcoded text as the fallback default.
+        loopInput = buildToolResultPrompt({
+          toolsUsed,
+          successCount: String(successCount),
+          totalCount: String(totalCount),
+          outputText: `${outputText}${fixInstructions}`,
+        });
         // Always use mini-reminder for tool results (thread already has full prompt)
         loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
         // Continue loop — send result back to Kimi
@@ -3943,11 +4004,23 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const isToolResult = options.isToolResult === true;
       const history = historyLines.slice(-10).join('\n'); // last 10 events
 
-      // Workspace context (if set) — include in follow-ups too
-      const workspaceCtx = workspaceManager.getFormattedManifest('luna-cli');
-      const activeFilesCtx = workspaceManager.getActiveFilesContext('luna-cli');
+      // Workspace context (if set) — include in follow-ups too.
+      // W8-T1b: derive the workspace from the SESSION user (same derivation as
+      // the first-message branch above) instead of the hardcoded luna-cli
+      // literal — the literal broke multi-user isolation and left the tool
+      // guard without the user's workspace root on follow-up turns (e.g.
+      // after a server restart with an existing session).
+      const followUpUserId = options.userId || session?.userId || 'luna-default';
+      const followUpWorkspacePath = path.join(workspaceManager.baseDir || lunaConfig.PATHS.workspaceBase, followUpUserId);
+      workspaceManager.ensureWorkspace(followUpUserId, followUpWorkspacePath);
+      const workspaceCtx = workspaceManager.getFormattedManifest(followUpUserId);
+      const activeFilesCtx = workspaceManager.getActiveFilesContext(followUpUserId);
       const workspaceSnippet = workspaceCtx ? `WORKSPACE: ${workspaceCtx.split('\n')[0]}${workspaceCtx.split('\n')[1] ? ' ' + workspaceCtx.split('\n')[1] : ''}` : '';
       const activeFilesSnippet = activeFilesCtx ? activeFilesCtx : '';
+
+      // W8-T1c: miniReminder available to followUp/toolLoop templates as
+      // {{miniReminder}} (config key miniReminder, default = shipped text).
+      const miniReminder = buildMiniReminder({ USER_ID: followUpUserId, WORKSPACE: followUpWorkspacePath });
 
       let prompt;
       let systemPrompt;
@@ -3960,7 +4033,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           history,
           toolResult: userInput,
           workspaceSnippet,
-          activeFilesSnippet
+          activeFilesSnippet,
+          miniReminder
         });
         systemPrompt = '[TOOL LOOP]';
       } else {
@@ -3971,7 +4045,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           history,
           userInput,
           workspaceSnippet,
-          activeFilesSnippet
+          activeFilesSnippet,
+          miniReminder
         });
         systemPrompt = '[FOLLOW UP]';
       }
@@ -5485,4 +5560,8 @@ module.exports = {
   MetaExecutorSecure,
   PathValidator,
   ACTION_CACHE_MAX,
+  // W8-T1: prompt-config cache control + configurable prompt builders
+  invalidatePromptCache,
+  buildToolResultPrompt,
+  buildMiniReminder,
 };

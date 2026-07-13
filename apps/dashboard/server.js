@@ -3800,6 +3800,14 @@ app.post('/api/luna/config', (req, res) => {
             fs.mkdirSync(configDir, { recursive: true });
         }
         fs.writeFileSync(LUNA_PROMPT_CONFIG_PATH, JSON.stringify(req.body, null, 2), 'utf8');
+        // W8-T1a: prompt edits must take effect without a restart — drop the
+        // soul's cached prompt config in THIS process (cross-process consumers
+        // like luna-server also reload on mtime change, see luna-soul.cjs).
+        try {
+            require(path.join(LUNA_KERNEL_DIR, 'luna-soul.cjs')).invalidatePromptCache();
+        } catch (cacheErr) {
+            console.warn('[LUNA CONFIG] invalidatePromptCache indisponível:', cacheErr.message);
+        }
         res.json({ success: true, message: 'Configurações salvas com sucesso' });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
