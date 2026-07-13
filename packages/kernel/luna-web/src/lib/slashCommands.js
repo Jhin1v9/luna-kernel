@@ -20,8 +20,8 @@ export const SLASH_COMMANDS = [
   { cmd: '/turnoff',     desc: 'Desligar agente (fecha Chrome)',     icon: '🌙', category: 'System', handler: 'turnOffAgent' },
   { cmd: '/ajuda',       desc: 'Mostrar ajuda',                      icon: '❓', category: 'System', handler: 'help' },
   { cmd: '/modo',        desc: 'Trocar modo (instant/thinking)', icon: '⚡', category: 'System', handler: 'changeMode' },
-  { cmd: '/refresh',     desc: 'Reconectar e limpar estado do agente', icon: '🔄', category: 'System', handler: 'refreshAgent' },
-  { cmd: '/fullrefresh', desc: 'Refresh + continuar ultima acao',     icon: '🔁', category: 'System', handler: 'fullRefreshAgent' },
+  { cmd: '/refresh',     desc: 'Diagnosticar e reparar conexoes (Soul, Bridge, SSE)', icon: '🔄', category: 'System', handler: 'refreshAgent' },
+  { cmd: '/fullrefresh', desc: 'Refresh completo + continuar ultima acao',     icon: '🔁', category: 'System', handler: 'fullRefreshAgent' },
 
   // ── File Ops ──
   { cmd: '/read',        desc: 'Ler arquivo — /read path/to/file',   icon: '📖', category: 'File', handler: 'readFile' },

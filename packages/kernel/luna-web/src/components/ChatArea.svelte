@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { isStreaming, currentMode, currentProvider, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
-  import { sendMessage, cancelStream, ackEvents, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
+  import { sendMessage, cancelStream, ackEvents, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, selfhealServices, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { evictOldestEntries } from '../lib/evictSet.js';
   import { createToolTimerRegistry } from '../lib/toolTimers.js';
@@ -1120,6 +1120,106 @@
     startHeartbeat('web-' + sessionId, 30000);
   }
 
+  // v10.33: /refresh with real diagnostics + targeted self-heal.
+  // The old handler only cleared frontend state and CLAIMED "SSE reconectado"
+  // — but connectSSE() early-returns when already connected to the same
+  // session, so nothing was reconnected and no server-side problem (bridge
+  // down, soul stuck, service dead) was ever detected or repaired.
+  // New flow: diagnose → repair what's broken (pm2 selfheal) → force-reconnect
+  // → report. Last resort when the API itself is unreachable: page reload.
+  async function runAgentRefresh({ resume }) {
+    // 1) clear frontend streaming state
+    isStreaming.set(false);
+    currentAssistantId = null;
+    thinkingId = null;
+    responseBuffer = '';
+    pendingToolCount = 0;
+    processedEventIds.clear();
+    flushedContentHashes.clear();
+
+    const diagId = 'sys-' + Date.now();
+    const setDiag = (content) => {
+      messages.update(msgs => {
+        const i = msgs.findIndex(m => m.id === diagId);
+        if (i === -1) return [...msgs, { id: diagId, type: 'system', content, timestamp: new Date().toISOString() }];
+        const copy = msgs.slice();
+        copy[i] = { ...copy[i], content };
+        return copy;
+      });
+    };
+    setDiag('🔍 Diagnosticando conexões (servidor, Soul, Bridge)…');
+
+    // 2) diagnose backend health
+    let health = null;
+    try { health = await systemHealth(); } catch { health = null; }
+
+    if (!health || !health.status) {
+      setDiag('❌ Servidor Luna (API) não responde.\nA página será recarregada em 10s para reconectar tudo…');
+      setTimeout(() => window.location.reload(), 10000);
+      return;
+    }
+
+    // 3) map problems → services to restart (bridge/soul live inside luna-server)
+    const st = health.status || {};
+    const broken = [];
+    const services = [];
+    const soulReady = health.lunaSoulReady || st['luna-soul']?.status === 'ready';
+    if (!soulReady) { broken.push('Luna Soul não está pronta'); services.push('luna-server'); }
+    if (st['kimi-bridge']?.status !== 'connected') { broken.push('Kimi Bridge desconectado'); services.push('luna-server'); }
+    if (st['nexo-dashboard'] && st['nexo-dashboard'].status !== 'running') { broken.push('Dashboard (porta 3456) parado'); services.push('nexo-dashboard'); }
+    if (st['luna-web-vite'] && st['luna-web-vite'].status !== 'running') { broken.push('Vite (porta 5173) parado'); services.push('luna-vite'); }
+    if (st['telegram-bot'] && st['telegram-bot'].status !== 'running') { broken.push('Bot do Telegram parado'); services.push('telegram-bot'); }
+
+    const forceReconnect = async () => {
+      // connectSSE() early-returns if eventSource still exists for this
+      // session — disconnect first so the reconnect actually happens.
+      try { sseManager.disconnect(); } catch { /* ignore */ }
+      try { await connectSSE(); } catch { /* ignore */ }
+    };
+
+    if (broken.length > 0) {
+      setDiag(`⚠️ Problemas detectados:\n${broken.map(b => '• ' + b).join('\n')}\n🛠️ Reiniciando serviços afetados…`);
+      try {
+        await selfhealServices([...new Set(services)]);
+      } catch { /* the server may restart itself mid-call — expected */ }
+
+      // 4) poll until healthy again (luna-server dies during its own restart)
+      let recovered = false;
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          const h = await systemHealth();
+          const s = h?.status || {};
+          const okSoul = h?.lunaSoulReady || s['luna-soul']?.status === 'ready';
+          const okBridge = s['kimi-bridge']?.status === 'connected';
+          if (h && okSoul && okBridge) { recovered = true; break; }
+        } catch { /* still restarting */ }
+      }
+
+      await forceReconnect();
+
+      if (!recovered) {
+        setDiag('⚠️ Reinício solicitado, mas a saúde ainda não estabilizou.\nA página será recarregada em 10s para uma reconexão limpa…');
+        setTimeout(() => window.location.reload(), 10000);
+        return;
+      }
+      setDiag(`✅ Recuperado — Soul pronta e Bridge conectado.\nServiços reiniciados: ${[...new Set(services)].join(', ')}. SSE reconectado.`);
+    } else {
+      await forceReconnect();
+      setDiag('✅ Tudo saudável — Soul pronta, Bridge conectado.\nEstado limpo e SSE reconectado à força.');
+    }
+
+    // 5) fullRefresh: resume pending work from history
+    if (resume && activeSessionId) {
+      try {
+        await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode, [], null, sessionProvider);
+        await connectSSE();
+      } catch (e) {
+        console.error('[fullRefresh] Failed to send continuation:', e);
+      }
+    }
+  }
+
   // v10.32-fix: Sync currentProvider with the selected session's provider so the header
   // and sendMessage use the correct provider (Kimi/DeepSeek/etc).
   $: rawSessionProvider = $sessions.find(s => s.id === sessionId)?.provider;
@@ -1314,46 +1414,11 @@
               mascotMessage.set('🌙 Luna dormindo. Envie uma mensagem para acordar.');
               break;
             case 'refreshAgent': {
-              isStreaming.set(false);
-              currentAssistantId = null;
-              thinkingId = null;
-              responseBuffer = '';
-              pendingToolCount = 0;
-              processedEventIds.clear();
-              flushedContentHashes.clear();
-              await connectSSE();
-              messages.update(msgs => [...msgs, {
-                id: 'sys-' + Date.now(),
-                type: 'system',
-                content: '🔄 Agent refresh — estado limpo, SSE reconectado.',
-                timestamp: new Date().toISOString()
-              }]);
+              await runAgentRefresh({ resume: false });
               return;
             }
             case 'fullRefreshAgent': {
-              isStreaming.set(false);
-              currentAssistantId = null;
-              thinkingId = null;
-              responseBuffer = '';
-              pendingToolCount = 0;
-              processedEventIds.clear();
-              flushedContentHashes.clear();
-              await connectSSE();
-              // Send a continuation message to the backend
-              if (activeSessionId) {
-                try {
-                  await sendMessage('Continue de onde parou. Leia o historico e execute a proxima acao pendente.', activeSessionId, $currentMode, [], null, sessionProvider);
-                  await connectSSE();
-                } catch (e) {
-                  console.error('[fullRefresh] Failed to send continuation:', e);
-                }
-              }
-              messages.update(msgs => [...msgs, {
-                id: 'sys-' + Date.now(),
-                type: 'system',
-                content: '🔁 Full refresh — reconectado, retomando execucao do historico...',
-                timestamp: new Date().toISOString()
-              }]);
+              await runAgentRefresh({ resume: true });
               return;
             }
           }

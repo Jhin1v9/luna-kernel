@@ -118,6 +118,19 @@
 - [x] 🟡 **Timeout coupled to visibility** (`isBuildCommand = isVisibleCommand`) — new `lib/build-detect.cjs` detects build/install commands (npm/apt/pip/docker/cargo/make/gradle/mvn…) → 300s; everything else `opts.timeout || 60`; visibility no longer affects timeout; timeout error messages report the real value. Review follow-up tightened word boundaries (`cmake`, `docker buildx ls`, `npm run buildx` pinned). (`442f1a3`, `30b37fa`; W8-T4b)
 - [x] 🟡 **Dead code** — `bridge-libs/message-sender.cjs` and `input-validator.cjs` deleted (zero importers proven by repo-wide grep), orphan `getModeUrls()` removed, `setMode` with invalid mode now warns and falls back to 'instant' instead of silently clicking Thinking. (`442f1a3`; W8-T4c)
 
+### Wave 8.5 (2026-07-13) — mobile audit + /refresh self-heal
+
+> Full before/after: `packages/kernel/plans/2026-07-13-mobile-selfheal.md`. Live-verified with Playwright at 390×844 (real login via API).
+
+- [x] 🟠 **Mobile header overflow** — at 390px the full `header-right` (provider pill + persona pill + Compactar + Limpar + Exportar + Novo + Config) overflowed off-screen with the persona button visibly clipped. Now: ≤768px drops the three secondary icon buttons (still reachable via `/limpar` and the config drawer), ≤640px persona becomes emoji-only, ≤480px provider becomes emoji-only, moon-dots hidden, icon buttons slim to 32px. Verified: everything fits, nothing clipped. (`ChatHeader.svelte`)
+- [x] 🟠 **`/refresh` was cosmetic** — it cleared frontend state and called `connectSSE()`, which early-returns when already connected to the same session, so it never actually reconnected anything and never checked the server. New `runAgentRefresh({resume})`: diagnoses via `/api/system/health` (soul ready? bridge connected? dashboard/vite/telegram up?), repairs broken services through the new self-heal endpoint, polls health until recovered (60s), force-reconnects SSE (disconnect first), reports in chat; last resort when the API itself is unreachable or doesn't stabilize → page reload in 10s. `/fullrefresh` keeps the resume-from-history step on top of the same flow. Live-verified: healthy path prints the honest "tudo saudável" report. (`ChatArea.svelte`, `api.js`)
+- [x] 🟠 **`/reiniciar` `/parar` `/ligar` were dead buttons** — they depend on `luna-nexo.sh` at the configured path `~/.luna/dashboard/`, which does not exist (the real copy in `~/NEXO_DASHBOARD_PRO/` is stale: old paths, pm2 name `telegram-bot` that no longer exists → would spawn a duplicate bot). The routes kept answering "Reiniciando..." while doing nothing. Now they keep the legacy script when present and otherwise fall back to pm2 with canonical monorepo names; `/stop` deliberately keeps `luna-server` alive so `/ligar` can bring the rest back. (`luna-chat-routes.js`, `lib/selfheal.cjs`)
+- [x] 🟡 **No targeted service recovery existed** — new `POST /api/system/selfheal` restarts only the diagnosed-broken services via pm2 (allowlisted keys → canonical names, deduped, response flushes before `luna-server` kills itself, NEVER `--update-env` — Wave 6 incident). 400 with the valid-key list on bad input (live-verified). (`lib/selfheal.cjs`; tests `selfheal.test.cjs` — 9 new, regression 249/249)
+
+### Known issue (owner decision needed)
+
+- [ ] 🟠 **`~/NEXO_DASHBOARD_PRO/luna-nexo.sh` is stale and dangerous if run manually** — old layout paths, `pm2 start ... --name telegram-bot` spawns a **duplicate Telegram adapter** (real name: `luna-telegram-adapter`), `--update-env` on starts. The server no longer depends on it (pm2 fallback above), but a manual `./luna-nexo.sh restart` would misbehave. Fix it or delete it — owner's call.
+
 ---
 
 ## Recommended attack order (owner-approved 2026-07-11)

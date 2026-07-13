@@ -14,6 +14,8 @@ const { resolveJwtSecret } = require('./config-validator');
 
 // Wave 1 Fix B1: tool-instance-aware event dedup
 const { makeEventDedupKey } = require('./lib/chat-event-dedup.cjs');
+// Targeted service recovery via pm2 (canonical monorepo process names)
+const selfheal = require('./lib/selfheal.cjs');
 
 // v11.0: Centralized kernel resolution via shared resolver
 const { LUNA_KERNEL_DIR } = require('./lib/resolve-luna.cjs');
@@ -1552,18 +1554,54 @@ async function getServiceStatus() {
 }
 
 router.post('/api/system/restart', async (req, res) => {
-  res.json({ ok: true, message: '🔄 Reiniciando todos os serviços...' });
-  setTimeout(() => runScript('restart'), 500);
+  if (fs.existsSync(LUNA_NEXO_SCRIPT)) {
+    res.json({ ok: true, message: '🔄 Reiniciando todos os serviços...' });
+    setTimeout(() => runScript('restart'), 500);
+    return;
+  }
+  // Fallback: the legacy control script is absent on this machine — restart
+  // the core services via pm2 with canonical monorepo names.
+  const all = selfheal.resolveServiceNames(['luna-server', 'nexo-dashboard', 'luna-vite', 'telegram-bot']);
+  res.json({ ok: true, message: '🔄 Reiniciando todos os serviços via pm2...' });
+  selfheal.restartServices(all);
 });
 
 router.post('/api/system/stop', async (req, res) => {
-  res.json({ ok: true, message: '🛑 Parando todos os serviços...' });
-  setTimeout(() => runScript('stop'), 500);
+  if (fs.existsSync(LUNA_NEXO_SCRIPT)) {
+    res.json({ ok: true, message: '🛑 Parando todos os serviços...' });
+    setTimeout(() => runScript('stop'), 500);
+    return;
+  }
+  const all = selfheal.resolveServiceNames(['nexo-dashboard', 'luna-vite', 'telegram-bot']);
+  res.json({ ok: true, message: '🛑 Parando serviços (luna-server permanece para poder religá-los)...' });
+  selfheal.stopServices(all);
 });
 
 router.post('/api/system/start', async (req, res) => {
-  const result = await runScript('start', 60000);
-  res.json({ ok: result.ok, message: result.ok ? '▶ Serviços iniciados' : result.error, output: result.output });
+  if (fs.existsSync(LUNA_NEXO_SCRIPT)) {
+    const result = await runScript('start', 60000);
+    res.json({ ok: result.ok, message: result.ok ? '▶ Serviços iniciados' : result.error, output: result.output });
+    return;
+  }
+  const all = selfheal.resolveServiceNames(['nexo-dashboard', 'luna-vite', 'telegram-bot']);
+  res.json({ ok: true, message: '▶ Serviços iniciados via pm2', output: all.join(', ') });
+  selfheal.restartServices(all);
+});
+
+// Targeted self-heal: restart ONLY the services the caller diagnosed as
+// broken (bridge/soul live inside luna-server). Allowlisted, deduped, and
+// never invoked with --update-env (Wave 6 incident).
+router.post('/api/system/selfheal', async (req, res) => {
+  const pm2Names = selfheal.resolveServiceNames(req.body?.services);
+  if (pm2Names.length === 0) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Nenhum serviço válido informado',
+      valid: Object.keys(selfheal.PM2_SERVICES),
+    });
+  }
+  res.json({ ok: true, message: `🛠️ Reiniciando: ${pm2Names.join(', ')}`, services: pm2Names });
+  selfheal.restartServices(pm2Names);
 });
 
 router.get('/api/system/status', async (req, res) => {

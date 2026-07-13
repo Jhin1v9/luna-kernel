@@ -593,6 +593,16 @@ export async function systemHealth() {
   return res.json();
 }
 
+// v10.30: targeted self-heal — restart only the diagnosed-broken services
+export async function selfhealServices(services) {
+  const res = await fetch('/api/system/selfheal', {
+    method: 'POST',
+    headers: authHeaders(true),
+    body: JSON.stringify({ services })
+  });
+  return res.json();
+}
+
 export async function systemLogs(lines = 50) {
   const res = await fetch(`/api/system/logs?lines=${lines}`, { headers: authHeaders(false) });
   return res.json();

@@ -889,9 +889,27 @@
     text-align: center;
   }
 
-  /* ── Responsive: hide center on very small screens ── */
+  /* ── Responsive: slim the right group so nothing overflows off-screen ── */
+  /* Secondary actions leave the mobile header — still reachable via slash
+     commands (/limpar) and the config drawer. */
+  @media (max-width: 768px) {
+    .header-right .icon-btn[aria-label="Compactar"],
+    .header-right .icon-btn[aria-label="Limpar"],
+    .header-right .icon-btn[aria-label="Exportar"] { display: none; }
+  }
+  @media (max-width: 640px) {
+    .chat-header { padding: 0 0.5rem; gap: 0.4rem; }
+    .persona-name, .persona-chevron { display: none; }
+    .persona-btn { padding: 6px 8px; max-width: none; }
+  }
   @media (max-width: 480px) {
     .header-center { display: none; }
     .chat-title { max-width: 120px; }
+    .provider-name, .provider-chevron { display: none; }
+    .provider-btn { padding: 6px 8px; max-width: none; }
+    /* every pixel counts on a 360-390px phone: brand dots go (avatar stays,
+       home is reachable via the sidebar), icon buttons slim to 32px */
+    .moon-dots { display: none; }
+    .icon-btn { width: 32px; height: 32px; border-radius: 9px; }
   }
 </style>
