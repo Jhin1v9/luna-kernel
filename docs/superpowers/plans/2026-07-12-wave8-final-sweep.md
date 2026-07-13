@@ -35,12 +35,12 @@
 
 **Files:** `packages/kernel/luna-web/src/components/ToolCard.svelte`, `ChatArea.svelte`, `MessagesList.svelte`; `packages/kernel/lib/tool-registry.cjs`.
 
-- [ ] (a) ToolCard reads error/output from the inner level too (`result?.result?.error`, `result?.result?.friendlyMessage`, `result?.result?.stdout`) — the backend wraps results one level deeper than the card reads; and when neither command/path nor output exists, render `JSON.stringify(params, null, 2)` as body so a card is never blank.
-- [ ] (b) Internal tools never render cards: add `hidden: true` metadata in `lib/tool-registry.cjs` for `think`, `getVisibleMode`, `setVisibleMode`, `getCurrentDirectory` (verify exact names in the registry); regenerate the frontend meta (`scripts/gen-tool-meta.cjs` → `toolMeta.generated.js`); ChatArea `case 'action_start'` skips card creation for hidden tools (reads from generated meta, not a hardcoded list). Action still executes — only the card is suppressed.
-- [ ] (c) Chunk-replay dedup: dedup `action_progress` chunk events client-side by event id in ChatArea (the ack-trim path can replay already-rendered chunks on reconnect).
-- [ ] (d) Small plan-mode leftovers from Wave 7 review: `/api/plan` persists the user's plan-request message into the session (today it only lives in the DOM — reload loses it); server rejects duplicate approve (status must be `awaiting_approval`); after revise, the old card stops showing actions (status transitions) so two cards can't both offer buttons.
-- [ ] Rebuild dist + commit it. Tests (+3): generated meta contains hidden flags (byte-drift test may need updating — check wave5 T4); ChatArea skips hidden tools (source-slice); chunk dedup by id (source-slice/unit).
-- [ ] Commit: `fix(frontend): ToolCard inner-level errors, hidden internal tools, chunk replay dedup, plan-mode leftovers`.
+- [x] (a) ToolCard reads error/output from the inner level too (`result?.result?.error`, `result?.result?.friendlyMessage`, `result?.result?.stdout`) — the backend wraps results one level deeper than the card reads; and when neither command/path nor output exists, render `JSON.stringify(params, null, 2)` as body so a card is never blank.
+- [x] (b) Internal tools never render cards: add `hidden: true` metadata in `lib/tool-registry.cjs` for `think`, `getVisibleMode`, `setVisibleMode`, `getCurrentDirectory` (verify exact names in the registry); regenerate the frontend meta (`scripts/gen-tool-meta.cjs` → `toolMeta.generated.js`); ChatArea `case 'action_start'` skips card creation for hidden tools (reads from generated meta, not a hardcoded list). Action still executes — only the card is suppressed.
+- [x] (c) Chunk-replay dedup: dedup `action_progress` chunk events client-side by event id in ChatArea (the ack-trim path can replay already-rendered chunks on reconnect).
+- [x] (d) Small plan-mode leftovers from Wave 7 review: `/api/plan` persists the user's plan-request message into the session (today it only lives in the DOM — reload loses it); server rejects duplicate approve (status must be `awaiting_approval`); after revise, the old card stops showing actions (status transitions) so two cards can't both offer buttons.
+- [x] Rebuild dist + commit it. Tests (+3): generated meta contains hidden flags (byte-drift test may need updating — check wave5 T4); ChatArea skips hidden tools (source-slice); chunk dedup by id (source-slice/unit).
+- [x] Commit: `fix(frontend): ToolCard inner-level errors, hidden internal tools, chunk replay dedup, plan-mode leftovers`.
 
 ## Task 4 — Tools/guard: atomic writes, real build detection, dead-code removal
 

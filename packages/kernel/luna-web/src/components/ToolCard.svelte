@@ -24,6 +24,12 @@
       : resultOutput
     : '';
 
+  // Wave 8: the backend wraps results one level deeper
+  // (action_end.result = {success, mode, tool, result: <inner>}) — read the
+  // inner level too, without dropping the legacy flat reads above.
+  $: errorText = result?.error || result?.result?.error || result?.result?.friendlyMessage || '';
+  $: paramsJson = params && Object.keys(params).length > 0 ? JSON.stringify(params, null, 2) : '';
+
   // Cinema animations per tool type
   $: toolAnimationClass = displayStatus === 'running' ? `anim-${tool}` : '';
   $: cardClasses = [
@@ -105,12 +111,18 @@
     </details>
   {/if}
 
+  <!-- Wave 8: never render a blank card — when there is no command/path and
+       no known output, show the raw params as the card body. -->
+  {#if !displayPath && !displayCommand && !truncatedOutput && !errorText && !(displayStatus === 'running' && liveOutput) && paramsJson}
+    <pre class="output-content">{paramsJson}</pre>
+  {/if}
+
   {#if result?.warning}
     <div class="tool-warning">{result.warning}</div>
   {/if}
 
-  {#if result?.error}
-    <div class="error-message">{result.error}</div>
+  {#if errorText}
+    <div class="error-message">{errorText}</div>
   {/if}
 </div>
 

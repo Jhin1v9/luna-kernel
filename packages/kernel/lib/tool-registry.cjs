@@ -191,7 +191,7 @@ const TOOL_REGISTRY = {
     meta: { icon: null, color: null, label: null },
   },
   "think": {
-    meta: { icon: null, color: null, label: null },
+    meta: { icon: null, color: null, label: null, hidden: true },
   },
   "dashboardCreateTask": {
     meta: { icon: "📋", color: "#ec4899", label: null },
@@ -458,13 +458,13 @@ const TOOL_REGISTRY = {
     meta: { icon: null, color: null, label: null },
   },
   "getCurrentDirectory": {
-    meta: { icon: null, color: null, label: null },
+    meta: { icon: null, color: null, label: null, hidden: true },
   },
   "setVisibleMode": {
-    meta: { icon: "👁", color: "#22c55e", label: null },
+    meta: { icon: "👁", color: "#22c55e", label: null, hidden: true },
   },
   "getVisibleMode": {
-    meta: { icon: "🙈", color: "#94a3b8", label: null },
+    meta: { icon: "🙈", color: "#94a3b8", label: null, hidden: true },
   },
   "lunaSelfUpdate": {
     meta: { icon: null, color: null, label: null },

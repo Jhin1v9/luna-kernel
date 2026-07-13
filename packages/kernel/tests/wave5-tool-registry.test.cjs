@@ -299,3 +299,18 @@ test('T4: ToolCard imports the generated module (hand-maintained maps deleted)',
   assert.ok(src.includes("TOOL_COLORS[tool] || '#6b7280'"), 'color fallback must be preserved');
   assert.ok(src.includes("TOOL_ICONS[tool] || '🔧'"), 'icon fallback must be preserved');
 });
+
+// Wave 8 (T3b): internal tools carry meta.hidden in the registry and the
+// generated frontend meta must mirror those flags exactly.
+test('T4: generated TOOL_HIDDEN matches the registry meta.hidden flags (Wave 8)', () => {
+  const { TOOL_REGISTRY } = require('../lib/tool-registry.cjs');
+  const { TOOL_HIDDEN } = require('../luna-web/src/lib/toolMeta.generated.js');
+  const expected = {};
+  for (const [name, entry] of Object.entries(TOOL_REGISTRY)) {
+    if (entry.meta && entry.meta.hidden) expected[name] = true;
+  }
+  assert.deepStrictEqual(TOOL_HIDDEN, expected, 'generated TOOL_HIDDEN must mirror registry meta.hidden');
+  for (const name of ['think', 'getVisibleMode', 'setVisibleMode', 'getCurrentDirectory']) {
+    assert.strictEqual(TOOL_HIDDEN[name], true, `${name} must be flagged hidden`);
+  }
+});

@@ -1221,6 +1221,17 @@ router.post('/api/plan', async (req, res) => {
     return res.status(409).json({ ok: false, error: 'Já existe uma resposta em andamento nesta sessão. Aguarde terminar (ou cancele) antes de iniciar um plano.' });
   }
 
+  // Wave 8: persist the user's plan request in the session (same shape as
+  // POST /api/chat) — until now it only lived in the DOM and a reload lost it.
+  addMessageToSession(session.id, {
+    id: 'msg-' + Date.now(),
+    role: 'user',
+    type: 'text',
+    content: message,
+    files: [],
+    timestamp: new Date().toISOString(),
+  });
+
   // Mark session in plan mode
   planModeSessions.set(session.id, { status: 'investigating', plan: null, planPath: null, createdAt: Date.now() });
 
@@ -1323,6 +1334,11 @@ router.post('/api/plan/approve', (req, res) => {
   if (!planMeta) return res.status(404).json({ ok: false, error: 'Nenhum plano ativo para esta sessão' });
   if (planMeta.status === 'error') {
     return res.status(409).json({ ok: false, error: 'A investigação do plano falhou ou foi cancelada. Gere o plano novamente.' });
+  }
+  // Wave 8: approve is only valid from awaiting_approval — a duplicate approve
+  // (or an approve against an investigating/already-decided plan) is refused.
+  if (planMeta.status !== 'awaiting_approval') {
+    return res.status(409).json({ ok: false, error: `Este plano não está aguardando aprovação (status atual: ${planMeta.status}).` });
   }
 
   planMeta.status = 'approved';

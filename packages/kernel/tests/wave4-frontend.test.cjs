@@ -551,3 +551,30 @@ test('W7-T2f: PlanCard renders action buttons only while awaiting approval', () 
   assert.ok(before.includes("{#if status === 'awaiting_approval'}"),
     'action buttons must be gated on awaiting_approval (decided plans keep no clickable buttons)');
 });
+
+// ── Wave 8 Task 3: hidden internal tools + chunk-replay dedup ────────────────
+
+test('W8-T3: ChatArea skips card creation for registry-hidden tools on action_start', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  assert.ok(src.includes("from '../lib/toolMeta.generated.js'"), 'ChatArea must import the generated meta');
+  assert.ok(src.includes('TOOL_HIDDEN'), 'ChatArea must read the generated hidden map (no hardcoded list)');
+  const idx = src.indexOf("case 'action_start': {");
+  assert.notStrictEqual(idx, -1, 'action_start case must exist');
+  const window = src.slice(idx, idx + 2200);
+  const hiddenIdx = window.indexOf('TOOL_HIDDEN[event.tool]');
+  const cardIdx = window.indexOf("type: 'tool'");
+  assert.notStrictEqual(hiddenIdx, -1, 'action_start must check TOOL_HIDDEN before creating the card');
+  assert.notStrictEqual(cardIdx, -1, 'action_start must still create cards for visible tools');
+  assert.ok(hiddenIdx < cardIdx, 'hidden check must run before the card is appended');
+});
+
+test('W8-T3: action_progress chunks are deduped by backend event id (replay-safe)', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  assert.ok(src.includes('appliedChunkIds'), 'chunk-id dedup set must exist');
+  const idx = src.indexOf("case 'action_progress': {");
+  assert.notStrictEqual(idx, -1, 'action_progress case must exist');
+  const window = src.slice(idx, idx + 800);
+  assert.ok(window.includes('appliedChunkIds.has'), 'action_progress must check the dedup set');
+  assert.ok(window.includes('appliedChunkIds.add'), 'action_progress must record applied chunk ids');
+  assert.ok(!src.includes('appliedChunkIds.clear'), 'chunk dedup set must survive reconnects (never cleared)');
+});

@@ -6,6 +6,9 @@
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { evictOldestEntries } from '../lib/evictSet.js';
   import { createToolTimerRegistry } from '../lib/toolTimers.js';
+  // Wave 8: TOOL_HIDDEN is GENERATED from the backend registry (meta.hidden) —
+  // internal tools execute normally but never render a card.
+  import { TOOL_HIDDEN } from '../lib/toolMeta.generated.js';
   import { createAckBatcher } from '../lib/ackBatcher.js';
   import { playSound } from '../sound.js';
   import ChatHeader from './ChatHeader.svelte';
@@ -39,6 +42,10 @@
   let flushedContentHashes = new Set(); // v9.1-fix: Track flushed content hashes to prevent duplicate assistant messages
   let pendingToolCount = 0; // v9.3-fix: Track only CURRENT turn's tools, not full history
   const progressBuffers = new Map(); // v9.5: tool -> { chunks[], raf } for rAF batching of action_progress
+  // Wave 8: action_progress chunk ids already appended to a card. Survives
+  // connectSSE (processedEventIds is cleared there) so a ledger replay-from-0
+  // can't re-append the same chunks to the live tool output.
+  const appliedChunkIds = new Set();
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
 
   // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
@@ -473,6 +480,12 @@
         mascotState.set('working');
         mascotMessage.set(event.tool ? `Usando ${event.tool}...` : 'Trabalhando...');
         pendingToolCount++; // v9.3-fix
+        // Wave 8: internal tools (meta.hidden in tool-registry.cjs → TOOL_HIDDEN)
+        // execute normally but never render a card. Keep the pending count so
+        // action_end balancing is unchanged; skip the card, map and timers.
+        if (TOOL_HIDDEN[event.tool]) {
+          break;
+        }
         const toolId = 'tool-' + Date.now();
         const backendToolId = event.toolInstanceId || event.id || ('tool-' + Date.now());
         toolInstanceMap.set(backendToolId, toolId);
@@ -549,6 +562,15 @@
       }
       case 'action_progress': {
         if (!event.chunk) break;
+        // Wave 8: dedup by backend event id — on reconnect the ledger replays
+        // already-rendered chunks (processedEventIds was cleared on reconnect),
+        // which used to re-append them to the live tool output.
+        if (event.id) {
+          const chunkKey = `${sessionId || ''}:${event.id}`;
+          if (appliedChunkIds.has(chunkKey)) break;
+          appliedChunkIds.add(chunkKey);
+          evictOldestEntries(appliedChunkIds, 5000);
+        }
         const targetToolId = toolInstanceMap.get(event.toolInstanceId || event.id);
         if (targetToolId) {
           queueProgressChunk(targetToolId, event.chunk);
@@ -872,7 +894,13 @@
         messages.update(msgs => {
           // Remove incomplete plan deltas
           const cleaned = msgs.filter(m => !(m.type === 'plan' && !m.isComplete));
-          return [...cleaned, {
+          return [
+            // Wave 8: only the newest plan card may offer actions — an earlier
+            // awaiting card loses its buttons once a new plan card arrives.
+            ...cleaned.map(m =>
+              m.type === 'plan' && m.status === 'awaiting_approval' ? { ...m, status: 'revised' } : m
+            ),
+            {
             id: 'plan-' + Date.now(),
             type: 'plan',
             content: event.plan || '(plano vazio)',
@@ -930,7 +958,13 @@
         break;
       }
       case 'plan_revised': {
-        messages.update(msgs => [...msgs, {
+        messages.update(msgs => [
+          // Wave 8: only the newest plan card may offer actions — the revised
+          // card supersedes every earlier awaiting card.
+          ...msgs.map(m =>
+            m.type === 'plan' && m.status === 'awaiting_approval' ? { ...m, status: 'revised' } : m
+          ),
+          {
           id: 'plan-revised-' + Date.now(),
           type: 'plan',
           content: event.plan || '',
