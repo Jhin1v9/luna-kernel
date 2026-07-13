@@ -1284,3 +1284,84 @@ test('W7-T3c: luna-tools defaults visibleMode to false (visible is opt-in)', () 
   assert.ok(/let visibleMode = false;/.test(src), 'visibleMode must default to false');
   assert.ok(!src.includes('let visibleMode = !detectHeadless()'), 'detectHeadless-based default must be gone');
 });
+
+// ── Wave 8 Task 4: atomic soul writes, real build detection, dead bridge-libs ──
+// (a) Every fs.writeFileSync in luna-soul.cjs now routes through
+// atomicWriteFileSync (tmp + rename in the same dir). A crash mid-write can no
+// longer truncate personas/skills/memory/state/plan files.
+
+test('W8-T4a: soul data writes are atomic — source-slice + content characterization + rename-failure safety', () => {
+  const soulSrc = fs.readFileSync(path.join(__dirname, '..', 'luna-soul.cjs'), 'utf8');
+  assert.ok(!soulSrc.includes('fs.writeFileSync('), 'no plain fs.writeFileSync may remain in luna-soul.cjs');
+  const callSites = (soulSrc.match(/atomicWriteFileSync\(/g) || []).length;
+  assert.ok(callSites >= 16, `expected >=16 atomicWriteFileSync call sites (15 converted + 1 pre-existing), got ${callSites}`);
+
+  withTmpDir((dir) => {
+    // Characterization: content written through the helper is byte-identical
+    // to what a plain writeFileSync produced, on create AND on overwrite.
+    const file = path.join(dir, 'persona.md');
+    const content = '---\nname: test\n---\n\n# Persona\nconteúdo com acentuação\n';
+    atomicWriteFileSync(file, content);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), content, 'fresh write must be byte-identical');
+    const updated = content + 'extra line\n';
+    atomicWriteFileSync(file, updated);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), updated, 'overwrite must be byte-identical');
+
+    // Rename failure mid-write leaves the original file intact (and no tmp
+    // leftover) — mirrors B1, pinned here for the soul data paths.
+    const stateFile = path.join(dir, 'state.json');
+    fs.writeFileSync(stateFile, '{"persona":"old"}');
+    const originalRename = fs.renameSync;
+    fs.renameSync = () => { throw new Error('injected rename failure'); };
+    try {
+      assert.throws(() => atomicWriteFileSync(stateFile, '{"persona":"new"}'), /injected rename failure/);
+    } finally {
+      fs.renameSync = originalRename;
+    }
+    assert.strictEqual(fs.readFileSync(stateFile, 'utf8'), '{"persona":"old"}', 'original must survive a failed rename');
+    assert.strictEqual(fs.readdirSync(dir).filter(f => f.includes('.luna-tmp-')).length, 0, 'no tmp files may be left behind');
+  });
+});
+
+// (b) Timeout no longer derives from the visible flag — build/install/long
+// commands are detected by pattern and get 300s; everything else keeps
+// opts.timeout || 60. Precedence preserved: 300s wins for build commands even
+// with an explicit opts.timeout.
+
+const { isBuildLikeCommand, resolveShellTimeout } = require('../lib/build-detect.cjs');
+
+test('W8-T4b: build/install command detection drives a 300s timeout, decoupled from visibility', () => {
+  const buildCases = [
+    'npm install', 'pnpm install', 'yarn install', 'bun install',
+    'npm run build', 'apt install build-essential', 'apt-get install curl',
+    'pip install requests', 'pip3 install torch', 'docker build -t img .',
+    'cargo build --release', 'make', 'gradle build', 'mvn package',
+    'cd /tmp && npm install', 'NPM INSTALL',
+  ];
+  for (const cmd of buildCases) {
+    assert.ok(isBuildLikeCommand(cmd), `must detect build command: ${cmd}`);
+    assert.strictEqual(resolveShellTimeout(cmd, {}), 300, `build command gets 300s: ${cmd}`);
+    assert.strictEqual(resolveShellTimeout(cmd, { timeout: 120 }), 300, `300s wins over explicit timeout for build: ${cmd}`);
+  }
+  const plainCases = ['ls -la', 'echo hello', 'git status', 'node script.js', 'npm run test'];
+  for (const cmd of plainCases) {
+    assert.ok(!isBuildLikeCommand(cmd), `must NOT detect as build: ${cmd}`);
+    assert.strictEqual(resolveShellTimeout(cmd, {}), 60, `default is 60s: ${cmd}`);
+    assert.strictEqual(resolveShellTimeout(cmd, { timeout: 120 }), 120, `opts.timeout wins for non-build: ${cmd}`);
+  }
+});
+
+// (b)+(c) Source-slices: the visible→timeout coupling is gone, the dead
+// bridge-libs are deleted, and the orphan getModeUrls was removed.
+
+test('W8-T4c: no isBuildCommand=isVisibleCommand; dead bridge-libs and getModeUrls removed', () => {
+  const kernelDir = path.join(__dirname, '..');
+  const toolsSrc = fs.readFileSync(path.join(kernelDir, 'luna-tools.cjs'), 'utf8');
+  assert.ok(!toolsSrc.includes('isBuildCommand = isVisibleCommand'), 'timeout must not derive from the visible flag');
+  assert.ok(toolsSrc.includes('resolveShellTimeout(command, opts)'), 'executeShell must resolve timeout via the detector');
+  assert.ok(!fs.existsSync(path.join(kernelDir, 'bridge-libs', 'message-sender.cjs')), 'message-sender.cjs must be deleted');
+  assert.ok(!fs.existsSync(path.join(kernelDir, 'bridge-libs', 'input-validator.cjs')), 'input-validator.cjs must be deleted');
+  const bridgeSrc = fs.readFileSync(path.join(kernelDir, 'kimi-bridge.cjs'), 'utf8');
+  assert.ok(!bridgeSrc.includes('function getModeUrls('), 'orphan getModeUrls must be removed');
+  assert.ok(bridgeSrc.includes("treating as 'instant'"), 'setMode must warn + normalize invalid modes to instant');
+});

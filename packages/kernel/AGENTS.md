@@ -227,12 +227,10 @@ kimi-bridge.cjs (refatorado)
 │   ├── circuit-breaker.cjs      # Estados CLOSED/OPEN/HALF_OPEN
 │   ├── process-registry.cjs     # Graceful shutdown (SIGTERM → SIGKILL)
 │   ├── config.cjs               # Constantes centralizadas
-│   ├── input-validator.cjs      # Guard clauses públicos
 │   ├── chrome-launcher.cjs      # Chrome .deb com PID específico
 │   ├── login-manager.cjs        # Verificação de login
 │   ├── dom-extractor.cjs        # Extração DOM (React Fiber removido)
 │   ├── bridge-session-manager.cjs # Gerenciamento de sessões
-│   ├── message-sender.cjs       # Unifica sendMessage/sendImage/stream
 │   └── dom-scripts/
 │       ├── poll-dom-structure.js
 │       └── detect-ui-state.js

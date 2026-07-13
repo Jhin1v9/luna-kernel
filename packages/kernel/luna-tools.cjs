@@ -29,6 +29,7 @@ const { clampExecTimeout, shQuote } = require('./lib/exec-timeout.cjs');
 const { shellQuote, toNonNegInt, assertSafeName } = require('./lib/shell-quote.cjs');
 const { checkUrlSafety, fetchAllowList } = require('./lib/url-safety.cjs');
 const { resolveTerminal, enrichSessionEnv, _argvFor } = require('./lib/terminal-resolver.cjs');
+const { resolveShellTimeout } = require('./lib/build-detect.cjs');
 
 // Wave3-fix G: SSRF caps for the LLM-facing network tools (fetchURL,
 // downloadFile, browser) — see lib/url-safety.cjs for the host policy.
@@ -1034,8 +1035,7 @@ function executeShell(command, opts = {}, onProgress) {
       return promise.then(resolve);
     }
     // v10.1-fix: Auto-detect build/install commands and use longer timeout
-    const isBuildCommand = isVisibleCommand;
-    const defaultTimeout = isBuildCommand ? 300 : (opts.timeout || 60);
+    const defaultTimeout = resolveShellTimeout(command, opts);
     const timeoutMs = defaultTimeout * 1000;
     let stdout = '';
     let stderr = '';
@@ -1080,14 +1080,14 @@ function executeShell(command, opts = {}, onProgress) {
     child.on('close', (code, signal) => {
       if (timer) clearTimeout(timer);
       if (killed && signal === 'SIGTERM') {
-        const { reason, suggestion } = _classifyShellError(command, stderr, null, true, opts.timeout || 60);
+        const { reason, suggestion } = _classifyShellError(command, stderr, null, true, defaultTimeout);
         resolve({
           success: false,
           command,
           stdout,
           stderr,
           exitCode: null,
-          error: `Command timed out after ${opts.timeout || 60}s`,
+          error: `Command timed out after ${defaultTimeout}s`,
           reason,
           suggestion,
         });

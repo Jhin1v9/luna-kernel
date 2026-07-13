@@ -62,18 +62,6 @@ const CDP_PORTS = config?.KIMI?.cdpPorts || [9222, 9223, 9224, 9225];
 const DEFAULT_TIMEOUT = 1800000; // 30 minutes — was 120000
 const DEFAULT_PROVIDER = 'kimi';
 
-function getModeUrls(providerName) {
-  try {
-    const cfg = loadProviderConfig(providerName);
-    return cfg.modeUrls || { instant: cfg.baseUrl };
-  } catch (e) {
-    return {
-      instant: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
-      thinking: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
-    };
-  }
-}
-
 const MAX_CONCURRENT_PAGES = parseInt(process.env.KIMI_MAX_PAGES, 10) || config?.KIMI?.maxPages || 5;
 const IDLE_TIMEOUT_MS = parseInt(process.env.KIMI_IDLE_TIMEOUT, 10) || config?.TIMEOUTS?.kimiIdle || 10 * 60 * 1000;
 const KIMI_PERSISTENT_MODE = process.env.KIMI_PERSISTENT_MODE === 'true' || process.env.KIMI_PERSISTENT_MODE === '1' || config?.KIMI?.persistentMode || false;
@@ -2898,8 +2886,14 @@ class KimiBridge {
   /**
    * Set Kimi mode for a user's page.
    * For 'instant'/'thinking': clicks the Kimi mode selector.
+   * Invalid modes are warned about and treated as 'instant' — never silently
+   * mapped to Thinking.
    */
   async setMode(userId, mode, providerArg = null) {
+    if (mode !== 'instant' && mode !== 'thinking') {
+      log.warn(`setMode: invalid mode "${mode}" — treating as 'instant'`);
+      mode = 'instant';
+    }
     const provider = this._resolveProvider(userId, providerArg);
     const page = await this._getOrCreateUserPage(userId, provider);
     const session = this.userSessions.get(userId);

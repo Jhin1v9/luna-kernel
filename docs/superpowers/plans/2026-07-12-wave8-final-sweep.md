@@ -46,11 +46,11 @@
 
 **Files:** `packages/kernel/luna-soul.cjs`, `packages/kernel/luna-tools.cjs`, `packages/kernel/kimi-bridge.cjs`, `packages/kernel/bridge-libs/`.
 
-- [ ] (a) ~15 direct `fs.writeFileSync` sites in `luna-soul.cjs` (`:1043, :1074, :1115, :1144, :1174-1178, :1245-1334, :3050, :4749, :4847, :4904` pre-W7) → route through an atomic helper (write tmp in same dir + `fs.renameSync`), reusing the existing helper if the soul already has one from Fix B (check before creating). Characterization: writes still produce identical content; failure mid-write leaves no truncated target (unit with a mocked rename throw → original intact).
-- [ ] (b) Decouple timeout from visibility (`luna-tools.cjs:1037` `isBuildCommand = isVisibleCommand`): implement the real v10.1 promise — detect build/install/long commands by pattern (`npm/pnpm/yarn/bun install`, `npm run build`, `apt(-get)? install`, `pip3? install`, `docker build`, `cargo build`, `make`, `gradle`, `mvn`) → 300s; everything else → `opts.timeout || 60`. Visible flag no longer affects timeout.
-- [ ] (c) Dead code: delete `bridge-libs/message-sender.cjs` and `bridge-libs/input-validator.cjs` ONLY after grep proves zero importers (production + tests); remove `KIMI_MODE_URLS` and `getModeUrls()` similarly if orphan. `setMode` invalid-mode: log warn + treat as 'instant' (no silent Thinking click).
-- [ ] Tests (+3): atomic write characterization; build-command detection table (unit: 6+ patterns × timeout); source-slice no `isBuildCommand = isVisibleCommand`.
-- [ ] Commit: `fix(tools): atomic soul writes, real build-command timeouts, dead bridge-libs removed`.
+- [x] (a) ~15 direct `fs.writeFileSync` sites in `luna-soul.cjs` (`:1043, :1074, :1115, :1144, :1174-1178, :1245-1334, :3050, :4749, :4847, :4904` pre-W7) → route through an atomic helper (write tmp in same dir + `fs.renameSync`), reusing the existing helper if the soul already has one from Fix B (check before creating). Characterization: writes still produce identical content; failure mid-write leaves no truncated target (unit with a mocked rename throw → original intact).
+- [x] (b) Decouple timeout from visibility (`luna-tools.cjs:1037` `isBuildCommand = isVisibleCommand`): implement the real v10.1 promise — detect build/install/long commands by pattern (`npm/pnpm/yarn/bun install`, `npm run build`, `apt(-get)? install`, `pip3? install`, `docker build`, `cargo build`, `make`, `gradle`, `mvn`) → 300s; everything else → `opts.timeout || 60`. Visible flag no longer affects timeout.
+- [x] (c) Dead code: delete `bridge-libs/message-sender.cjs` and `bridge-libs/input-validator.cjs` ONLY after grep proves zero importers (production + tests); remove `KIMI_MODE_URLS` and `getModeUrls()` similarly if orphan. `setMode` invalid-mode: log warn + treat as 'instant' (no silent Thinking click).
+- [x] Tests (+3): atomic write characterization; build-command detection table (unit: 6+ patterns × timeout); source-slice no `isBuildCommand = isVisibleCommand`.
+- [x] Commit: `fix(tools): atomic soul writes, real build-command timeouts, dead bridge-libs removed`.
 
 ## Task 5 — Close the wave: bugs.md bookkeeping
 
