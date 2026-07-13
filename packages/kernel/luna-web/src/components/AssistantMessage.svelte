@@ -42,8 +42,12 @@
   export let timestamp = '';
   export let onFeedback = () => {};
   export let isStreaming = false;
+  // Wave 10 T3: only the last assistant message runs the infinite border
+  // gradient / avatar pulse — N spinning borders over the canvas is what
+  // froze iOS as the conversation grew.
+  export let isLast = false;
 
-  $: avatarState = isStreaming ? 'thinking' : 'idle';
+  $: avatarState = (isStreaming && isLast) ? 'thinking' : 'idle';
 
   // Visual personality detection
   $: hasCode = content.includes('```') || /function|class|const|let|var|import|export/.test(content);
@@ -155,9 +159,9 @@
 </script>
 
 <div class="assistant-message-wrapper {personalityClass}">
-  <div class="assistant-message">
+  <div class="assistant-message" class:animated={isLast}>
     <div class="message-header">
-      <LunaAvatar state={avatarState} size={32} />
+      <LunaAvatar state={avatarState} size={32} animate={isLast} />
       <span class="name">Luna</span>
       {#if hasTable}
         <span class="content-badge table-badge">📊 tabela</span>
@@ -228,10 +232,13 @@
     border-radius: inherit;
     background: linear-gradient(90deg, var(--luna-accent), transparent 40%, transparent 60%, var(--luna-accent));
     background-size: 200% 100%;
-    animation: gradientRotate 5s linear infinite;
     z-index: -1;
     opacity: 0.55;
     pointer-events: none;
+  }
+  /* Wave 10 T3: border gradient spins only on the last assistant message */
+  .assistant-message.animated::before {
+    animation: gradientRotate 5s linear infinite;
   }
   .assistant-message::after {
     content: '';
@@ -242,6 +249,9 @@
     z-index: -2;
     opacity: 0.35;
     pointer-events: none;
+  }
+  /* Wave 10 T3: the blur layer only on the last (animated) message */
+  .assistant-message.animated::after {
     filter: blur(10px);
   }
   @keyframes gradientRotate {
@@ -635,7 +645,7 @@
   .assistant-message-wrapper.has-action .assistant-message {
     animation: successPulse 1s ease-out;
   }
-  .assistant-message-wrapper.has-table .assistant-message::before {
+  .assistant-message-wrapper.has-table .assistant-message.animated::before {
     opacity: 0.75;
     animation: gradientRotate 3s linear infinite;
   }
@@ -673,5 +683,24 @@
   @keyframes fadeInUp {
     from { opacity: 0; transform: translateY(20px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Wave 10 T3: backdrop-filter over the animated canvas melts the iOS
+     compositor as the conversation grows — solid fallback on mobile */
+  @media (max-width: 768px) {
+    .assistant-message {
+      background: rgba(18, 18, 31, 0.95);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+
+  /* Wave 10 T3: kill the infinite border animation for reduced-motion users
+     (app.css only shrinks durations; the canvas loop is gated in JS) */
+  @media (prefers-reduced-motion: reduce) {
+    .assistant-message::before,
+    .assistant-message.animated::before {
+      animation: none;
+    }
   }
 </style>

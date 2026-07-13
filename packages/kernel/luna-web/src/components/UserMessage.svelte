@@ -191,6 +191,16 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
+  /* Wave 10 T3: backdrop-filter over the animated canvas melts the iOS
+     compositor as the conversation grows — solid fallback on mobile */
+  @media (max-width: 768px) {
+    .user-message {
+      background: rgba(26, 26, 46, 0.94);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+
   /* Mobile */
   @media (max-width: 640px) {
     .user-message-wrapper {

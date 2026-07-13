@@ -486,7 +486,11 @@ test('W6-T6b: sendMessageStream captures the pre-send assistant marker and dom d
 
   // 'dom-structure' first occurs at the source tag; the marker-scoped evaluate
   // sits ~7.5k chars before it — span 20000 covers both.
-  const domWindow = sliceAround(src, 'dom-structure', 20000);
+  // W10-T2: needle tightened to the source tag itself — the bridge now
+  // requires bridge-libs/dom-scripts/poll-dom-structure.js at the top of the
+  // file, whose path contains the bare 'dom-structure' substring and stole
+  // the old anchor.
+  const domWindow = sliceAround(src, "source: 'dom-structure'", 20000);
   assert.ok(markerRe.test(domWindow), 'dom-structure poll must use the marker to skip pre-turn segments');
 
   // '_extractJsonBlocksFromDOM' first occurs at its poller call site, which must

@@ -84,7 +84,18 @@ Commits to process:
 
 $(cat "$TMP_DIFF")"); then
     rm -f "$INFLIGHT"
-    echo "luna-brain-sync: done. Review .brain changes and commit them."
+    # Auto-commit the .brain updates; the [brain-sync] marker makes the
+    # post-commit hook skip this commit (anti-loop).
+    if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- "$BRAIN")" ]; then
+      if git -C "$REPO_ROOT" add -- "$BRAIN" && \
+         git -C "$REPO_ROOT" commit -m "docs(brain): living-memory sync [brain-sync]" -- "$BRAIN" >/dev/null 2>&1; then
+        echo "luna-brain-sync: done. .brain updates auto-committed."
+      else
+        echo "luna-brain-sync: auto-commit failed; .brain changes left uncommitted." >&2
+      fi
+    else
+      echo "luna-brain-sync: done. No .brain changes needed."
+    fi
   else
     status=$?
     restore_inflight

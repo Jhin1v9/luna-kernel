@@ -2,10 +2,11 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { isStreaming, currentMode, currentProvider, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
-  import { sendMessage, cancelStream, ackEvents, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, selfhealServices, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode } from '../api.js';
+  import { sendMessage, cancelStream, ackEvents, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, selfhealServices, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode, compactSession } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { evictOldestEntries } from '../lib/evictSet.js';
   import { createToolTimerRegistry } from '../lib/toolTimers.js';
+  import { shouldCreateToolCard, makeToolCardId } from '../lib/toolCardDedup.js';
   // Wave 8: TOOL_HIDDEN is GENERATED from the backend registry (meta.hidden) —
   // internal tools execute normally but never render a card.
   import { TOOL_HIDDEN } from '../lib/toolMeta.generated.js';
@@ -47,6 +48,7 @@
   // can't re-append the same chunks to the live tool output.
   const appliedChunkIds = new Set();
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
+  let toolCardSeq = 0; // Wave 10 T1 (H3): collision-free tool card ids
 
   // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
   // The timer is cleared but NEVER restarted, so SSE never aborts due to silence.
@@ -502,7 +504,15 @@
           });
           break;
         }
-        const toolId = 'tool-' + Date.now();
+        // Wave 10 T1: suppress duplicate tool cards.
+        // H2: a cached-result replay (W6-T5) re-emits action_start with
+        // cached:true and a fresh toolInstanceId — the original card already
+        // covers that execution; the replayed action_end still delivers the
+        // result. H4: never create a second card for a backendToolId that is
+        // already rendered (duplicate detection / SSE ledger replay —
+        // history-loaded cards carry backendToolId too).
+        if (!shouldCreateToolCard(get(messages), event)) break;
+        const toolId = makeToolCardId(++toolCardSeq);
         const backendToolId = event.toolInstanceId || event.id || ('tool-' + Date.now());
         toolInstanceMap.set(backendToolId, toolId);
         toolStartTimes.set(event.tool, Date.now());
@@ -603,8 +613,11 @@
         if (lastTool) {
           toolInstanceMap.delete(event.toolInstanceId || event.id);
         }
-        // Fallback to old behavior if not found
-        if (!lastTool) {
+        // Fallback to old behavior if not found.
+        // Wave 10 T1: never for cached replays — with the duplicate card
+        // suppressed (H2), a name-based match would steal-fill the ORIGINAL
+        // still-running card with the replayed result.
+        if (!lastTool && event.cached !== true) {
           const toolMsgs = msgs.filter(m => m.type === 'tool' && m.tool === event.tool && !m.result);
           lastTool = toolMsgs[toolMsgs.length - 1];
         }
@@ -672,24 +685,10 @@
         compactState.set({ active: false, phase: 0, message: '', steps: [] });
         break;
       }
-      case 'context_limit': {
-        playSound('error');
-        mascotState.set('idle');
-        mascotMessage.set('Limite de contexto atingido');
-        messages.update(msgs => removeAllThinking(msgs));
-        thinkingId = null;
-        // v10.24-fix: Reuse the existing CompactingAnimation modal.
-        // The modal already shows "Compactando contexto". Just activate it.
-        compactState.set({
-          active: true,
-          phase: 0,
-          message: 'Compactando contexto',
-          steps: ['Compactando contexto']
-        });
-        isStreaming.set(false);
-        currentAssistantId = null;
-        break;
-      }
+      // W10-T2: the frontend context_limit case was removed — dead code.
+      // The soul consumes the bridge's context_limit event internally
+      // (auto-compact + resend, see luna-soul.cjs processMessageStream) and
+      // only re-emits system/compact_*/done events, never 'context_limit'.
       case 'done': {
         showTyping = false;
         messages.update(msgs => removeAllThinking(msgs));
@@ -1089,6 +1088,11 @@
               id: msg.id || 'tool-' + Math.random().toString(36).slice(2),
               type: 'tool',
               tool: msg.tool,
+              // Wave 10 T1 (H4): persisted action_start carries toolInstanceId
+              // (luna-chat-routes.js); without it, a live SSE ledger replay of
+              // the same event would pass the backendToolId dedup and render a
+              // duplicate card next to this history-loaded one.
+              backendToolId: msg.toolInstanceId || msg.id,
               params: msg.params || {},
               result: null,
               timestamp: msg.timestamp || new Date().toISOString(),
@@ -1427,6 +1431,30 @@
         else if (slashDef.handler === 'clearChat') {
           messages.set([]);
           isStreaming.set(false);
+          return;
+        }
+        // W10-T2: /compactar — same flow as the header "Compactar" button
+        // (mobile access: the button is hidden ≤768px since Wave 8.5).
+        // Streams compact_* events through handleEvent → CompactingAnimation.
+        else if (slashDef.handler === 'compactContext') {
+          if (!activeSessionId) {
+            isStreaming.set(false);
+            messages.update(msgs => [...msgs, {
+              id: 'sys-' + Date.now(),
+              type: 'system',
+              content: '⚠️ Nenhuma sessão ativa para compactar.',
+              timestamp: new Date().toISOString()
+            }]);
+            return;
+          }
+          try {
+            await compactSession(activeSessionId, 'luna-default', (ev) => handleEvent(ev));
+          } catch (e) {
+            console.error('[/compactar] failed:', e);
+            handleEvent({ type: 'compact_error', message: e.message });
+          } finally {
+            isStreaming.set(false);
+          }
           return;
         }
         else if (slashDef.handler === 'newSession') {

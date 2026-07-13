@@ -1,22 +1,59 @@
+'use strict';
 /**
  * DOM Structure-based extraction for Kimi Web.
- * Returns { thinking, response, detectedTools, isContextLimit, source }
+ *
+ * W10-T2: converted from an orphan IIFE into a module so the page-level
+ * context-limit scanner can be called from the bridge poll loop via
+ * page.evaluate(scanPageContextLimit). The functions below run INSIDE the
+ * browser — they must not close over Node-side variables.
+ *
+ * pollDomStructure() returns { thinking, response, detectedTools, source }.
+ * scanPageContextLimit() returns { response, isContextLimit, source } | null.
  */
-(function pollDomStructure() {
-  // ── Detect context limit messages anywhere on the page ──
-  const contextLimitRegex = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|发起一个新会话|会话太长/i;
+
+/**
+ * Full-page scan for Kimi's context-limit notice ("Your conversation with
+ * Kimi is getting too long..."), which may render as a modal/banner OUTSIDE
+ * the response bubbles — where the bubble-scoped extraction never sees it.
+ *
+ * Chat segments are skipped on purpose: assistant bubbles are already covered
+ * by _isContextLimitResponse() on the extracted response, and scanning user
+ * bubbles would false-positive on messages that merely mention the phrase.
+ *
+ * NOTE: keep the regex in sync with KimiBridge._isContextLimitResponse().
+ */
+function scanPageContextLimit() {
+  const contextLimitRegex = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i;
   const allTextElements = document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5, h6, li');
   for (const el of allTextElements) {
+    if (el.closest && el.closest('.segment-user, .segment-assistant')) continue;
     const text = (el.innerText || el.textContent || '').trim();
     if (text.length > 20 && text.length < 300 && contextLimitRegex.test(text)) {
       return {
-        thinking: '',
         response: text,
-        detectedTools: [],
         isContextLimit: true,
         source: 'dom-context-limit'
       };
     }
+  }
+  return null;
+}
+
+/**
+ * DOM structure-based extraction of the last assistant segment.
+ * Returns { thinking, response, detectedTools, isContextLimit, source } or null.
+ */
+function pollDomStructure() {
+  // ── Detect context limit messages anywhere on the page ──
+  const pageLimit = scanPageContextLimit();
+  if (pageLimit) {
+    return {
+      thinking: '',
+      response: pageLimit.response,
+      detectedTools: [],
+      isContextLimit: true,
+      source: pageLimit.source
+    };
   }
 
   const assistants = document.querySelectorAll('.segment-assistant');
@@ -151,4 +188,10 @@
     return { thinking, response: response.trim(), detectedTools, source: 'dom-structure' };
   }
   return null;
-})();
+}
+
+// Usable both as a CommonJS module (bridge page.evaluate) and as a plain
+// browser script (no module global → just function declarations).
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { scanPageContextLimit, pollDomStructure };
+}

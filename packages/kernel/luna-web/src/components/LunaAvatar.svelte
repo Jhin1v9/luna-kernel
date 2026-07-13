@@ -1,15 +1,19 @@
 <script>
   export let state = 'idle'; // 'idle' | 'thinking' | 'responding'
   export let size = 36;
+  // Wave 10 T3: infinite pulse/spin runs only when the parent opts in
+  // (AssistantMessage passes animate=isLast). Off → static visual.
+  export let animate = true;
 
-  $: isThinking = state === 'thinking';
-  $: isResponding = state === 'responding';
+  $: isThinking = animate && state === 'thinking';
+  $: isResponding = animate && state === 'responding';
 </script>
 
 <div
   class="luna-avatar"
   class:thinking={isThinking}
   class:responding={isResponding}
+  class:static={!animate}
   style="width: {size}px; height: {size}px;"
   aria-label="Luna avatar"
   role="img"
@@ -140,6 +144,13 @@
   @keyframes pulseGlowRespond {
     0%, 100% { opacity: 0.3; transform: scale(1); }
     50% { opacity: 0.6; transform: scale(1.2); }
+  }
+
+  /* Wave 10 T3: non-last messages render a static avatar — no animations,
+     glow frozen at the mid-pulse opacity so it still reads as Luna */
+  .luna-avatar.static .glow-orb {
+    animation: none;
+    opacity: 0.12;
   }
 
   /* Reduced motion */

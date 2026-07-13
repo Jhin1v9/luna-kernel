@@ -27,6 +27,11 @@
     MODE_SHIFT_INTENSITY,
     MODE_BEHAVIOR,
   } from '../lib/starAnimations.js';
+  import {
+    shouldAnimateBackground,
+    backgroundFrameIntervalMs,
+    capDevicePixelRatio,
+  } from '../lib/perfBudget.js';
 
   let canvas;
   let ctx;
@@ -49,6 +54,13 @@
   let time = 0;
   let lastTime = 0;
   let dt = 16;
+
+  // ─── Wave 10 T3: perf budget (mobile + reduced motion) ─────
+  let reducedMotion = false;
+  let frameIntervalMs = 0;   // 0 = uncapped (desktop); ~66ms on mobile
+  let lastRenderTime = 0;    // timestamp of last rendered frame (fps cap)
+  let loopRunning = false;
+  let motionQuery;           // matchMedia('(prefers-reduced-motion: reduce)')
 
   // ─── Mode state ────────────────────────────────────────────
   let lastMode = 'instant';
@@ -516,6 +528,16 @@
   // ═══════════════════════════════════════════════════════════
 
   function loop(now) {
+    animId = undefined;
+
+    // Wave 10 T3: fps cap on mobile — skip the update/draw work but keep
+    // the rAF cadence so we can resume at full speed without re-arming.
+    if (frameIntervalMs > 0 && lastRenderTime && now - lastRenderTime < frameIntervalMs) {
+      animId = requestAnimationFrame(loop);
+      return;
+    }
+    lastRenderTime = now;
+
     dt = Math.min(now - lastTime, 50); // cap at 50ms
     lastTime = now;
     time = now;
@@ -530,6 +552,54 @@
     animId = requestAnimationFrame(loop);
   }
 
+  // Wave 10 T3: reduced-motion users get one static frame instead of a loop.
+  function renderStaticFrame() {
+    const now = performance.now();
+    time = now;
+    updateModeState();
+    updateStars(now);
+    draw();
+  }
+
+  function startLoop() {
+    if (loopRunning) return;
+    if (!shouldAnimateBackground({ reducedMotion, hidden: document.hidden })) return;
+    loopRunning = true;
+    lastTime = performance.now();
+    lastRenderTime = 0;
+    animId = requestAnimationFrame(loop);
+  }
+
+  function stopLoop() {
+    loopRunning = false;
+    if (animId) {
+      cancelAnimationFrame(animId);
+      animId = undefined;
+    }
+  }
+
+  // Wave 10 T3: pause the canvas while the tab is hidden — iOS keeps rAF
+  // callbacks queued and the compositor pays for them on return.
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      stopLoop();
+    } else if (reducedMotion) {
+      renderStaticFrame();
+    } else {
+      startLoop();
+    }
+  }
+
+  function handleMotionChange(e) {
+    reducedMotion = e.matches;
+    if (reducedMotion) {
+      stopLoop();
+      renderStaticFrame();
+    } else if (!document.hidden) {
+      startLoop();
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════
   //  RESIZE
   // ═══════════════════════════════════════════════════════════
@@ -538,13 +608,24 @@
     w = window.innerWidth;
     h = window.innerHeight;
     if (canvas) {
-      const dpr = window.devicePixelRatio || 1;
+      // Wave 10 T3: DPR 3 on iPhone 15 → 9x fragments on a full-screen
+      // canvas. Cap at 1.5 on mobile; desktop keeps the raw ratio.
+      const dpr = capDevicePixelRatio(window.devicePixelRatio || 1, {
+        innerWidth: w,
+        pointerCoarse: window.matchMedia('(pointer: coarse)').matches,
+      });
       canvas.width = w * dpr;
       canvas.height = h * dpr;
       canvas.style.width = w + 'px';
       canvas.style.height = h + 'px';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
+
+    // Wave 10 T3: re-evaluate the fps cap when crossing the mobile breakpoint
+    frameIntervalMs = backgroundFrameIntervalMs({
+      innerWidth: w,
+      pointerCoarse: window.matchMedia('(pointer: coarse)').matches,
+    });
 
     // Re-project all stars
     stars.forEach(s => projectStar(s, w, h));
@@ -570,9 +651,16 @@
 
   onMount(() => {
     ctx = canvas.getContext('2d', { willReadFrequently: false });
+
+    // Wave 10 T3: honor prefers-reduced-motion before the first paint
+    motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    reducedMotion = motionQuery.matches;
+
     resize();
     initStars();
     window.addEventListener('resize', resize);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    motionQuery.addEventListener('change', handleMotionChange);
 
     modeUnsub = currentMode.subscribe((m) => {
       if (m !== lastMode) {
@@ -627,12 +715,18 @@
       }
     });
 
-    animId = requestAnimationFrame(loop);
+    if (reducedMotion) {
+      renderStaticFrame();
+    } else {
+      startLoop();
+    }
   });
 
   onDestroy(() => {
-    cancelAnimationFrame(animId);
+    stopLoop();
     window.removeEventListener('resize', resize);
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    if (motionQuery) motionQuery.removeEventListener('change', handleMotionChange);
     if (modeUnsub) modeUnsub();
     if (streamUnsub) streamUnsub();
     if (actionUnsub) actionUnsub();

@@ -272,7 +272,8 @@ export async function ackEvents(sessionId, eventIds) {
   }
 }
 
-// v10.16: Manual context compaction — triggered by user via /compact command or button
+// v10.16: Manual context compaction — triggered by user via /compactar command or button
+// (W10-T2: auto-compact on context limit goes through the soul directly, not this API)
 export async function compactSession(sessionId, userId = 'luna-default', onEvent) {
   const res = await fetch('/api/luna/compact', {
     method: 'POST',

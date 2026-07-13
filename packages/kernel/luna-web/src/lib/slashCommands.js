@@ -16,6 +16,7 @@ export const SLASH_COMMANDS = [
   { cmd: '/health',      desc: 'Verificar saude do sistema',         icon: '💓', category: 'System', handler: 'systemHealth' },
   { cmd: '/logs',        desc: 'Ver ultimos logs',                   icon: '📜', category: 'System', handler: 'systemLogs' },
   { cmd: '/limpar',      desc: 'Limpar chat',                        icon: '🗑️', category: 'System', handler: 'clearChat' },
+  { cmd: '/compactar',   desc: 'Compactar contexto (nova thread + checkpoint)', icon: '📦', category: 'System', handler: 'compactContext' },
   { cmd: '/nova',        desc: 'Nova sessao',                        icon: '✨', category: 'System', handler: 'newSession' },
   { cmd: '/turnoff',     desc: 'Desligar agente (fecha Chrome)',     icon: '🌙', category: 'System', handler: 'turnOffAgent' },
   { cmd: '/ajuda',       desc: 'Mostrar ajuda',                      icon: '❓', category: 'System', handler: 'help' },

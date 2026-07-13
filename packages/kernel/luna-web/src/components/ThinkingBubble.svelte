@@ -193,4 +193,14 @@
     0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
     40% { transform: scale(1); opacity: 1; }
   }
+
+  /* Wave 10 T3: backdrop-filter over the animated canvas melts the iOS
+     compositor as the conversation grows — solid fallback on mobile */
+  @media (max-width: 768px) {
+    .thinking-bubble {
+      background: rgba(18, 18, 31, 0.92);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
 </style>

@@ -27,6 +27,11 @@ const { jsonrepair } = require('jsonrepair');
 const { WebBridgeClient } = require('./webbridge-client.cjs');
 const { isPrematureCompletion } = require('./lib/stream-completion-guard.cjs');
 const { createResponseCursor } = require('./lib/stream-text-cursor.cjs');
+const { makeDomEventDedupKey } = require('./lib/tool-dedup-key.cjs');
+// W10-T2: page-level context-limit scanner (revived orphan dom-script) —
+// detects Kimi's "conversation too long" notice even when it renders as a
+// modal/banner outside the response bubbles.
+const { scanPageContextLimit } = require('./bridge-libs/dom-scripts/poll-dom-structure.js');
 const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors, getProviderApiPatterns } = require('./provider-loader.cjs');
 
 // Lazy-load turndown — fail gracefully if not installed
@@ -5556,6 +5561,23 @@ class KimiBridge {
           // v7.5: Poll DOM state via _pollThinkingAndResponse (uses Network Interceptor as primary)
           const poll = await this._pollThinkingAndResponse(session.page, userId);
 
+          // W10-T2: Page-level context limit (modal/banner outside the bubbles).
+          // Feed the SAME context_limit event path the soul already handles —
+          // the stream consumer exits on it and yields context_limit upstream.
+          // Stop polling this turn: _stopDomPoller in sendMessageStream's
+          // finally re-arms cleanly for the next message.
+          if (poll.isContextLimit) {
+            log.warn(`[DomPoller] Page-level context limit detected (source=${poll.source}) — ending turn polling`);
+            this._enqueueDomEvent(userId, {
+              type: 'context_limit',
+              response: poll.response,
+              source: poll.source,
+              timestamp: Date.now(),
+            });
+            session.domPollerActive = false;
+            continue;
+          }
+
           // v8.0-fix: Emit tool calls detected by network interceptor
           if (poll.toolCalls && poll.toolCalls.length > 0) {
             for (const tc of poll.toolCalls) {
@@ -5814,9 +5836,11 @@ class KimiBridge {
         const SEEN_TTL_MS = 120 * 1000;
         if (!session._domEventSeen) session._domEventSeen = new Map();
         const seen = session._domEventSeen;
-        const key = event.type + ':' + crypto.createHash('sha256')
-          .update(JSON.stringify({ t: event.type, a: event.action, r: event.response, c: event.code }))
-          .digest('hex').slice(0, 16);
+        // W10-T1: key builder extracted to lib/tool-dedup-key.cjs. Only fields
+        // every source provides go into the key — the extension never sends
+        // `code` while the network interceptor does, so hashing it let the
+        // same logical action slip past dedup and execute twice.
+        const key = makeDomEventDedupKey(event);
         const now = Date.now();
         const seenAt = seen.get(key);
         if (seenAt !== undefined && now - seenAt < SEEN_TTL_MS) return; // phantom re-detection — drop
@@ -5965,6 +5989,39 @@ class KimiBridge {
       // (it was previously declared only inside the generic-provider block,
       // making the empty-wait branch throw ReferenceError for provider='kimi').
       const session = userId ? this.userSessions.get(userId) : null;
+
+      // W10-T2: Page-level context-limit scan (revived orphan scanner from
+      // bridge-libs/dom-scripts/poll-dom-structure.js). Kimi can show the
+      // "conversation too long" notice as a modal/banner OUTSIDE the response
+      // bubbles, where _isContextLimitResponse(finalResponse) never sees it.
+      // Throttled like the other poll-loop work: the full-page querySelectorAll
+      // walk is expensive, so run it at most once every 5s per page (the
+      // DomPoller ticks every 1.5s during processing → ~1 scan per 3-4 ticks).
+      // Kimi-only: the notice text is Kimi's; other providers keep the old path.
+      if (provider === 'kimi') {
+        const lastLimitScanAt = page._lunaContextLimitScanAt || 0;
+        if (Date.now() - lastLimitScanAt >= 5000) {
+          page._lunaContextLimitScanAt = Date.now();
+          let pageLimitScan = null;
+          try {
+            pageLimitScan = await page.evaluate(scanPageContextLimit);
+          } catch (scanErr) {
+            log.warn(`[_poll] page context-limit scan failed: ${scanErr.message}`);
+          }
+          if (pageLimitScan?.isContextLimit) {
+            log.warn(`[_poll] PAGE-LEVEL context limit detected: ${(pageLimitScan.response || '').slice(0, 80)}`);
+            const { canSteer, isGenerating } = await this._detectUiState(page, provider).catch(() => ({ canSteer: false, isGenerating: false }));
+            return {
+              thinking: '',
+              response: pageLimitScan.response,
+              canSteer,
+              isGenerating,
+              source: pageLimitScan.source,
+              isContextLimit: true,
+            };
+          }
+        }
+      }
 
       // v7.5: Layer 1 — Native Playwright Network Interceptor (PRIMARY)
       // This replaces fragile JavaScript injection with server-side response capture.
@@ -7735,6 +7792,9 @@ class KimiBridge {
       // new-assistant detection loop) so that loop can observe cancellation.
       let pollCount = 0;
       let textHasChanged = false;
+      // W10-T2: page-level context_limit event from the DomPoller's revived
+      // full-page scanner (modal/banner outside the response bubbles).
+      let pageContextLimit = null;
 
       // v9.4-fix: JSON Accumulation Buffer state
       let jsonAccumulator = '';
@@ -7745,6 +7805,19 @@ class KimiBridge {
       const emittedResponseHashes = new Set();
       const emittedJsonActionHashes = new Set();
       let domActionsCount = 0;
+
+      // W10-T1: json_buffer action yields used to bypass emittedActionCodes
+      // entirely, so the SAME tool call re-detected by another source
+      // (extension / network intercept / late finalResponse scan) ran TWICE.
+      // Route them through the same _dedupKeyForAction dedup as every other
+      // action path (see the 'action_detected' case and the late-action scan).
+      const buildJsonBufferAction = (tool, params) => {
+        const dedupKey = this._dedupKeyForAction({ action: { tool, params } });
+        if (emittedActionCodes.has(dedupKey)) return null;
+        emittedActionCodes.add(dedupKey);
+        domActionsCount++;
+        return { type: 'action_detected', action: { tool, params }, source: 'json_buffer' };
+      };
 
       // Phase 0: Wait for first text change via queue events.
       // W6-T3: bounded — chrome lag with huge prompts is expected and gets the
@@ -7761,6 +7834,14 @@ class KimiBridge {
         }
         while (queue.lastReadIndex < queue.events.length) {
           const ev = queue.events[queue.lastReadIndex++];
+          // W10-T2: context limit detected by the page-level scanner before
+          // any text streamed — skip the Phase 0 wait entirely.
+          if (ev.type === 'context_limit') {
+            pageContextLimit = ev;
+            textHasChanged = true;
+            log.warn(`[sendMessageStream] Phase 0: page-level context limit event received`);
+            break;
+          }
           if (ev.type === 'state_change') {
             const combined = (ev.thinking || '') + (ev.response || '');
             log.info(`[DEBUG-LUNA] Phase 0 state_change: combined='${combined}' isGenerating=${ev.isGenerating} source=${ev.source}`);
@@ -7798,6 +7879,11 @@ class KimiBridge {
       // hard-cancel at any time by sending a new message.
       const MESSAGE_SAFETY_TIMEOUT_MS = 60 * 60 * 1000;
       const messageStartTime = Date.now();
+
+      // W10-T2: a page-level context_limit already received in Phase 0
+      // short-circuits the whole consumer — the final-extraction tail below
+      // still runs and yields the context_limit event upstream.
+      if (pageContextLimit) isComplete = true;
 
       // v7.0: Soft cancel drain tracking
       let softCancelDrainStart = null;
@@ -7916,9 +8002,11 @@ class KimiBridge {
                         if (extracted.type === 'response') {
                           yield { type: 'response_delta', text: extracted.text };
                         } else if (extracted.type === 'tool') {
-                          yield { type: 'action_detected', action: { tool: extracted.tool, params: extracted.params }, source: 'json_buffer' };
+                          const actionEvent = buildJsonBufferAction(extracted.tool, extracted.params);
+                          if (actionEvent) yield actionEvent;
                         } else if (extracted.type === 'script') {
-                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: extracted.language || 'bash' } }, source: 'json_buffer' };
+                          const actionEvent = buildJsonBufferAction('executeScript', { code: extracted.script, language: extracted.language || 'bash' });
+                          if (actionEvent) yield actionEvent;
                         }
                         // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
                         isComplete = true;
@@ -7938,9 +8026,11 @@ class KimiBridge {
                         if (extracted.type === 'response') {
                           yield { type: 'response_delta', text: extracted.text };
                         } else if (extracted.type === 'tool') {
-                          yield { type: 'action_detected', action: { tool: extracted.tool, params: extracted.params }, source: 'json_buffer' };
+                          const actionEvent = buildJsonBufferAction(extracted.tool, extracted.params);
+                          if (actionEvent) yield actionEvent;
                         } else if (extracted.type === 'script') {
-                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: extracted.language || 'bash' } }, source: 'json_buffer' };
+                          const actionEvent = buildJsonBufferAction('executeScript', { code: extracted.script, language: extracted.language || 'bash' });
+                          if (actionEvent) yield actionEvent;
                         }
                         // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
                         isComplete = true;
@@ -7962,9 +8052,11 @@ class KimiBridge {
                     if (cleanR.type === 'response') {
                       yield { type: 'response_delta', text: cleanR.text };
                     } else if (cleanR.type === 'tool') {
-                      yield { type: 'action_detected', action: { tool: cleanR.tool, params: cleanR.params }, source: 'json_buffer' };
+                      const actionEvent = buildJsonBufferAction(cleanR.tool, cleanR.params);
+                      if (actionEvent) yield actionEvent;
                     } else if (cleanR.type === 'script') {
-                      yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: cleanR.script, language: cleanR.language || 'bash' } }, source: 'json_buffer' };
+                      const actionEvent = buildJsonBufferAction('executeScript', { code: cleanR.script, language: cleanR.language || 'bash' });
+                      if (actionEvent) yield actionEvent;
                     }
                     // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
                     isComplete = true;
@@ -8044,6 +8136,17 @@ class KimiBridge {
                 }
                 lastResponse = r;
               }
+              break;
+            }
+
+            case 'context_limit': {
+              // W10-T2: page-level scanner detected Kimi's context-limit
+              // notice as a modal/banner outside the response bubbles.
+              // End the turn — the final check below yields context_limit
+              // instead of done, feeding the soul's auto-compact path.
+              log.warn(`[sendMessageStream] Page-level context limit event received (source=${ev.source})`);
+              pageContextLimit = ev;
+              isComplete = true;
               break;
             }
 
@@ -8191,10 +8294,12 @@ class KimiBridge {
         }
       }
 
-      const isContextLimit = this._isContextLimitResponse(finalResponse);
+      // W10-T2: the page-level scanner's context_limit event (modal/banner
+      // outside the bubbles) takes precedence over the text-based check.
+      const isContextLimit = !!pageContextLimit || this._isContextLimitResponse(finalResponse);
       if (isContextLimit) {
-        log.warn(`[sendMessageStream] Context limit detected`);
-        yield { type: 'context_limit', response: finalResponse, thinking: lastThinking };
+        log.warn(`[sendMessageStream] Context limit detected${pageContextLimit ? ' (page-level scanner)' : ''}`);
+        yield { type: 'context_limit', response: pageContextLimit?.response || finalResponse, thinking: lastThinking };
       } else {
         yield { type: 'done', response: finalResponse, thinking: lastThinking };
       }

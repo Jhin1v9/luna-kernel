@@ -330,4 +330,14 @@
     0%, 100% { box-shadow: 0 0 40px rgba(255,215,0,0.08); }
     50% { box-shadow: 0 0 60px rgba(255,215,0,0.15); }
   }
+
+  /* Wave 10 T3: backdrop-filter over the animated canvas melts the iOS
+     compositor as the conversation grows — solid fallback on mobile */
+  @media (max-width: 768px) {
+    .plan-card {
+      background: linear-gradient(135deg, rgba(26, 26, 46, 0.96) 0%, rgba(15, 15, 26, 0.96) 100%);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
 </style>

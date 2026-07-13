@@ -562,7 +562,8 @@ test('W8-T3: ChatArea skips card creation for registry-hidden tools on action_st
   assert.ok(src.includes('TOOL_HIDDEN'), 'ChatArea must read the generated hidden map (no hardcoded list)');
   const idx = src.indexOf("case 'action_start': {");
   assert.notStrictEqual(idx, -1, 'action_start case must exist');
-  const window = src.slice(idx, idx + 3200);
+  // Window covers the W10-T1 dedup guard/comment block added before the card push.
+  const window = src.slice(idx, idx + 4000);
   const hiddenIdx = window.indexOf('TOOL_HIDDEN[event.tool]');
   const cardIdx = window.indexOf("type: 'tool'");
   assert.notStrictEqual(hiddenIdx, -1, 'action_start must check TOOL_HIDDEN before creating the card');
@@ -599,7 +600,8 @@ test('W8-T3-review: history load never recreates cards for hidden tools', () => 
   const src = fs.readFileSync(CHAT_AREA, 'utf8');
   const idx = src.indexOf("} else if (msg.type === 'action_start' && msg.tool) {");
   assert.notStrictEqual(idx, -1, 'history action_start branch must exist');
-  const window = src.slice(idx, idx + 900);
+  // Window covers the W10-T1 backendToolId field/comment added to history cards.
+  const window = src.slice(idx, idx + 1400);
   assert.ok(window.includes('TOOL_HIDDEN[msg.tool]'),
     'history load must skip hidden action_start/action_end (reload must not resurrect hidden cards)');
   assert.strictEqual(window.split('TOOL_HIDDEN[msg.tool]').length - 1, 2,

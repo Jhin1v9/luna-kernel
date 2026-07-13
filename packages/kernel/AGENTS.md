@@ -159,10 +159,11 @@ ToolCard state is driven SOLELY by `action_start` → `action_end` events from t
 
 ### Deduplication
 Multiple layers prevent duplicate tool execution:
-1. `kimi-bridge.cjs`: `emittedActionCodes` Set per stream
+1. `kimi-bridge.cjs`: `emittedActionCodes` Set per stream (W10-T1: `json_buffer` yields now go through it too, via `buildJsonBufferAction`; the W6-T6 DOM-event key lives in `lib/tool-dedup-key.cjs` and ignores `code` so extension/network-intercept detections of the same action share one key)
 2. `luna-soul.cjs`: `executedDomActionHashes` Set per message loop
-3. `luna-soul.cjs`: `_executedActionCache` Map per session (global, 5min TTL)
+3. `luna-soul.cjs`: `_executedActionCache` Map per session (global, 5min TTL; cached replays emit `action_start` with `cached:true` — ChatArea suppresses the duplicate card but still applies the replayed `action_end` result)
 4. `luna-tools.cjs`: Idempotency pre-check for createLead/createTask
+5. `ChatArea.svelte`: `shouldCreateToolCard` (lib/toolCardDedup.js) skips a new card when `cached:true` or when `backendToolId` is already rendered (history-loaded cards carry `backendToolId` too); card ids are `tool-${Date.now()}-${seq}` to avoid same-ms keyed-each collisions
 
 ---
 

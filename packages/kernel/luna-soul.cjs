@@ -30,6 +30,7 @@ const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cj
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { checkPathWithinRoots, PATH_PARAM_KEYS } = require('./lib/path-guard.cjs');
 const { makeProgressEvent } = require('./lib/progress-event.cjs');
+const { onContextLimit, shouldForceNewChat } = require('./lib/auto-compact-policy.cjs');
 const lunaConfig = require('./config/luna-config');
 const {
   checkJsxBalanced,
@@ -2497,7 +2498,9 @@ class LunaSoul extends EventEmitter {
       }
     }
 
-    // v10.32: Context compaction is manual-only. No proactive compaction before sending.
+    // W10-T2: Compaction is manual (button / /compactar) OR automatic when the
+    // provider reports the context limit (one-shot, see case 'context_limit').
+    // No PROACTIVE compaction before sending.
 
     // Auto-continue loop: Kimi decides → Luna executes → result goes back to Kimi → Kimi responds
     let loopInput = messageInput;
@@ -2512,6 +2515,10 @@ class LunaSoul extends EventEmitter {
     let loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage });
     let safety = 0;
     const MAX_LOOPS = 50; // W6-T4: teto real — o loop nunca pode rodar para sempre
+    // W10-T2: one-shot guard — at most ONE auto-compact per user message.
+    // If the resent message hits the context limit again, the soul falls back
+    // to the manual hint (system message + done) instead of compacting forever.
+    let autoCompactAttempted = false;
     let autoContinues = 0;
     // W8-T1c: config wins — loopRules.maxAutoContinues in luna-prompt-config.json
     // overrides the constant; the constant stays as the default when unset or
@@ -2521,7 +2528,9 @@ class LunaSoul extends EventEmitter {
       ? _loopRules.maxAutoContinues
       : 3; // v10.16-fix: teto real para evitar loop infinito
 
-    while (safety < MAX_LOOPS) {
+    // W10-T2: label so the context_limit case can re-enter this loop with the
+    // rebuilt context after an auto-compact (resend of the original message).
+    autoCompactLoop: while (safety < MAX_LOOPS) {
       safety++;
       let fullThinking = '';
       let fullResponse = '';
@@ -2543,17 +2552,20 @@ class LunaSoul extends EventEmitter {
 
       while (!streamSuccess && bridgeRetryCount <= MAX_BRIDGE_RETRIES) {
         try {
-          // v10.32: Compaction is 100% manual via the "Compactar" button.
-          // No automatic compaction must happen here.
+          // W10-T2: Compaction here is REACTIVE only — the provider already
+          // reported the context limit (case 'context_limit' below). Nothing
+          // proactive runs at send time.
 
           // v6.0-fix: Pass files to sendMessageStream so the bridge can inject
           // text file contents directly into the prompt (bypassing placeholder)
           // v10.23-fix: Start a fresh Kimi chat on the first message of a new web session
           // to prevent context leakage from previous sessions/pages.
           // v10.27-fix: Only force newChat for Kimi — other providers may lose login state on reload.
+          // W10-T2: after an auto-compact the fresh thread already exists (with
+          // checkpoint) — never force another newChat or the checkpoint is lost.
           const provider = options.provider || 'kimi';
-          const shouldForceNewChat = provider === 'kimi' && isFirstMessage && bridgeRetryCount === 0;
-          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: shouldForceNewChat, isAutoContinue: safety > 1 }, provider);
+          const forceNewChat = shouldForceNewChat({ provider, isFirstMessage, bridgeRetryCount, autoCompactAttempted });
+          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: forceNewChat, isAutoContinue: safety > 1 }, provider);
 
           for await (const event of stream) {
             // v10.13: Drain any completed background actions BEFORE processing stream event
@@ -2670,9 +2682,66 @@ class LunaSoul extends EventEmitter {
 
             case 'context_limit': {
               fullResponse = event.response || '';
+              // W10-T2: Auto-compact + resend (mirrors the Telegram path in
+              // _kimiSendWithTimeout). Owner directive 2026-07-13 supersedes
+              // the manual-only decision (.brain/decisions.md:24). One-shot:
+              // if the resent message hits the limit again, fall back to the
+              // manual hint instead of compacting forever.
+              const contextLimitAction = onContextLimit({ autoCompactAttempted });
+              if (contextLimitAction === 'compact_and_resend') {
+                autoCompactAttempted = true;
+                yield {
+                  type: 'system',
+                  message: '⚠️ Contexto cheio — compactando automaticamente e reenviando sua mensagem…',
+                  sessionId,
+                };
+
+                let compactResult = null;
+                try {
+                  // _compactContext is an async generator: forward its progress
+                  // events to the frontend (same shapes as the manual flow —
+                  // compact_start/compact_progress/compact_end/compact_error)
+                  // and capture its return value.
+                  const compactGen = this._compactContext(sessionId, userId);
+                  for (;;) {
+                    const step = await compactGen.next();
+                    if (step.done) { compactResult = step.value; break; }
+                    yield step.value;
+                  }
+                } catch (compactErr) {
+                  compactResult = { success: false, error: compactErr.message };
+                }
+
+                if (!compactResult?.success) {
+                  console.error(`[LUNA-SOUL] Auto-compact failed: ${compactResult?.error || 'unknown'}`);
+                  yield { type: 'error', error: `❌ Falha na compactação automática: ${compactResult?.error || 'erro desconhecido'}. Tente o botão "Compactar".`, sessionId };
+                  yield { type: 'done', result: { success: false, mode: 'CHAT', response: fullResponse || '', sessionId }, sessionId };
+                  return;
+                }
+
+                // Resend the ORIGINAL user message into the fresh thread.
+                // _compactContext already opened the new Kimi chat and seeded
+                // it with a checkpoint, and the session context now holds the
+                // checkpoint event — rebuild with isFirstMessage: false
+                // (mini-reminder) and let shouldForceNewChat stay false.
+                console.log('[LUNA-SOUL] Auto-compact done — resending original user message into new thread');
+                loopInput = messageInput;
+                try {
+                  loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage: false });
+                } catch (ctxErr) {
+                  console.error(`[LUNA-SOUL] _buildContext failed after auto-compact: ${ctxErr.message}`);
+                  yield { type: 'error', error: `❌ Falha ao reconstruir contexto após compactação: ${ctxErr.message}`, sessionId };
+                  yield { type: 'done', result: { success: false, error: ctxErr.message, sessionId }, sessionId };
+                  return;
+                }
+                continue autoCompactLoop;
+              }
+
+              // Second context_limit on the resent message — old behavior:
+              // manual hint + done, no second compact.
               yield {
                 type: 'system',
-                message: '📦 Limite de contexto atingido. Clique em "Compactar" no cabeçalho para continuar.',
+                message: '📦 Limite de contexto atingido novamente após a compactação. Tente dividir a tarefa em mensagens menores ou clique em "Compactar".',
                 sessionId,
               };
               // wave1-fix A4: never exit silently — always emit done
@@ -2824,8 +2893,9 @@ class LunaSoul extends EventEmitter {
       streamSuccess = true; // Mark success to exit retry loop
       } // end while retry loop
 
-      // v10.32: Regex fallback for context limit removed. Compaction is manual.
-      // The LLM's context_limit event is handled above.
+      // v10.32: Regex fallback for context limit removed.
+      // W10-T2: the provider's context_limit event is handled above — it now
+      // auto-compacts once and re-enters the loop via `continue autoCompactLoop`.
 
       // wave1-fix A4: provider returned nothing — never emit CHAT done with an empty string.
       // Only when no DOM actions ran: tool results still need to be fed back to Kimi.

@@ -20,10 +20,21 @@
   let userScrolledUp = false;
   let showNewMessagesBadge = false;
 
+  // Wave 10 T3: index of the last assistant message — only it gets the
+  // infinite border-gradient/avatar animations (see AssistantMessage).
+  $: lastAssistantIndex = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') return i;
+    }
+    return -1;
+  })();
+
   $: if (messages.length > 0) {
     tick().then(() => {
       if (!userScrolledUp) {
-        scrollManager.scrollToBottom(listEl, 'smooth');
+        // Wave 10 T3: instant scroll while streaming — a smooth-scroll
+        // animation restarted on every token delta is pure compositor cost.
+        scrollManager.scrollToBottom(listEl, $isStreaming ? 'auto' : 'smooth');
       } else {
         showNewMessagesBadge = true;
       }
@@ -74,12 +85,12 @@
     </div>
   {:else}
     <div class="messages-container">
-      {#each messages as message (message.id)}
+      {#each messages as message, i (message.id)}
         <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}>
           {#if message.type === 'user'}
             <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
           {:else if message.type === 'assistant'}
-            <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} />
+            <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} isLast={i === lastAssistantIndex} />
           {:else if message.type === 'thinking'}
             <ThinkingBubble text={message.content} />
           {:else if message.type === 'tool'}
@@ -140,7 +151,8 @@
     overflow-x: hidden;
     padding: 16px;
     position: relative;
-    scroll-behavior: smooth;
+    /* Wave 10 T3: no CSS scroll-behavior — it turns behavior:'auto' scrolls
+       into smooth ones; explicit 'smooth' in scrollTo still works */
   }
   .messages-container {
     display: flex;
@@ -165,6 +177,10 @@
   }
   .message-wrapper {
     animation: fadeInUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    /* Wave 10 T3: cheap-man's virtualization — off-screen messages skip
+       layout/paint; intrinsic size keeps the scrollbar stable */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 120px;
   }
   .message-wrapper.system-msg {
     animation: fadeIn 200ms ease;

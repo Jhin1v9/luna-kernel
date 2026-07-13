@@ -52,6 +52,14 @@ function readBody(req) {
 }
 
 // ── Compact Session Logic ──
+// DEPRECATED STUB (W10-T2, 2026-07-13): this standalone server is legacy —
+// it is NOT part of the pm2 ecosystem (luna-server runs
+// apps/dashboard/luna-server.js + luna-chat-routes.js). This compact endpoint
+// only SIMULATES SSE events (setInterval) and never touches the soul.
+// The REAL endpoint is POST /api/luna/compact in
+// apps/dashboard/luna-chat-routes.js (~:2061) → LunaSoul._compactContext()
+// (packages/kernel/luna-soul.cjs:1889). Kept for reference only — do not
+// extend; see .agents/architecture.md.
 async function handleCompact(req, res) {
   const body = await readBody(req);
   const { sessionId, userId = 'luna-default' } = body;

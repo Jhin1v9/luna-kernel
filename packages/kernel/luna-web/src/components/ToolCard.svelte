@@ -510,4 +510,14 @@
     max-height: 200px;
     overflow-y: auto;
   }
+
+  /* Wave 10 T3: backdrop-filter over the animated canvas melts the iOS
+     compositor as the conversation grows — solid fallback on mobile */
+  @media (max-width: 768px) {
+    .tool-card {
+      background: rgba(18, 18, 31, 0.94);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
 </style>
