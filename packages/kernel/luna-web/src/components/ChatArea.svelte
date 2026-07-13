@@ -482,8 +482,24 @@
         pendingToolCount++; // v9.3-fix
         // Wave 8: internal tools (meta.hidden in tool-registry.cjs → TOOL_HIDDEN)
         // execute normally but never render a card. Keep the pending count so
-        // action_end balancing is unchanged; skip the card, map and timers.
+        // action_end balancing is unchanged; skip the card and the map.
         if (TOOL_HIDDEN[event.tool]) {
+          // Wave 8 review: no card, but keep the watchdog safety net — a hidden
+          // tool whose action_end never arrives (stream death) must still release
+          // the input. Keyed by tool name (plan-mode events carry no
+          // toolInstanceId; tools run sequentially); action_end stops it below.
+          toolTimers.start('hidden:' + event.tool, {
+            timeoutMs: TOOL_TIMEOUT_MS,
+            onTimeout: (key) => {
+              timedOutToolIds.add(key);
+              pendingToolCount = Math.max(0, pendingToolCount - 1);
+              if (pendingToolCount <= 0) {
+                mascotState.set('idle');
+                mascotMessage.set('O que mais posso fazer?');
+                isStreaming.set(false);
+              }
+            },
+          });
           break;
         }
         const toolId = 'tool-' + Date.now();
@@ -621,7 +637,14 @@
         // Wave 4: a watchdog-timed-out card already decremented the count AND
         // already unlocked the input — a late action_end for it must not touch
         // streaming state at all (it could kill the user's NEXT turn mid-stream).
-        const wasTimedOut = lastTool ? timedOutToolIds.delete(lastTool.id) : false;
+        // Wave 8 review: hidden tools carry no card — cancel their watchdog here
+        // and mirror the timed-out guard so a late action_end cannot
+        // double-decrement the count after the watchdog already fired.
+        const hiddenTimerKey = 'hidden:' + event.tool;
+        if (!lastTool) toolTimers.stop(hiddenTimerKey);
+        const wasTimedOut = lastTool
+          ? timedOutToolIds.delete(lastTool.id)
+          : timedOutToolIds.delete(hiddenTimerKey);
         if (!wasTimedOut) {
           pendingToolCount = Math.max(0, pendingToolCount - 1);
           if (pendingToolCount <= 0) {
@@ -1059,6 +1082,9 @@
               timestamp: msg.timestamp || new Date().toISOString(),
             });
           } else if (msg.type === 'action_start' && msg.tool) {
+            // Wave 8 review: hidden tools never render cards — not from history
+            // either (session switch / reload replays persisted action_start).
+            if (TOOL_HIDDEN[msg.tool]) continue;
             loaded.push({
               id: msg.id || 'tool-' + Math.random().toString(36).slice(2),
               type: 'tool',
@@ -1068,6 +1094,9 @@
               timestamp: msg.timestamp || new Date().toISOString(),
             });
           } else if (msg.type === 'action_end' && msg.result) {
+            // Wave 8 review: skip hidden ends too — with their starts skipped,
+            // a hidden end would steal-fill the last visible unresolved card.
+            if (TOOL_HIDDEN[msg.tool]) continue;
             const lastTool = loaded.slice().reverse().find(m => m.type === 'tool' && !m.result);
             if (lastTool) {
               lastTool.result = msg.result;

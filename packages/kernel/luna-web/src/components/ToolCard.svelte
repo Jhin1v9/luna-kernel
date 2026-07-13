@@ -29,6 +29,9 @@
   // inner level too, without dropping the legacy flat reads above.
   $: errorText = result?.error || result?.result?.error || result?.result?.friendlyMessage || '';
   $: paramsJson = params && Object.keys(params).length > 0 ? JSON.stringify(params, null, 2) : '';
+  // Wave 8 review: cap the fallback body like truncatedOutput — a tool with
+  // huge params (e.g. a big inline payload) must not dump it all into the DOM.
+  $: paramsJsonDisplay = paramsJson.length > 500 ? paramsJson.slice(0, 500) + '...' : paramsJson;
 
   // Cinema animations per tool type
   $: toolAnimationClass = displayStatus === 'running' ? `anim-${tool}` : '';
@@ -114,7 +117,7 @@
   <!-- Wave 8: never render a blank card — when there is no command/path and
        no known output, show the raw params as the card body. -->
   {#if !displayPath && !displayCommand && !truncatedOutput && !errorText && !(displayStatus === 'running' && liveOutput) && paramsJson}
-    <pre class="output-content">{paramsJson}</pre>
+    <pre class="output-content">{paramsJsonDisplay}</pre>
   {/if}
 
   {#if result?.warning}

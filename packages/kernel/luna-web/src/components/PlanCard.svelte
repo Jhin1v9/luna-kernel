@@ -52,6 +52,9 @@
       {:else if status === 'rejected'}
         <XCircle size={12} />
         <span>Rejeitado</span>
+      {:else if status === 'revised'}
+        <Pencil size={12} />
+        <span>Substituído</span>
       {/if}
     </div>
   </div>

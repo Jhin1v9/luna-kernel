@@ -366,7 +366,9 @@ test('T7: ChatArea wires the registry into action_start, action_end, reconnect a
   assert.ok(src.includes('onTimeout'), 'bug 1: a timeout handler must mark the tool failed');
   // review follow-up: the double-decrement / late-action_end guard must stay wired
   assert.ok(src.includes('timedOutToolIds'), 'timedOutToolIds guard must exist');
-  assert.ok(src.includes('const wasTimedOut = lastTool ? timedOutToolIds.delete(lastTool.id) : false;'), 'late action_end must consult the guard');
+  assert.ok(src.includes('timedOutToolIds.delete(lastTool.id)'), 'late action_end must consult the guard for card tools');
+  // Wave 8 review: hidden tools (no card) consult the same guard via their timer key
+  assert.ok(src.includes('timedOutToolIds.delete(hiddenTimerKey)'), 'late action_end must consult the guard for hidden tools');
 });
 
 // ── T8: ack batcher + ackEvents caller ───────────────────────────────────────
@@ -560,7 +562,7 @@ test('W8-T3: ChatArea skips card creation for registry-hidden tools on action_st
   assert.ok(src.includes('TOOL_HIDDEN'), 'ChatArea must read the generated hidden map (no hardcoded list)');
   const idx = src.indexOf("case 'action_start': {");
   assert.notStrictEqual(idx, -1, 'action_start case must exist');
-  const window = src.slice(idx, idx + 2200);
+  const window = src.slice(idx, idx + 3200);
   const hiddenIdx = window.indexOf('TOOL_HIDDEN[event.tool]');
   const cardIdx = window.indexOf("type: 'tool'");
   assert.notStrictEqual(hiddenIdx, -1, 'action_start must check TOOL_HIDDEN before creating the card');
@@ -577,4 +579,44 @@ test('W8-T3: action_progress chunks are deduped by backend event id (replay-safe
   assert.ok(window.includes('appliedChunkIds.has'), 'action_progress must check the dedup set');
   assert.ok(window.includes('appliedChunkIds.add'), 'action_progress must record applied chunk ids');
   assert.ok(!src.includes('appliedChunkIds.clear'), 'chunk dedup set must survive reconnects (never cleared)');
+});
+
+// Wave 8 review follow-ups: safety nets found missing during adversarial review.
+test('W8-T3-review: hidden tools keep a watchdog so a dead stream cannot lock the input', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  assert.ok(src.includes("toolTimers.start('hidden:' + event.tool"),
+    'hidden action_start must arm a watchdog-only timer (no card to time out)');
+  const endIdx = src.indexOf("case 'action_end': {");
+  assert.notStrictEqual(endIdx, -1, 'action_end case must exist');
+  const endWindow = src.slice(endIdx, endIdx + 3000);
+  assert.ok(endWindow.includes("toolTimers.stop(hiddenTimerKey)"),
+    'action_end must cancel the hidden watchdog on normal completion');
+  assert.ok(endWindow.includes('timedOutToolIds.delete(hiddenTimerKey)'),
+    'a late action_end after a hidden watchdog timeout must not double-decrement');
+});
+
+test('W8-T3-review: history load never recreates cards for hidden tools', () => {
+  const src = fs.readFileSync(CHAT_AREA, 'utf8');
+  const idx = src.indexOf("} else if (msg.type === 'action_start' && msg.tool) {");
+  assert.notStrictEqual(idx, -1, 'history action_start branch must exist');
+  const window = src.slice(idx, idx + 900);
+  assert.ok(window.includes('TOOL_HIDDEN[msg.tool]'),
+    'history load must skip hidden action_start/action_end (reload must not resurrect hidden cards)');
+  assert.strictEqual(window.split('TOOL_HIDDEN[msg.tool]').length - 1, 2,
+    'both the action_start and the action_end history branches must skip hidden tools');
+});
+
+test('W8-T3-review: PlanCard has a badge for superseded (revised) plans', () => {
+  const src = fs.readFileSync(PLAN_CARD, 'utf8');
+  assert.ok(src.includes("status === 'revised'"),
+    "PlanCard must render a badge for status 'revised' (Wave 8 downgrades old cards to it)");
+});
+
+test('W8-T3-review: ToolCard params fallback is capped like truncatedOutput', () => {
+  const TOOL_CARD = path.join(REPO, 'packages/kernel/luna-web/src/components/ToolCard.svelte');
+  const src = fs.readFileSync(TOOL_CARD, 'utf8');
+  assert.ok(src.includes('paramsJsonDisplay'),
+    'params fallback must render a capped copy (no unbounded JSON dump into the DOM)');
+  assert.ok(/paramsJson\.slice\(0, 500\)/.test(src),
+    'params fallback cap must match the existing 500-char truncatedOutput pattern');
 });
