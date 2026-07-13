@@ -5,7 +5,7 @@
 (function setupLunaDomObserver() {
   if (window.__lunaDomObserver) return;
 
-  const VERSION = '2.1.1-wave2'; // Wave2-fix B: dropped parent .markdown-container selector
+  const VERSION = '2.1.2-wave8'; // W8-T2b: string-aware JSON fallback extractor (nested params no longer dropped)
   const DEBOUNCE_MS = 250; // v10.7-fix: Increased from 50ms to reduce CPU load during streaming
   const TOOL_DEDUP_TTL_MS = 60000; // 60s TTL for deduplicating tool calls
 
@@ -80,6 +80,51 @@
   }
 
   // ── JSON Block Detection ──
+  // W8-T2b: string-aware extractor — the old /\{[\s\S]*?\}/ fallback stopped at
+  // the first '}' even inside a string value (writeFile HTML/JS content), so
+  // the truncated slice failed JSON.parse and the tool call was silently
+  // dropped. Walk braces while respecting string literals/escapes (same
+  // algorithm as the bridge's extractFirstCompleteJsonObject; self-contained —
+  // the extension bundles no dependencies).
+  function extractFirstJsonObject(text) {
+    if (!text || text.length < 2) return null;
+    let i = 0;
+    while (i < text.length) {
+      if (text[i] !== '{') { i++; continue; }
+      const start = i;
+      let depth = 1;
+      let inString = false;
+      let escape = false;
+      i++;
+      while (i < text.length && depth > 0) {
+        const c = text[i];
+        if (escape) {
+          escape = false;
+        } else if (c === '\\') {
+          escape = true;
+        } else if (c === '"') {
+          if (inString) {
+            // Tolerate unescaped internal quotes: a closing quote is only real
+            // when the next significant char is , : } or ].
+            let j = i + 1;
+            while (j < text.length && /\s/.test(text[j])) j++;
+            if (j >= text.length || text[j] === ',' || text[j] === ':' || text[j] === '}' || text[j] === ']') {
+              inString = false;
+            }
+          } else {
+            inString = true;
+          }
+        } else if (!inString) {
+          if (c === '{') depth++;
+          else if (c === '}') depth--;
+        }
+        i++;
+      }
+      if (depth === 0) return text.slice(start, i);
+    }
+    return null;
+  }
+
   function detectJsonBlocks(container) {
     const results = { actions: [], responses: [] };
     try {
@@ -95,8 +140,9 @@
         try {
           parsed = JSON.parse(text);
         } catch (e) {
-          const m = text.match(/\{[\s\S]*?\}/);
-          if (m) try { parsed = JSON.parse(m[0]); } catch (e2) { continue; }
+          // W8-T2b: string-aware extraction instead of the non-greedy regex.
+          const objText = extractFirstJsonObject(text);
+          if (objText) try { parsed = JSON.parse(objText); } catch (e2) { continue; }
           else continue;
         }
 

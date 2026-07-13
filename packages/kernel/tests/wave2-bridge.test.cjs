@@ -665,3 +665,140 @@ test('W7-T4f: injectSteer also fills via the Lexical-safe helper (no desync-pron
   assert.ok(!window.includes('inputLocator.fill(text)'),
     'no submit path may use Playwright fill(text) directly (desyncs the Lexical EditorState)');
 });
+
+// ── W8-T2: string-aware tool-JSON extraction everywhere ──
+
+test('W8-T2a: _extractJsonToolCalls parses writeFile whose content has braces/HTML/JS inside strings (full params round-trip)', () => {
+  const { _extractJsonToolCalls } = require(BRIDGE_PATH);
+  // Realistic HTML/JS payload: balanced {} blocks PLUS a lone "}" inside a
+  // string literal. The pre-W8 regex + naive brace counting cut the slice at
+  // that internal brace → JSON.parse failed → the tool was silently dropped.
+  const content = [
+    '<div class="card">',
+    '  <h1>Título</h1>',
+    '</div>',
+    '<script>',
+    'function main() {',
+    '  const data = { a: 1 };',
+    '  console.log("}");',
+    '}',
+    '</script>',
+  ].join('\n');
+  const payload = { tool: 'writeFile', params: { path: '/tmp/w8-t2a.html', content } };
+  const text = 'Aqui está o arquivo:\n' + JSON.stringify(payload) + '\nPronto.';
+
+  const tools = _extractJsonToolCalls(text);
+  assert.strictEqual(tools.length, 1, 'exactly one tool expected, got ' + JSON.stringify(tools));
+  assert.strictEqual(tools[0].tool, 'writeFile');
+  assert.deepStrictEqual(tools[0].params, payload.params,
+    'params must round-trip EXACTLY — braces/quotes inside the content string must not truncate the slice');
+});
+
+/**
+ * Pull a top-level function body out of injected.js by signature, with a
+ * string-aware brace matcher (the extractor itself contains '{'/'}' char
+ * literals, so naive counting overruns).
+ */
+function extractExtensionFunctionSource(src, signature) {
+  const idx = src.indexOf(signature);
+  assert.notStrictEqual(idx, -1, `${signature} must exist in injected.js`);
+  const openBrace = src.indexOf('{', idx);
+  assert.notStrictEqual(openBrace, -1, `${signature} must open a body`);
+  let depth = 0, inStr = false, strCh = '', escape = false, inComment = false;
+  for (let i = openBrace; i < src.length; i++) {
+    const ch = src[i];
+    if (inComment) { if (ch === '\n') inComment = false; continue; }
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (inStr) { if (ch === strCh) inStr = false; continue; }
+    if (ch === '/' && src[i + 1] === '/') { inComment = true; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { inStr = true; strCh = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return src.slice(idx, i + 1);
+    }
+  }
+  assert.fail(`${signature} braces never balanced`);
+}
+
+test('W8-T2b: extension extractFirstJsonObject round-trips nested params the old non-greedy regex truncated', () => {
+  const src = fs.readFileSync(INJECTED_PATH, 'utf8');
+  // The old fallback regex must be GONE from the fallback path.
+  assert.ok(!src.includes('text.match(/\\{[\\s\\S]*?\\}/)'),
+    'detectJsonBlocks must no longer use the non-greedy regex fallback');
+
+  // Unit the real algorithm: eval the function source lifted from injected.js
+  // (the extension IIFE has no exports and touches window, so importing the
+  // module is not an option).
+  const fnSrc = extractExtensionFunctionSource(src, 'function extractFirstJsonObject');
+  const extractFirstJsonObject = eval('(' + fnSrc + ')');
+
+  const payload = {
+    tool: 'writeFile',
+    params: { path: 'x.html', content: '<div>{}</div><script>function f(){ return {a:1}; }</script>' },
+  };
+  // Strict JSON.parse fails on DOM chrome → the fallback extractor runs.
+  const domText = 'json\nCopy Download\n' + JSON.stringify(payload);
+
+  const objText = extractFirstJsonObject(domText);
+  assert.ok(objText, 'extractor must find the object amid DOM junk');
+  assert.deepStrictEqual(JSON.parse(objText), payload, 'nested params must round-trip intact');
+
+  // Negative control: the pre-W8 regex stops at the first '}' inside the
+  // content string — its slice never parses back to the payload.
+  const oldMatch = domText.match(/\{[\s\S]*?\}/);
+  let oldParsed = null;
+  try { oldParsed = JSON.parse(oldMatch[0]); } catch {}
+  assert.ok(oldParsed === null || JSON.stringify(oldParsed) !== JSON.stringify(payload),
+    'old regex must FAIL on this input (proves the test guards the fix)');
+});
+
+test('W8-T2c: stream accumulator starts buffering when a wrapper begins mid-delta (prose prefix preserved)', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const streamIdx = src.indexOf('async *sendMessageStream(');
+  assert.notStrictEqual(streamIdx, -1, 'sendMessageStream must exist');
+
+  // The mid-text trigger must exist and run BEFORE the accumulation branch so
+  // the re-sliced wrapper tail flows into the existing fast path.
+  const triggerIdx = src.indexOf('findMidTextJsonWrapperStart(delta)', streamIdx);
+  assert.notStrictEqual(triggerIdx, -1, 'mid-delta wrapper trigger must exist in sendMessageStream');
+  const accumIdx = src.indexOf('if (isAccumulatingJson) {', streamIdx);
+  assert.notStrictEqual(accumIdx, -1, 'accumulator branch must exist');
+  assert.ok(triggerIdx < accumIdx, 'mid-delta split must run before the accumulation branch');
+
+  const window = src.slice(Math.max(streamIdx, triggerIdx - 400), triggerIdx + 400);
+  assert.ok(window.includes("yield { type: 'response_delta', text: delta.slice(0, wrapperIdx) }"),
+    'prose prefix must still reach chat as a normal response_delta');
+  assert.ok(window.includes('delta = delta.slice(wrapperIdx)'),
+    'delta must be re-sliced to the wrapper start so raw JSON never leaks to chat');
+  assert.ok(window.includes('!looksLikeJsonStart(delta)'),
+    'split must only fire when the fast path (delta starts with wrapper) did not');
+
+  // The helper must look for exactly the wrapper keys the accumulator understands.
+  const defIdx = src.indexOf('function findMidTextJsonWrapperStart');
+  assert.notStrictEqual(defIdx, -1, 'helper must be defined at module level');
+  const defWindow = src.slice(defIdx, defIdx + 400);
+  for (const k of ['{"tool"', '{"script"', '{"response"']) {
+    assert.ok(defWindow.includes(`'${k}'`), `helper must detect ${k}`);
+  }
+});
+
+test('W8-T2d: json_buffer script sites propagate the extracted language instead of hardcoded bash', () => {
+  const src = fs.readFileSync(BRIDGE_PATH, 'utf8');
+  const matches = src.match(/(?:extracted|cleanR)\.language \|\| 'bash'/g) || [];
+  assert.ok(matches.length >= 3,
+    `expected >= 3 json_buffer language propagations (found ${matches.length})`);
+  assert.ok(!src.includes("code: extracted.script, language: 'bash'"),
+    'no json_buffer site may hardcode language: bash for extracted scripts');
+  assert.ok(!src.includes("code: cleanR.script, language: 'bash'"),
+    'DOM-shrink script site must propagate cleanR.language');
+
+  // The extractor must actually surface the field, otherwise the propagation
+  // is dead code.
+  const defIdx = src.indexOf('function extractResponseFromCompleteJson');
+  assert.notStrictEqual(defIdx, -1, 'extractResponseFromCompleteJson must exist');
+  const defWindow = src.slice(defIdx, defIdx + 1500);
+  assert.ok(defWindow.includes('language: parsed.language'),
+    'extractResponseFromCompleteJson must propagate parsed.language for script wrappers');
+});

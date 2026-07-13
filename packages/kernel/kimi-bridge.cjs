@@ -196,6 +196,67 @@ function isJsonComplete(text) {
   return foundFirstBrace && depth === 0;
 }
 
+// v10.35-fix (W8-T2a: hoisted to module scope so _extractJsonToolCalls can
+// reuse it — previously defined inline in the generic-provider extractor):
+// robustly extract the first complete JSON object using string-aware brace
+// counting. Tolerates unescaped double quotes inside string values (common
+// when LLMs embed HTML/JS inside JSON): a closing quote is only real when the
+// next significant character is , : } or ]. `startFrom` lets callers loop over
+// multiple top-level objects in a single text.
+function extractFirstCompleteJsonObject(text, startFrom = 0) {
+  if (!text || text.length < 10) return null;
+  let i = startFrom;
+  while (i < text.length) {
+    if (text[i] !== '{') { i++; continue; }
+    const start = i;
+    let depth = 1;
+    let inString = false;
+    let escape = false;
+    i++;
+    while (i < text.length && depth > 0) {
+      const c = text[i];
+      if (escape) {
+        escape = false;
+      } else if (c === '\\') {
+        escape = true;
+      } else if (c === '"') {
+        if (inString) {
+          let j = i + 1;
+          while (j < text.length && /\s/.test(text[j])) j++;
+          if (j >= text.length || text[j] === ',' || text[j] === ':' || text[j] === '}' || text[j] === ']') {
+            inString = false;
+          }
+          // else: unescaped internal quote, stay inside string
+        } else {
+          inString = true;
+        }
+      } else if (!inString) {
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+      }
+      i++;
+    }
+    if (depth === 0) {
+      return text.slice(start, i);
+    }
+  }
+  return null;
+}
+
+// W8-T2c: locate a JSON wrapper ({"tool"/{"script"/{"response") that starts
+// mid-delta (position > 0), so the stream accumulator can split off the prose
+// prefix and buffer the wrapper instead of leaking raw JSON into the chat.
+function findMidTextJsonWrapperStart(text) {
+  if (!text || typeof text !== 'string') return -1;
+  const keys = ['{"tool"', '{"script"', '{"response"'];
+  let best = -1;
+  for (const k of keys) {
+    const idx = text.indexOf(k);
+    if (idx > 0 && (best === -1 || idx < best)) best = idx;
+  }
+  return best;
+}
+
 // v11.1-fix: Manual extraction for file-write tool JSONs with unescaped quotes.
 function extractWriteFileFromText(text) {
   if (!text || text.length < 30) return null;
@@ -335,7 +396,8 @@ function extractResponseFromCompleteJson(text) {
       return { type: 'tool', tool: parsed.tool, params: parsed.params || {} };
     }
     if (parsed.script !== undefined) {
-      return { type: 'script', script: parsed.script };
+      // W8-T2d: propagate the language so json_buffer sites don't hardcode 'bash'.
+      return { type: 'script', script: parsed.script, language: parsed.language };
     }
     // v10.24-fix: Tolerate malformed wrappers where Kimi sends {"success":true,"mode":"RESPONSE","message":"..."}
     if (parsed.message !== undefined && typeof parsed.message === 'string' && !parsed.tool && !parsed.script) {
@@ -2542,51 +2604,9 @@ class KimiBridge {
         }
       }
 
-      // v10.35-fix: Robustly extract the first complete JSON object using brace counting.
-      // This lets us grab a tool JSON even if the DOM contains surrounding text/fragments,
-      // as long as the outer braces are balanced.
-      // v11.1-fix: Tolerate unescaped double quotes inside string values (common when LLMs
-      // embed HTML/JS inside JSON). A closing quote is only real when the next significant
-      // character is , : } or ].
-      function extractFirstCompleteJsonObject(text) {
-        if (!text || text.length < 10) return null;
-        let i = 0;
-        while (i < text.length) {
-          if (text[i] !== '{') { i++; continue; }
-          const start = i;
-          let depth = 1;
-          let inString = false;
-          let escape = false;
-          i++;
-          while (i < text.length && depth > 0) {
-            const c = text[i];
-            if (escape) {
-              escape = false;
-            } else if (c === '\\') {
-              escape = true;
-            } else if (c === '"') {
-              if (inString) {
-                let j = i + 1;
-                while (j < text.length && /\s/.test(text[j])) j++;
-                if (j >= text.length || text[j] === ',' || text[j] === ':' || text[j] === '}' || text[j] === ']') {
-                  inString = false;
-                }
-                // else: unescaped internal quote, stay inside string
-              } else {
-                inString = true;
-              }
-            } else if (!inString) {
-              if (c === '{') depth++;
-              else if (c === '}') depth--;
-            }
-            i++;
-          }
-          if (depth === 0) {
-            return text.slice(start, i);
-          }
-        }
-        return null;
-      }
+      // v10.35-fix / W8-T2a: extractFirstCompleteJsonObject is now module-level
+      // (hoisted so _extractJsonToolCalls reuses the same string-aware walker).
+      // The call below resolves to the module function — behavior unchanged.
 
       // v11.1-fix: Manual extraction for writeFile/appendFile when JSON is malformed with
       // unescaped quotes inside the content string. We pull path and content directly so
@@ -7086,23 +7106,20 @@ class KimiBridge {
       tryParse(match[1]);
     }
 
-    // Strategy 2: Extract raw JSON objects from text
-    // Look for { ... } blocks that contain "tool" or "script" field (W6-T9:
-    // script-only JSON in prose must reach tryParse, which maps it to executeScript)
-    const jsonRegex = /\{[\s\S]*?"(?:tool|script)"[\s\S]*?\}/g;
-    while ((match = jsonRegex.exec(text)) !== null) {
-      // Try to find the complete JSON by counting braces
-      const start = match.index;
-      let braceCount = 0;
-      let end = start;
-      for (let i = start; i < text.length; i++) {
-        if (text[i] === '{') braceCount++;
-        if (text[i] === '}') braceCount--;
-        if (braceCount === 0) { end = i + 1; break; }
-      }
-      if (end > start) {
-        tryParse(text.slice(start, end));
-      }
+    // Strategy 2: Extract raw JSON objects from text (W8-T2a: string-aware
+    // walker — the old regex + naive brace counting cut the slice at braces
+    // inside string values, e.g. writeFile HTML/JS content, and JSON.parse
+    // then failed, silently dropping the tool). Walk every top-level object
+    // respecting string literals/escapes; tryParse filters tool/script JSON
+    // (W6-T9: script-only JSON maps to executeScript).
+    let cursor = 0;
+    while (cursor < text.length) {
+      const objText = extractFirstCompleteJsonObject(text, cursor);
+      if (!objText) break;
+      tryParse(objText);
+      const openIdx = text.indexOf('{', cursor);
+      if (openIdx === -1) break;
+      cursor = openIdx + objText.length;
     }
 
     return results;
@@ -7882,6 +7899,17 @@ class KimiBridge {
                 }
                 if (emit) {
                   let delta = emit;
+                  // W8-T2c: a JSON wrapper starting mid-delta (prose followed by
+                  // {"tool"/{"script"/{"response") used to leak raw JSON into the
+                  // chat and lose the tool. Emit the prose prefix as normal text
+                  // and let the existing accumulator path buffer the wrapper tail.
+                  if (!isAccumulatingJson && !looksLikeJsonStart(delta)) {
+                    const wrapperIdx = findMidTextJsonWrapperStart(delta);
+                    if (wrapperIdx > 0) {
+                      yield { type: 'response_delta', text: delta.slice(0, wrapperIdx) };
+                      delta = delta.slice(wrapperIdx);
+                    }
+                  }
                   // v9.4-fix: JSON Accumulation Buffer
                   // Once accumulating, ALL chunks go to the buffer — never emit as response_delta
                   if (isAccumulatingJson) {
@@ -7896,7 +7924,7 @@ class KimiBridge {
                         } else if (extracted.type === 'tool') {
                           yield { type: 'action_detected', action: { tool: extracted.tool, params: extracted.params }, source: 'json_buffer' };
                         } else if (extracted.type === 'script') {
-                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: 'bash' } }, source: 'json_buffer' };
+                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: extracted.language || 'bash' } }, source: 'json_buffer' };
                         }
                         // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
                         isComplete = true;
@@ -7918,7 +7946,7 @@ class KimiBridge {
                         } else if (extracted.type === 'tool') {
                           yield { type: 'action_detected', action: { tool: extracted.tool, params: extracted.params }, source: 'json_buffer' };
                         } else if (extracted.type === 'script') {
-                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: 'bash' } }, source: 'json_buffer' };
+                          yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: extracted.script, language: extracted.language || 'bash' } }, source: 'json_buffer' };
                         }
                         // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
                         isComplete = true;
@@ -7942,7 +7970,7 @@ class KimiBridge {
                     } else if (cleanR.type === 'tool') {
                       yield { type: 'action_detected', action: { tool: cleanR.tool, params: cleanR.params }, source: 'json_buffer' };
                     } else if (cleanR.type === 'script') {
-                      yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: cleanR.script, language: 'bash' } }, source: 'json_buffer' };
+                      yield { type: 'action_detected', action: { tool: 'executeScript', params: { code: cleanR.script, language: cleanR.language || 'bash' } }, source: 'json_buffer' };
                     }
                     // v10.24-fix: A complete JSON wrapper means Kimi is done — finish the stream.
                     isComplete = true;

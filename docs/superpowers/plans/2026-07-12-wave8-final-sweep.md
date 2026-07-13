@@ -24,12 +24,12 @@
 
 **Files:** `packages/kernel/kimi-bridge.cjs`, `packages/kernel/luna-extension/injected.js`.
 
-- [ ] (a) `_extractJsonToolCalls` counts braces inside strings — rewrite to walk with the string-aware logic of `extractFirstCompleteJsonObject` (exists at `:2483-2521` pre-W7): extract each top-level JSON object respecting string literals/escapes, then filter tool objects. Add a unit test with a writeFile whose content contains `{`/`}`/HTML/JS (the exact failing case) → tool parsed with full params.
-- [ ] (b) Extension fallback regex can't parse nested params (`injected.js:92-93`) — replace the non-greedy regex with a self-contained string-aware extractor (same algorithm, no dependencies — the extension cannot bundle jsonrepair in this wave). Keep the extension VERSION bump convention if the file has one (check manifest/injected version constant; the Wave 2 bump was 2.1.1-wave2 — bump patch and note owner must reload the extension).
-- [ ] (c) JSON wrapper accumulator misses mid-text wrappers (`:7556`) — currently only fires when delta starts with `{`. Extend: when a delta contains `{"tool"` / `{"script"` / `{"response"` mid-text, start buffering from that position (don't leak raw JSON to chat). Keep the existing start-with-`{` fast path.
-- [ ] (d) `language: extracted.language || 'bash'` at the three `json_buffer` script sites (bridge) instead of hardcoded `'bash'`.
-- [ ] Tests (+4): (a) unit nested-brace writeFile; (b) source-slice or unit of the extension extractor (nested params round-trip); (c) source-slice mid-text trigger; (d) source-slice language propagation.
-- [ ] Commit: `fix(bridge): string-aware tool-JSON extraction everywhere - no more tools lost to nested content`.
+- [x] (a) `_extractJsonToolCalls` counts braces inside strings — rewrite to walk with the string-aware logic of `extractFirstCompleteJsonObject` (exists at `:2483-2521` pre-W7): extract each top-level JSON object respecting string literals/escapes, then filter tool objects. Add a unit test with a writeFile whose content contains `{`/`}`/HTML/JS (the exact failing case) → tool parsed with full params.
+- [x] (b) Extension fallback regex can't parse nested params (`injected.js:92-93`) — replace the non-greedy regex with a self-contained string-aware extractor (same algorithm, no dependencies — the extension cannot bundle jsonrepair in this wave). Keep the extension VERSION bump convention if the file has one (check manifest/injected version constant; the Wave 2 bump was 2.1.1-wave2 — bump patch and note owner must reload the extension).
+- [x] (c) JSON wrapper accumulator misses mid-text wrappers (`:7556`) — currently only fires when delta starts with `{`. Extend: when a delta contains `{"tool"` / `{"script"` / `{"response"` mid-text, start buffering from that position (don't leak raw JSON to chat). Keep the existing start-with-`{` fast path.
+- [x] (d) `language: extracted.language || 'bash'` at the three `json_buffer` script sites (bridge) instead of hardcoded `'bash'`.
+- [x] Tests (+4): (a) unit nested-brace writeFile; (b) source-slice or unit of the extension extractor (nested params round-trip); (c) source-slice mid-text trigger; (d) source-slice language propagation.
+- [x] Commit: `fix(bridge): string-aware tool-JSON extraction everywhere - no more tools lost to nested content`.
 
 ## Task 3 — Frontend: no empty cards, internal tools hidden, replay dedup
 
