@@ -216,8 +216,6 @@ Provider só é **ativado** se 1-6 passam. Relatório gravado em
 
 ## Riscos (honestos)
 
-- **ChatGPT muda DOM com frequência e tem anti-bot intermitente.** Fallback
-  chains + aria/role mitigam; remap periódico vai acontecer — Fase 5 cobre.
 - Login OAuth com 2FA é manual do usuário (by design).
 - Discovery depende da Kimi saudável para a validação semântica; sem ela, gera
   config heurística com aviso (não bloqueia).
