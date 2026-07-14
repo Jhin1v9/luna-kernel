@@ -7427,12 +7427,15 @@ class KimiBridge {
       // Find input and inject text. W7-T4 review follow-up: Lexical-safe
       // fill — fill() desyncs the Lexical EditorState, and the send-button
       // click below would then silently send nothing.
-      const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+      const steerCfg = this._loadProviderConfig(this._resolveProvider(userId));
+      const steerInputChain = resolveChain(steerCfg, 'input', 'textarea, [contenteditable="true"]');
+      const { locator: inputLocator } = await firstMatchingLocator(page, steerInputChain);
       await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(300);
 
       // Click send or press Enter
-      const sendBtn = page.locator('.send-button-container').first();
+      const steerSendChain = resolveChain(steerCfg, 'sendButton', '.send-button-container');
+      const { locator: sendBtn } = await firstMatchingLocator(page, steerSendChain);
       const hasSendBtn = await sendBtn.count() > 0;
 
       if (hasSendBtn) {
