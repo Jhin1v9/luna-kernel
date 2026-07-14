@@ -22,7 +22,7 @@ See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits 
 
 ## Current focus
 
-Provider Discovery System — phased foundation-first design written (`packages/kernel/plans/2026-07-14-provider-discovery-design.md`); Phase 0 implementation plan written and revised (`plans/2026-07-14-pds-phase0-foundation.md`, 12 TDD tasks: config-driven selectors, dead CDP removal; revision 0baf482 sets kimi.json as untouchable per owner directive, Kimi defaults as in-code fallbacks, 299-test target). Implementation not started.
+Provider Discovery System — Phase 0 implementation started (TDD, per `plans/2026-07-14-pds-phase0-foundation.md`): `lib/provider-selectors.cjs` (v1/v2 fallback chains + `waitForChain`) and deepseek.json config v2 (newChat added, cdpPatterns removed) landed with `wave11-provider-config.test.cjs`; kimi.json stays untouched per owner directive (Kimi defaults remain in-code fallbacks). Remaining Phase 0 tasks (dead CDP removal, config wiring) pending.
 
 ## How to run
 
