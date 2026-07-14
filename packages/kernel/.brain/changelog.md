@@ -2,6 +2,7 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-14 0baf482] docs(plans): PDS Fase 0 plan revision — kimi.json stays untouched (owner directive) with Kimi defaults kept as in-code fallbacks; expected test totals adjusted to 299
 - [2026-07-14 796e781] docs(plans): PDS Fase 0 implementation plan — added `plans/2026-07-14-pds-phase0-foundation.md`: 12 TDD tasks covering config-driven selectors and dead CDP removal
 - [2026-07-14 b4eddcb] docs(plans): PDS — drop anti-bot risk note per owner — removed the anti-bot risk note from the provider-discovery plan after owner confirmed no incidents with Kimi/DeepSeek automation
 - [2026-07-14 b036230] docs(plans): Provider Discovery System design — added `plans/2026-07-14-provider-discovery-design.md`: phased foundation-first plan (config-wiring refactor, deterministic extractor, Kimi validation, test suite, per-user provider configs)

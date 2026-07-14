@@ -29,6 +29,7 @@
 - **2026-07-11 — Docs split by audience.** `.agents/` + `.brain/` are written in English for AI agents; the human-facing guide is in Spanish. Motive: each audience reads its own language without duplicated documents.
 - **2026-07-11 — Old audits (v10.8/v10.32) declared unreliable.** They are not a source of truth for bugs; the bug list in `.brain/bugs.md` will be rebuilt manually by the owner, verified against code.
 - **2026-07-11 — Living memory automated via post-commit hook.** Commit 71a5740 added `.githooks/post-commit` + `scripts/luna-brain-sync.sh`: after each commit an agent rewrites `.brain/` from the diff, so `changelog.md` is no longer hand-edited. Hardened in 81d0158 (snapshot queue, dead-hash skip, injection guard, flock). Motive: keep `.brain/` current without relying on manual discipline.
+- **2026-07-14 — PDS Phase 0: `kimi.json` stays untouched.** Owner directive (commit 0baf482, recorded in the Phase 0 plan, Task 2 note): the provider-config refactor must not modify the production Kimi config; Kimi's defaults live as hardcoded fallbacks in `kimi-bridge.cjs`, so nothing in Kimi's behavior depends on the file. Motive: the Kimi provider is in production and working — rewriting its config adds risk for zero behavioral gain.
 
 ## 2026-07-11 — External architecture review (ChatGPT) evaluated by owner + code agent
 
