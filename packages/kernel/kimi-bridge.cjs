@@ -3843,6 +3843,10 @@ class KimiBridge {
    * so the turn errors visibly instead of hanging silently (Wave 6 contract).
    */
   async _submitWithVerification(page, inputLocator, text, options = {}) {
+    const submitCfg = this._loadProviderConfig(options.provider || 'kimi');
+    const submitAssistantChain = resolveChain(submitCfg, 'assistantMessage', '.segment-assistant');
+    const submitSendChain = resolveChain(submitCfg, 'sendButton', '.send-button-container');
+    const submitStopChain = resolveChain(submitCfg, 'stopButton', '.stop-button-container');
     const prefix = (text || '').slice(0, 100);
     // Whitespace-normalized comparison: contenteditable innerText can render
     // whitespace differently from the inserted string (collapsed runs, NBSP).
@@ -3854,15 +3858,21 @@ class KimiBridge {
       );
       return (current || '').replace(/\s+/g, ' ').trim();
     };
-    const readState = () => page.evaluate(() => {
-      const assistants = document.querySelectorAll('.segment-assistant').length;
-      const sendBtn = document.querySelector('.send-button-container');
+    const readState = () => page.evaluate(({ assistantChain, sendChain, stopChain }) => {
+      const firstMatch = (sels) => {
+        for (const s of sels) { const el = document.querySelector(s); if (el) return el; }
+        return null;
+      };
+      const assistants = assistantChain.length
+        ? document.querySelectorAll(assistantChain.join(',')).length
+        : 0;
+      const sendBtn = firstMatch(sendChain);
       const sendDisabled = sendBtn
-        ? (sendBtn.classList.contains('disabled') || sendBtn.getAttribute('aria-disabled') === 'true')
+        ? (sendBtn.classList.contains('disabled') || sendBtn.getAttribute('aria-disabled') === 'true' || sendBtn.disabled === true)
         : false;
-      const generating = !!document.querySelector('.stop-button-container');
+      const generating = !!firstMatch(stopChain);
       return { assistants, sendDisabled, generating };
-    }).catch(() => null);
+    }, { assistantChain: submitAssistantChain, sendChain: submitSendChain, stopChain: submitStopChain }).catch(() => null);
 
     // Pre-submit baseline. Only CHANGES relative to this state confirm the
     // submit — a stop button left over from a previous turn or a send button
@@ -3898,11 +3908,11 @@ class KimiBridge {
           await inputLocator.click({ timeout: 5000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
           await page.keyboard.press('Enter');
         } else {
-          const sendBtn = page.locator('.send-button-container').first();
+          const { locator: sendBtn } = await firstMatchingLocator(page, submitSendChain);
           if (await sendBtn.count() > 0) {
             await sendBtn.click({ timeout: 5000 });
           } else {
-            log.warn('[_submitWithVerification] .send-button-container not found — click strategy skipped');
+            log.warn('[_submitWithVerification] send button not found via provider chain — click strategy skipped');
           }
         }
       } catch (e) {
@@ -3936,7 +3946,7 @@ class KimiBridge {
       log.warn(`[_submitWithVerification] attempt ${attempt + 1} ('${strategy}') NOT confirmed — no submit transition observed`);
     }
 
-    throw new Error('SEND_NOT_CONFIRMED: texto permanece no input da Kimi — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)');
+    throw new Error(`SEND_NOT_CONFIRMED: texto permanece no input do ${providerDisplayName(submitCfg)} — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)`);
   }
 
   async sendMessage(userId, text, options = {}, provider = 'kimi') {
