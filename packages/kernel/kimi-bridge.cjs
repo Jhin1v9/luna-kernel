@@ -4677,27 +4677,33 @@ class KimiBridge {
   }
 
   /**
-   * Check login state on a page using browser-native selectors (no :has-text()).
+   * Check login state on a page using the provider's loginIndicator/appContent
+   * selector chains (PDS Fase 0). A forced-auth URL (/sign_in, /login, /auth)
+   * is decisive regardless of DOM content — DeepSeek keeps a textarea-less
+   * page on chat.deepseek.com/sign_in when logged out.
    */
-  async _checkLoginState(page) {
+  async _checkLoginState(page, provider = 'kimi') {
     try {
-      return await page.evaluate(() => {
+      const loginCfg = this._loadProviderConfig(provider);
+      const loginChain = resolveChain(loginCfg, 'loginIndicator', 'a[href*="login"], a[href*="signin"]');
+      const appChain = resolveChain(loginCfg, 'appContent', 'textarea[placeholder], [contenteditable="true"]');
+      return await page.evaluate(({ loginChain, appChain }) => {
+        const url = location.href;
+        if (/\/(sign[_-]?in|login|auth)(\/|$|\?|#)/i.test(url)) {
+          return { loggedIn: false, loginRequired: true, url };
+        }
+        const firstMatch = (sels) => {
+          for (const s of sels) { try { if (document.querySelector(s)) return true; } catch (e) {} }
+          return false;
+        };
+        const hasLoginBtn = firstMatch(loginChain) || !!document.querySelector('input[type="password"]');
+        const hasChatInput = firstMatch(appChain) || !!document.querySelector('div[role="textbox"]');
         const bodyText = document.body?.innerText?.toLowerCase() || '';
-        // Look for actual login indicators
-        const hasLoginBtn = !!(
-          document.querySelector('a[href*="login"], a[href*="signin"], button[class*="login"], button[class*="signin"]') ||
-          document.querySelector('input[type="password"]')
-        );
-        const hasChatInput = !!(
-          document.querySelector('textarea[placeholder], [contenteditable="true"]') ||
-          document.querySelector('div[role="textbox"]')
-        );
         const hasLoginText = bodyText.includes('log in') || bodyText.includes('sign in') || bodyText.includes('登录') || bodyText.includes('entrar');
-        const hasWelcome = bodyText.includes('welcome') || bodyText.includes('kimi');
         // Consider logged in if we see chat input AND no login text/button
         const loggedIn = hasChatInput && !hasLoginText && !hasLoginBtn;
-        return { loggedIn, hasLoginBtn, hasChatInput, hasLoginText, hasWelcome, url: location.href };
-      });
+        return { loggedIn, hasLoginBtn, hasChatInput, hasLoginText, url };
+      }, { loginChain, appChain });
     } catch (e) {
       return { loggedIn: false, error: e.message };
     }
@@ -4721,7 +4727,7 @@ class KimiBridge {
     }
 
     // Check current state
-    const state = await this._checkLoginState(page);
+    const state = await this._checkLoginState(page, provider);
     if (state.loggedIn) {
       return { loggedIn: true, message: `Já está logado em ${providerCfg.displayName}`, url: state.url, provider };
     }
@@ -4750,7 +4756,7 @@ class KimiBridge {
     }
 
     // Quick re-check after navigation
-    const state2 = await this._checkLoginState(page);
+    const state2 = await this._checkLoginState(page, provider);
     if (state2.loggedIn) {
       return { loggedIn: true, message: `Já está logado em ${providerCfg.displayName}`, url: state2.url, provider };
     }
@@ -4778,7 +4784,7 @@ class KimiBridge {
     let lastState = null;
 
     while (Date.now() - start < maxWaitMs) {
-      const state = await this._checkLoginState(page);
+      const state = await this._checkLoginState(page, this._resolveProvider(userId));
       lastState = state;
       if (state.loggedIn) {
         // Update stored chat URL
