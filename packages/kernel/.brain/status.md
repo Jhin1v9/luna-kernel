@@ -22,7 +22,7 @@ See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits 
 
 ## Current focus
 
-Provider Discovery System — phased foundation-first design written (`packages/kernel/plans/2026-07-14-provider-discovery-design.md`): config-wiring refactor, deterministic extractor, Kimi validation, test suite, per-user provider configs. Implementation not started.
+Provider Discovery System — phased foundation-first design written (`packages/kernel/plans/2026-07-14-provider-discovery-design.md`); Phase 0 implementation plan written (`plans/2026-07-14-pds-phase0-foundation.md`, 12 TDD tasks: config-driven selectors, dead CDP removal). Implementation not started.
 
 ## How to run
 
