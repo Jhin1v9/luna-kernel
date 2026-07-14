@@ -33,6 +33,7 @@ const { makeDomEventDedupKey } = require('./lib/tool-dedup-key.cjs');
 // modal/banner outside the response bubbles.
 const { scanPageContextLimit } = require('./bridge-libs/dom-scripts/poll-dom-structure.js');
 const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors, getProviderApiPatterns } = require('./provider-loader.cjs');
+const { resolveChain, providerDisplayName, firstMatchingLocator, waitForChain } = require('./lib/provider-selectors.cjs');
 
 // Lazy-load turndown — fail gracefully if not installed
 let TurndownService = null;
@@ -4037,11 +4038,15 @@ class KimiBridge {
       const actualMode = await this._detectActualMode(page) || session.mode || 'instant';
       log.info(`User ${hashUserId(userId)} sending message (len=${text.length}, mode=${actualMode}, url=${page.url()})`);
 
-      // Use locator (auto-resolves at action time, never stale)
-      const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+      // Provider-configured input chain (PDS Fase 0). The hardcoded
+      // 'textarea, [contenteditable]' pair stays as the final fallback, so
+      // Kimi behaves exactly as before.
+      const inputProviderCfg = this._loadProviderConfig(resolvedProvider);
+      const inputChain = resolveChain(inputProviderCfg, 'input', 'textarea, [contenteditable="true"]');
+      const { locator: inputLocator } = await firstMatchingLocator(page, inputChain);
       const inputCount = await inputLocator.count();
       if (inputCount === 0) {
-        throw new Error('Input field not found on Kimi Web');
+        throw new Error(`Input field not found on ${providerDisplayName(inputProviderCfg)}`);
       }
 
       // Bring page to front (Chrome may throttle inactive tabs)
