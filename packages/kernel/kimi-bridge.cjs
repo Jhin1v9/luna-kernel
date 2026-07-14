@@ -4071,7 +4071,9 @@ class KimiBridge {
       let targetAssistantIndex = -1;
       if (resolvedProvider === 'kimi') {
         let newAssistantWaitCount = 0;
-        while (targetAssistantIndex < 0 && newAssistantWaitCount < 100) { // 10s
+        // Poll at 2Hz instead of 10Hz to stop hammering Chrome with
+        // page.evaluate during the assistant-detection window (~10s max).
+        while (targetAssistantIndex < 0 && newAssistantWaitCount < 20) { // 20 * 500ms = 10s
           const assistants = await page.evaluate(() => {
             const nodes = document.querySelectorAll('.segment-assistant');
             return Array.from(nodes).map((el, i) => ({
@@ -4088,7 +4090,7 @@ class KimiBridge {
               log.info(`[sendMessage] New assistant detected at index ${targetAssistantIndex}, textLen=${newAssistant.textLength}`);
             }
           }
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 500));
           newAssistantWaitCount++;
         }
       } else {
@@ -7764,10 +7766,12 @@ class KimiBridge {
           // W6-T1: bounded wait (NEW_ASSISTANT_TIMEOUT_MS above) — Chrome may
           // lag on large prompts, but a broken selector or failed send now
           // errors out instead of hanging forever.
-          if (++newAssistantWaitCount > 100) {
-            log.info(`[sendMessageStream] New assistant not detected yet (wait=${newAssistantWaitCount*100}ms), continuing to wait...`);
+          // 2026-07-14: throttle poll from 10Hz to 2Hz; the 41s wait in the
+          // live test was observed hammering page.evaluate and pinning Chrome.
+          if (++newAssistantWaitCount > 20) {
+            log.info(`[sendMessageStream] New assistant not detected yet (wait=${newAssistantWaitCount*500}ms), continuing to wait...`);
           }
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 500));
         }
       } else {
         log.info(`[DEBUG-LUNA] Skipping Kimi assistant detection for provider=${resolvedProvider}`);

@@ -135,6 +135,10 @@ setInterval(() => {
 }, 60000); // check every minute
 
 async function dbRunWithRetry(sql, params, retries = 3) {
+  if (!db.DB_ENABLED) {
+    // PostgreSQL is not available; JSON fallback is the primary store.
+    return null;
+  }
   let lastErr;
   for (let i = 0; i < retries; i++) {
     try {
