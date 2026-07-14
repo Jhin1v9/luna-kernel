@@ -90,3 +90,23 @@ test('T1i: waitForChain retorna locator null no timeout', async () => {
   assert.strictEqual(locator, null);
   assert.strictEqual(selector, null);
 });
+
+// ── config validation (Task 2) — DeepSeek only; kimi.json is untouched (owner directive) ──
+const fs = require('node:fs');
+const path = require('node:path');
+
+const CONFIGS_DIR = path.join(__dirname, '..', 'provider-configs');
+const REQUIRED_ROLES = ['input', 'sendButton', 'stopButton', 'newChat', 'generatingIndicator', 'loginIndicator', 'appContent'];
+
+test('T2-deepseek: roles obrigatórios presentes e não-vazios', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'deepseek.json'), 'utf8'));
+  for (const role of REQUIRED_ROLES) {
+    assert.ok(normalizeChain(cfg.selectors?.[role]).length > 0, `deepseek.selectors.${role} vazio/ausente`);
+  }
+});
+
+test('T2-deepseek: apiEndpoints não-vazio, sem cdpPatterns (dead code)', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'deepseek.json'), 'utf8'));
+  assert.ok(Array.isArray(cfg.apiEndpoints) && cfg.apiEndpoints.length > 0);
+  assert.strictEqual(cfg.cdpPatterns, undefined);
+});

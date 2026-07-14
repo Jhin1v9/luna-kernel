@@ -10,6 +10,7 @@
     "input": "textarea[placeholder='Message DeepSeek'], textarea[placeholder='Mensagem para DeepSeek'], textarea._27c9245, textarea",
     "sendButton": "div[role='button'].ds-button--primary.ds-button--filled.ds-button--circle, button[type='submit']",
     "stopButton": "div[role='button'].ds-button--primary svg[class*='stop'], div[role='button'].ds-button--primary [class*='stop'], [class*='ds-stop-button']",
+    "newChat": "a[href='/'], button:has-text('New chat'), button:has-text('Nova conversa')",
     "generatingIndicator": ".ds-loading, [class*='loading'], [class*='generating'], .ds-spin",
     "responseContainer": ".ds-message._63c77b1, .ds-message",
     "assistantMessage": ".ds-message:last-child",
@@ -20,10 +21,6 @@
     "thinking": "",
     "actionButtons": ""
   },
-  "cdpPatterns": [
-    { "urlPattern": "*deepseek*api*", "requestStage": "Response" },
-    { "urlPattern": "*chat.deepseek.com/api*", "requestStage": "Response" }
-  ],
   "apiEndpoints": [
     "/api/chat",
     "/api/v0/chat",
