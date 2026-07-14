@@ -2,6 +2,7 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-14 b4a7686] docs(kernel): PDS Fase 0 — header comment of the network interceptor in `kimi-bridge.cjs` updated to reflect the removal of the CDP Fetch branch (review T10)
 - [2026-07-14 848bf4c] fix(kernel): PDS Fase 0 — dead CDP Fetch branch removed from `kimi-bridge.cjs` (fixes bugs.md:23 `_buildFetchPatterns is not a function`), `_isChatUrl` now resolves via provider config, `getProviderApiPatterns` dropped; wave11 tests added
 - [2026-07-14 af889b4] refactor(kernel): PDS Fase 0 — `connect()` in `kimi-bridge.cjs` now restores localStorage per-provider and derives the cookie-sync domain from the provider `baseUrl`
 - [2026-07-14 ca4c62b] fix(kernel): PDS Fase 0 — `_checkLoginState` in `kimi-bridge.cjs` now resolves via the provider config chains and treats `/sign_in` URLs as logged-out (DeepSeek bugs.md:22 item C)
