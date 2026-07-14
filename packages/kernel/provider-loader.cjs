@@ -65,10 +65,6 @@ function getProviderUiSelectors(providerConfig) {
   };
 }
 
-function getProviderApiPatterns(providerConfig) {
-  return providerConfig.cdpPatterns || [];
-}
-
 module.exports = {
   loadProviderConfig,
   listProviders,
@@ -78,6 +74,5 @@ module.exports = {
   getProviderFeature,
   getProviderInputSelector,
   getProviderResponseSelectors,
-  getProviderUiSelectors,
-  getProviderApiPatterns
+  getProviderUiSelectors
 };

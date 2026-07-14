@@ -110,3 +110,38 @@ test('T2-deepseek: apiEndpoints não-vazio, sem cdpPatterns (dead code)', () => 
   assert.ok(Array.isArray(cfg.apiEndpoints) && cfg.apiEndpoints.length > 0);
   assert.strictEqual(cfg.cdpPatterns, undefined);
 });
+
+// ── ProviderNetworkInterceptor (Task 10) ──
+const { ProviderNetworkInterceptor } = require('../kimi-bridge.cjs');
+
+test('T10a: _isChatUrl casa todos os padrões legados mesmo com kimi.json intocada', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'kimi.json'), 'utf8'));
+  const interceptor = new ProviderNetworkInterceptor(null, cfg);
+  for (const url of [
+    'https://www.kimi.com/api/chat/abc',
+    'https://www.kimi.com/kimi.gateway.chat/x',
+    'https://www.kimi.com/apiv2/kimi.chat/y',
+    'https://www.kimi.com/kimi.chat.v1.ChatService/ChatCompletion',
+  ]) {
+    assert.ok(interceptor._isChatUrl(url), `kimi deve casar ${url} (config ∪ defaults legados)`);
+  }
+  assert.strictEqual(interceptor._isChatUrl('https://www.kimi.com/static/app.js'), false);
+});
+
+test('T10b: _isChatUrl usa apiEndpoints do config (deepseek)', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'deepseek.json'), 'utf8'));
+  const interceptor = new ProviderNetworkInterceptor(null, cfg);
+  assert.ok(interceptor._isChatUrl('https://chat.deepseek.com/api/v0/chat/completion'));
+  assert.strictEqual(interceptor._isChatUrl('https://chat.deepseek.com/static/app.js'), false);
+});
+
+test('T10c: start() não tenta CDP Fetch (ramo morto removido)', async () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'kimi.json'), 'utf8'));
+  let listenerRegistered = false;
+  const fakePage = { on: () => { listenerRegistered = true; }, off: () => {} };
+  const interceptor = new ProviderNetworkInterceptor(fakePage, cfg);
+  await interceptor.start();
+  assert.strictEqual(listenerRegistered, true);
+  assert.strictEqual(interceptor._cdpSession, null);
+  interceptor.stop();
+});

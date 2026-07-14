@@ -32,7 +32,7 @@ const { makeDomEventDedupKey } = require('./lib/tool-dedup-key.cjs');
 // detects Kimi's "conversation too long" notice even when it renders as a
 // modal/banner outside the response bubbles.
 const { scanPageContextLimit } = require('./bridge-libs/dom-scripts/poll-dom-structure.js');
-const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors, getProviderApiPatterns } = require('./provider-loader.cjs');
+const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors } = require('./provider-loader.cjs');
 const { resolveChain, providerDisplayName, firstMatchingLocator, waitForChain } = require('./lib/provider-selectors.cjs');
 
 // Lazy-load turndown — fail gracefully if not installed
@@ -759,57 +759,12 @@ class ProviderNetworkInterceptor {
   async start() {
     if (this._active) return;
     this._active = true;
-
-    // v7.5: Use CDP Fetch domain for real-time response interception
-    // This captures SSE chunks as they arrive, not just at the end.
-    try {
-      this._cdpSession = await this.page.context().newCDPSession(this.page);
-      
-      // Build patterns from provider config + fallback
-      const patterns = this._buildFetchPatterns();
-      
-      await this._cdpSession.send('Fetch.enable', { patterns });
-
-      this._cdpSession.on('Fetch.requestPaused', async (event) => {
-        const { requestId, responseStatusCode, responseHeaders } = event;
-
-        // Only intercept successful responses
-        if (responseStatusCode && responseStatusCode >= 200 && responseStatusCode < 300) {
-          this._requestId = requestId;
-          this.lastActivity = Date.now();
-
-          try {
-            // Get response body (may be partial for streaming)
-            const bodyResult = await this._cdpSession.send('Fetch.getResponseBody', { requestId });
-            if (bodyResult.body) {
-              const text = bodyResult.base64Encoded
-                ? Buffer.from(bodyResult.body, 'base64').toString('utf-8')
-                : bodyResult.body;
-              // v8.7-fix: Limit buffer size to prevent memory growth / crash
-              if (this._responseBuffer.length > 10 * 1024 * 1024) {
-                this._responseBuffer = this._responseBuffer.slice(-5 * 1024 * 1024);
-              }
-              this._responseBuffer += text;
-              this._parseSse(text);
-            }
-          } catch (e) {
-            // Body may not be available yet for streaming responses
-          }
-        }
-
-        // Always continue the request so the page works normally
-        try {
-          await this._cdpSession.send('Fetch.continueRequest', { requestId });
-        } catch (e) {
-          // Request may have been already continued
-        }
-      });
-
-      log.info('[KimiNetworkInterceptor] Started — listening via CDP Fetch domain');
-    } catch (e) {
-      log.warn(`[KimiNetworkInterceptor] CDP Fetch failed (${e.message}), falling back to page.on('response')`);
-      this._startPlaywrightFallback();
-    }
+    // PDS Fase 0: the CDP Fetch branch was removed — it depended on
+    // _buildFetchPatterns, which never existed, so every start() threw and
+    // fell back to the Playwright listener anyway. The listener is now the
+    // sole interception path.
+    this._startPlaywrightFallback();
+    log.info('[ProviderNetworkInterceptor] Started — listening via page.on("response")');
   }
 
   _startPlaywrightFallback() {
@@ -861,14 +816,20 @@ class ProviderNetworkInterceptor {
   }
 
   _isChatUrl(url) {
-    return typeof url === 'string' && (
-      url.includes('/api/chat') ||
-      url.includes('/ChatService/Chat') ||
-      url.includes('/kimi.gateway.chat') ||
-      url.includes('/apiv2/kimi.chat') ||
-      url.includes('/kimi.chat.v1.ChatService') ||
-      url.includes('/ChatService/ChatCompletion')
-    );
+    if (typeof url !== 'string') return false;
+    // PDS Fase 0: provider-config apiEndpoints UNIONED with the legacy
+    // hardcoded defaults — kimi.json stays untouched (owner directive) and
+    // Kimi's URL coverage is identical to the pre-refactor hardcoded list.
+    const endpoints = this.providerConfig?.apiEndpoints || [];
+    const defaults = [
+      '/api/chat',
+      '/ChatService/Chat',
+      '/kimi.gateway.chat',
+      '/apiv2/kimi.chat',
+      '/kimi.chat.v1.ChatService',
+      '/ChatService/ChatCompletion',
+    ];
+    return endpoints.concat(defaults).some(ep => url.includes(ep));
   }
 
   _parseSse(text) {
@@ -8764,6 +8725,8 @@ module.exports = {
   getKimiBridge,
   closeKimiBridge,
   KimiLogger,
+  // PDS Fase 0: exported for unit tests (wave11).
+  ProviderNetworkInterceptor,
   KimiSessionStore,
   // W6-T9: exported for unit tests. _extractJsonToolCalls is a pure method
   // (verified: no `this` usage in its body), so a prototype-level wrapper is safe.
