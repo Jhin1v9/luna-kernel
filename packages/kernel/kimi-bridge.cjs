@@ -1045,15 +1045,18 @@ class KimiBridge {
     try {
       // v10.36-fix: Click the native "New Chat" button when available.
       // This preserves login state because it does not reload the origin.
-      const newChatBtn = page.locator('.new-chat-btn').first();
-      if (await newChatBtn.count() > 0) {
+      // PDS Fase 0: provider-configured chain, .new-chat-btn as final fallback.
+      const newChatCfg = this._loadProviderConfig(provider);
+      const newChatChain = resolveChain(newChatCfg, 'newChat', '.new-chat-btn');
+      const { locator: newChatBtn, selector: newChatSel } = await firstMatchingLocator(page, newChatChain);
+      if (newChatSel && await newChatBtn.count() > 0) {
         const isVisible = await newChatBtn.evaluate(el => {
           const r = el.getBoundingClientRect();
           return r.width > 0 && r.height > 0;
         }).catch(() => false);
         if (isVisible) {
           await newChatBtn.click({ timeout: 10000 });
-          log.info(`[_openNewChat] Clicked .new-chat-btn for provider=${provider}`);
+          log.info(`[_openNewChat] Clicked '${newChatSel}' for provider=${provider}`);
           await page.waitForTimeout(1500);
           const urlAfterClick = page.url();
           log.info(`[_openNewChat] URL after click: ${urlAfterClick}`);
