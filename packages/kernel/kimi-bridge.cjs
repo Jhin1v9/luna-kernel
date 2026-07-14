@@ -737,10 +737,10 @@ class Semaphore {
 // ============================================================
 // PROVIDER NETWORK INTERCEPTOR v7.5 — Multi-Provider
 // ============================================================
-// Replaces fragile JavaScript injection with native CDP network interception.
-// Uses Chrome DevTools Protocol Fetch domain to intercept SSE streams in
-// real-time, server-side. Immune to page anti-tampering, SPA navigation,
-// React resets, or fetch restoration.
+// Intercepts provider responses server-side via the Playwright
+// page.on('response') listener (PDS Fase 0: the CDP Fetch branch was
+// removed — it never worked, see bugs.md:23). Immune to page
+// anti-tampering, SPA navigation, React resets, or fetch restoration.
 
 class ProviderNetworkInterceptor {
   constructor(page, providerConfig) {
