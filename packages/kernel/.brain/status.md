@@ -22,7 +22,7 @@ See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits 
 
 ## Current focus
 
-Provider Discovery System — Phase 0 implementation started (TDD, per `plans/2026-07-14-pds-phase0-foundation.md`): `lib/provider-selectors.cjs` (v1/v2 fallback chains + `waitForChain`) and deepseek.json config v2 (newChat added, cdpPatterns removed) landed with `wave11-provider-config.test.cjs`; kimi.json stays untouched per owner directive (Kimi defaults remain in-code fallbacks). Remaining Phase 0 tasks (dead CDP removal, config wiring) pending.
+Provider Discovery System — Phase 0 implementation ongoing (TDD, per `plans/2026-07-14-pds-phase0-foundation.md`): `lib/provider-selectors.cjs` (v1/v2 fallback chains + `waitForChain`), deepseek.json config v2 (newChat added, cdpPatterns removed), and the sendMessage input lookup in `kimi-bridge.cjs` now resolves via the provider config selector chain; kimi.json stays untouched per owner directive (Kimi defaults remain in-code fallbacks). Remaining Phase 0 tasks (dead CDP removal, further config wiring) pending.
 
 ## How to run
 
