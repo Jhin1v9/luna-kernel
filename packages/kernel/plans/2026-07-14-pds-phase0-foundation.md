@@ -16,8 +16,7 @@
 
 - **Create:** `packages/kernel/lib/provider-selectors.cjs` — normalização de chains + resolução/wait contra page.
 - **Create:** `packages/kernel/tests/wave11-provider-config.test.cjs` — testes do helper, dos configs e do interceptor.
-- **Modify:** `packages/kernel/provider-configs/kimi.json` — adiciona `stopButton`, `newChat`, `generatingIndicator`; completa `apiEndpoints`; remove `cdpPatterns`.
-- **Modify:** `packages/kernel/provider-configs/deepseek.json` — adiciona `newChat`; remove `cdpPatterns`.
+- **Modify:** `packages/kernel/provider-configs/deepseek.json` — adiciona `newChat`; remove `cdpPatterns`. **`kimi.json` NÃO é modificada (diretriz do dono — provider em produção); os defaults da Kimi vivem como fallback no código.**
 - **Modify:** `packages/kernel/kimi-bridge.cjs` — 8 pontos de wiring + interceptor + export para testes.
 - **Modify:** `packages/kernel/provider-loader.cjs` — remove `getProviderApiPatterns` (dead code).
 
@@ -236,123 +235,68 @@ cd /home/jhin/.luna-kernel && git add packages/kernel/lib/provider-selectors.cjs
 
 ---
 
-### Task 2: Configs v2 (kimi.json + deepseek.json) + teste de validação
+### Task 2: Config v2 do DeepSeek + teste de validação
+
+> **Diretriz do dono (2026-07-14): `kimi.json` NÃO é tocada nesta fase** — provider em
+> produção, funcionando. Todos os defaults da Kimi vivem como fallback hardcoded no
+> código (Tasks 3-10), então nada no comportamento dela depende do config.
 
 **Files:**
-- Modify: `packages/kernel/provider-configs/kimi.json`
-- Modify: `packages/kernel/provider-configs/deepseek.json`
+- Modify: `packages/kernel/provider-configs/deepseek.json` (adiciona `newChat`, remove `cdpPatterns`)
 - Test: `packages/kernel/tests/wave11-provider-config.test.cjs`
-
-kimi.json precisa de: `stopButton`, `newChat`, `generatingIndicator` (hoje hardcoded como `.stop-button-container` e `.new-chat-btn`) e `apiEndpoints` completo (hoje o interceptor hardcoded também cobre `/api/chat`, `/ChatService/Chat`, `/ChatService/ChatCompletion`). deepseek.json precisa de `newChat`. Ambos perdem `cdpPatterns` (dead code — Task 10).
 
 - [ ] **Step 1: Escrever o teste que falha**
 
 Adicionar ao final de `tests/wave11-provider-config.test.cjs`:
 
 ```js
-// ── config validation (Task 2) ──
+// ── config validation (Task 2) — DeepSeek only; kimi.json is untouched (owner directive) ──
 const fs = require('node:fs');
 const path = require('node:path');
 
 const CONFIGS_DIR = path.join(__dirname, '..', 'provider-configs');
 const REQUIRED_ROLES = ['input', 'sendButton', 'stopButton', 'newChat', 'generatingIndicator', 'loginIndicator', 'appContent'];
 
-for (const provider of ['kimi', 'deepseek']) {
-  test(`T2-${provider}: roles obrigatórios presentes e não-vazios`, () => {
-    const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, `${provider}.json`), 'utf8'));
-    for (const role of REQUIRED_ROLES) {
-      assert.ok(normalizeChain(cfg.selectors?.[role]).length > 0, `${provider}.selectors.${role} vazio/ausente`);
-    }
-  });
-
-  test(`T2-${provider}: apiEndpoints não-vazio, sem cdpPatterns (dead code)`, () => {
-    const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, `${provider}.json`), 'utf8'));
-    assert.ok(Array.isArray(cfg.apiEndpoints) && cfg.apiEndpoints.length > 0);
-    assert.strictEqual(cfg.cdpPatterns, undefined);
-  });
-}
-
-test('T2-kimi: apiEndpoints cobrem os padrões antes hardcoded no interceptor', () => {
-  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'kimi.json'), 'utf8'));
-  for (const ep of ['/api/chat', '/ChatService/Chat', '/ChatService/ChatCompletion', '/kimi.gateway.chat', '/apiv2/kimi.chat', '/kimi.chat.v1.ChatService']) {
-    assert.ok(cfg.apiEndpoints.includes(ep), `kimi.apiEndpoints sem ${ep}`);
+test('T2-deepseek: roles obrigatórios presentes e não-vazios', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'deepseek.json'), 'utf8'));
+  for (const role of REQUIRED_ROLES) {
+    assert.ok(normalizeChain(cfg.selectors?.[role]).length > 0, `deepseek.selectors.${role} vazio/ausente`);
   }
+});
+
+test('T2-deepseek: apiEndpoints não-vazio, sem cdpPatterns (dead code)', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'deepseek.json'), 'utf8'));
+  assert.ok(Array.isArray(cfg.apiEndpoints) && cfg.apiEndpoints.length > 0);
+  assert.strictEqual(cfg.cdpPatterns, undefined);
 });
 ```
 
 - [ ] **Step 2: Rodar e verificar que falha**
 
 Run: `cd /home/jhin/.luna-kernel/packages/kernel && node --test tests/wave11-provider-config.test.cjs`
-Expected: FAIL — `kimi.selectors.stopButton vazio/ausente` (e afins)
+Expected: FAIL — `deepseek.selectors.newChat vazio/ausente`
 
-- [ ] **Step 3: Atualizar kimi.json**
+- [ ] **Step 3: Atualizar deepseek.json**
 
-Substituir o conteúdo de `provider-configs/kimi.json` por:
-
-```json
-{
-  "name": "kimi",
-  "displayName": "Kimi Web",
-  "baseUrl": "https://www.kimi.com",
-  "modeUrls": {
-    "instant": "https://www.kimi.com/en?chat_enter_method=new_chat",
-    "thinking": "https://www.kimi.com/en?chat_enter_method=new_chat"
-  },
-  "selectors": {
-    "input": ".chat-input-editor, textarea, [contenteditable='true']",
-    "sendButton": ".send-button-container, .chat-editor-action, button[type='submit']",
-    "stopButton": ".stop-button-container",
-    "newChat": ".new-chat-btn",
-    "generatingIndicator": ".stop-button-container",
-    "responseContainer": ".markdown-container",
-    "assistantMessage": ".segment-assistant",
-    "messageList": ".segment-list",
-    "loginIndicator": "form[action*='login'], form[action*='auth'], input[type='password'], .phone-login-action, .login-modal, .login-modal-mask",
-    "appContent": ".chat-input-editor, .chat-editor, .markdown-container, .segment-assistant-actions, .chat-input, .user-avatar-container",
-    "thinking": ".thinking, [class*='thinking'], .segment-thinking",
-    "actionButtons": ".segment-assistant-actions .icon-button"
-  },
-  "apiEndpoints": [
-    "/kimi.gateway.chat",
-    "/apiv2/kimi.chat",
-    "/kimi.chat.v1.ChatService",
-    "/api/chat",
-    "/ChatService/Chat",
-    "/ChatService/ChatCompletion"
-  ],
-  "features": {
-    "autoLogin": false,
-    "supportsStreaming": true,
-    "supportsThinking": true,
-    "loginMethod": "google_oauth",
-    "genericExtraction": false
-  },
-  "cookies": {
-    "masterCookies": "kimi-master-cookies.json",
-    "masterLocalStorage": "kimi-master-localstorage.json"
-  }
-}
-```
-
-- [ ] **Step 4: Atualizar deepseek.json**
-
-Em `provider-configs/deepseek.json`, dentro de `"selectors"` (após `"stopButton"`), adicionar:
+Em `provider-configs/deepseek.json`, dentro de `"selectors"` (após a linha `"stopButton"`), adicionar:
 
 ```json
     "newChat": "a[href='/'], button:has-text('New chat'), button:has-text('Nova conversa')",
 ```
 
-E deletar o bloco inteiro `"cdpPatterns": [ ... ],` (linhas 23-26).
+E deletar o bloco inteiro `"cdpPatterns": [ ... ],` (as 4 linhas após `"selectors"`).
 
-- [ ] **Step 5: Rodar e verificar que passa**
+**Não modificar `kimi.json` em hipótese alguma.**
+
+- [ ] **Step 4: Rodar e verificar que passa**
 
 Run: `cd /home/jhin/.luna-kernel/packages/kernel && node --test tests/wave11-provider-config.test.cjs`
-Expected: PASS — 14 testes
+Expected: PASS — 11 testes (T1a–T1i + 2 do T2)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-cd /home/jhin/.luna-kernel && git add packages/kernel/provider-configs/kimi.json packages/kernel/provider-configs/deepseek.json packages/kernel/tests/wave11-provider-config.test.cjs && git commit -m "feat(kernel): PDS Fase 0 - configs v2 (stopButton/newChat/generatingIndicator, apiEndpoints completos, cdpPatterns removido)"
+cd /home/jhin/.luna-kernel && git add packages/kernel/provider-configs/deepseek.json packages/kernel/tests/wave11-provider-config.test.cjs && git commit -m "feat(kernel): PDS Fase 0 - deepseek config v2 (newChat, cdpPatterns removido); kimi.json intocada por diretriz do dono"
 ```
 
 ---
@@ -610,7 +554,7 @@ Por:
 - [ ] **Step 5: Verificar sintaxe + regressão**
 
 Run: `cd /home/jhin/.luna-kernel/packages/kernel && node --check kimi-bridge.cjs && node --test tests/*.test.cjs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
-Expected: `tests 299` / `pass 299` / `fail 0` (285 + 14 novos)
+Expected: `tests 296` / `pass 296` / `fail 0` (285 + 11 novos)
 
 - [ ] **Step 6: Commit**
 
@@ -907,7 +851,7 @@ cd /home/jhin/.luna-kernel && git add packages/kernel/kimi-bridge.cjs && git com
 - Modify: `packages/kernel/provider-loader.cjs:68-70,82`
 - Test: `packages/kernel/tests/wave11-provider-config.test.cjs`
 
-Fecha `.brain/bugs.md:23`: `_buildFetchPatterns` é chamado em `kb:768` e nunca existiu — todo `start()` lançava e caía no fallback Playwright. O fallback vira o único caminho, e `_isChatUrl` passa a usar `apiEndpoints` do config (completados na Task 2 para preservar a cobertura atual da Kimi).
+Fecha `.brain/bugs.md:23`: `_buildFetchPatterns` é chamado em `kb:768` e nunca existiu — todo `start()` lançava e caía no fallback Playwright. O fallback vira o único caminho, e `_isChatUrl` passa a usar `apiEndpoints` do config EM UNIÃO com os defaults legados hardcoded (kimi.json intocada; cobertura da Kimi idêntica à pré-refatoração).
 
 - [ ] **Step 1: Escrever o teste que falha**
 
@@ -917,7 +861,7 @@ Adicionar ao final de `tests/wave11-provider-config.test.cjs`:
 // ── ProviderNetworkInterceptor (Task 10) ──
 const { ProviderNetworkInterceptor } = require('../kimi-bridge.cjs');
 
-test('T10a: _isChatUrl usa apiEndpoints do config (kimi)', () => {
+test('T10a: _isChatUrl casa todos os padrões legados mesmo com kimi.json intocada', () => {
   const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'kimi.json'), 'utf8'));
   const interceptor = new ProviderNetworkInterceptor(null, cfg);
   for (const url of [
@@ -926,7 +870,7 @@ test('T10a: _isChatUrl usa apiEndpoints do config (kimi)', () => {
     'https://www.kimi.com/apiv2/kimi.chat/y',
     'https://www.kimi.com/kimi.chat.v1.ChatService/ChatCompletion',
   ]) {
-    assert.ok(interceptor._isChatUrl(url), `kimi deve casar ${url}`);
+    assert.ok(interceptor._isChatUrl(url), `kimi deve casar ${url} (config ∪ defaults legados)`);
   }
   assert.strictEqual(interceptor._isChatUrl('https://www.kimi.com/static/app.js'), false);
 });
@@ -1054,8 +998,19 @@ Por:
 ```js
   _isChatUrl(url) {
     if (typeof url !== 'string') return false;
+    // PDS Fase 0: provider-config apiEndpoints UNIONED with the legacy
+    // hardcoded defaults — kimi.json stays untouched (owner directive) and
+    // Kimi's URL coverage is identical to the pre-refactor hardcoded list.
     const endpoints = this.providerConfig?.apiEndpoints || [];
-    return endpoints.some(ep => url.includes(ep));
+    const defaults = [
+      '/api/chat',
+      '/ChatService/Chat',
+      '/kimi.gateway.chat',
+      '/apiv2/kimi.chat',
+      '/kimi.chat.v1.ChatService',
+      '/ChatService/ChatCompletion',
+    ];
+    return endpoints.concat(defaults).some(ep => url.includes(ep));
   }
 ```
 
@@ -1083,7 +1038,7 @@ e removê-la do `module.exports` (linha 82). Em `kimi-bridge.cjs:35`, remover `g
 - [ ] **Step 7: Rodar testes + sintaxe**
 
 Run: `cd /home/jhin/.luna-kernel/packages/kernel && node --check kimi-bridge.cjs && node --check provider-loader.cjs && node --test tests/*.test.cjs 2>&1 | grep -E "^ℹ (tests|pass|fail)"`
-Expected: `tests 302` / `pass 302` / `fail 0`
+Expected: `tests 299` / `pass 299` / `fail 0`
 
 - [ ] **Step 8: Commit**
 
@@ -1100,7 +1055,7 @@ cd /home/jhin/.luna-kernel && git add packages/kernel/kimi-bridge.cjs packages/k
 - [ ] **Step 1: Suíte completa**
 
 Run: `cd /home/jhin/.luna-kernel/packages/kernel && node --test tests/*.test.cjs 2>&1 | grep -E "^ℹ (tests|pass|fail|skipped)"`
-Expected: `tests 302` / `pass 302` / `fail 0` / `skipped 0`
+Expected: `tests 299` / `pass 299` / `fail 0` / `skipped 0`
 
 - [ ] **Step 2: Sintaxe de todos os modificados**
 
@@ -1149,10 +1104,10 @@ cd /home/jhin/.luna-kernel && git add packages/kernel/.brain/bugs.md && git comm
 
 ## Critérios de saída da Fase 0
 
-- 302/302 testes passando (285 legados + 17 novos).
-- Kimi funcionalmente idêntica (fallbacks preservam todos os seletores antigos — smoke T12.1).
+- 299/299 testes passando (285 legados + 14 novos).
+- Kimi funcionalmente idêntica (fallbacks preservam todos os seletores antigos; `kimi.json` intocada — smoke T12.1).
 - DeepSeek loga, encontra input via config e responde (smoke T12.2).
-- Zero referências a `_buildFetchPatterns`/`cdpPatterns`/`getProviderApiPatterns` no código.
+- Zero referências a `_buildFetchPatterns`/`getProviderApiPatterns` no código; `cdpPatterns` removido do deepseek.json (o da kimi.json é inerte — nada mais o lê).
 - `bugs.md:22` e `bugs.md:23` fechados.
 
 ## Notas para o implementador
