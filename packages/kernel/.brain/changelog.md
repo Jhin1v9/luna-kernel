@@ -2,6 +2,7 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-14 fa190b5] fix(kernel): PDS Fase 0 — `sendMessageStream` input lookup now resolves via the provider config selector chain with `waitForChain`, the not-found error names the real provider, and `/sign_in` is detected as LOGIN_REQUIRED (DeepSeek bugs.md:22 items A/C)
 - [2026-07-14 453de6b] refactor(kernel): PDS Fase 0 — sendMessage input lookup in `kimi-bridge.cjs` now resolves via the provider config selector chain instead of hardcoded selectors
 - [2026-07-14 34f62f0] feat(kernel): PDS Phase 0 — deepseek.json migrated to config v2 (newChat added, cdpPatterns removed); kimi.json untouched per owner directive
 - [2026-07-14 21da1ff] feat(kernel): PDS Phase 0 — added `lib/provider-selectors.cjs` with v1/v2 selector fallback chains and `waitForChain`, plus `wave11-provider-config.test.cjs`
