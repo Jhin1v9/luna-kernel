@@ -2,6 +2,7 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-14 75ba77e] fix(kernel): kill 3 load amplifiers — removed dead nexo-lp services from the health watchdog, cut assistant-detection polls in kimi-bridge from 10Hz to 2Hz, and replaced the DB retry storm on invalid DATABASE_URL with fail-fast + JSON fallback
 - [2026-07-11 65f7895] docs: fix broken links in root README — corrected three broken links in README.md
 - [2026-07-11 0f40e37] chore: remove tracked backups, old audit and screenshots — deleted ~35k lines of tracked backup copies, the old audit doc, kernel install.sh and stale screenshots
 - [2026-07-11 8da749f] docs(brain): backfill changelog for pre-hook commits — added 7 changelog entries for commits that predated the sync hook
