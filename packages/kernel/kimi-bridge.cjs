@@ -1325,23 +1325,30 @@ class KimiBridge {
       log.warn(`Failed to inject MASTER cookies into defaultContext: ${e.message}`);
     }
 
-    // v3.9-fix: Also inject localStorage into defaultContext pages
+    // v3.9-fix: Also inject localStorage into defaultContext pages.
+    // PDS Fase 0: per-provider (was hardcoded to the kimi file), and only
+    // into pages whose URL matches the provider host — localStorage is
+    // per-origin, so injecting anywhere else was a no-op anyway.
     try {
-      const masterLsPath = path.join(__dirname, 'cookies', 'kimi-master-localstorage.json');
-      if (fs.existsSync(masterLsPath)) {
+      for (const providerName of listProviders()) {
+        const providerCfg = loadProviderConfig(providerName);
+        const cookiePaths = getProviderCookies(providerCfg);
+        const masterLsPath = cookiePaths.localStorage;
+        if (!fs.existsSync(masterLsPath)) continue;
         const masterLsData = JSON.parse(fs.readFileSync(masterLsPath, 'utf8'));
         const lsData = masterLsData.data || {};
         const keys = Object.keys(lsData);
-        if (keys.length > 0) {
-          for (const page of this.defaultContext.pages()) {
-            await page.evaluate((items) => {
-              for (const [key, value] of Object.entries(items)) {
-                try { localStorage.setItem(key, value); } catch (e) {}
-              }
-            }, lsData).catch(() => {});
-          }
-          log.info(`Injected ${keys.length} localStorage items into defaultContext pages`);
+        if (keys.length === 0) continue;
+        const providerHost = this._providerDomain(providerName);
+        for (const page of this.defaultContext.pages()) {
+          if (!page.url().includes(providerHost)) continue;
+          await page.evaluate((items) => {
+            for (const [key, value] of Object.entries(items)) {
+              try { localStorage.setItem(key, value); } catch (e) {}
+            }
+          }, lsData).catch(() => {});
         }
+        log.info(`Injected ${keys.length} localStorage items for ${providerName} into matching defaultContext pages`);
       }
     } catch (e) {
       log.warn(`Failed to inject MASTER localStorage into defaultContext: ${e.message}`);
@@ -4914,7 +4921,7 @@ class KimiBridge {
         return false;
       }
       // Build master file in the expected format
-      const providerDomain = providerCfg.domain || '.kimi.com';
+      const providerDomain = providerCfg.domain || '.' + this._providerDomain(providerName).replace(/^www\./, '');
       const providerCookies = cookies.filter(c => c.domain.includes(providerDomain.replace(/^\./, '')) || c.domain.endsWith(providerDomain));
       const masterData = {
         savedAt: new Date().toISOString(),
