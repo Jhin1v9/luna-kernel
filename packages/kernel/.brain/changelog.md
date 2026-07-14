@@ -2,6 +2,7 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-14 ca4c62b] fix(kernel): PDS Fase 0 — `_checkLoginState` in `kimi-bridge.cjs` now resolves via the provider config chains and treats `/sign_in` URLs as logged-out (DeepSeek bugs.md:22 item C)
 - [2026-07-14 c97ae1c] test(kernel): PDS Fase 0 — W7-T4c needle in `wave2-bridge.test.cjs` updated to track the provider-aware `SEND_NOT_CONFIRMED` error text
 - [2026-07-14 ebebdf0] refactor(kernel): PDS Fase 0 — `_openNewChat` in `kimi-bridge.cjs` now resolves via the provider config `newChat` chain
 - [2026-07-14 48bfe54] refactor(kernel): PDS Fase 0 — `_submitWithVerification` in `kimi-bridge.cjs` now resolves its state read, click strategy and error reporting via the provider config chains, with provider-aware error text
