@@ -22,7 +22,7 @@ See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits 
 
 ## Current focus
 
-Documentation unification + living memory: `.agents/` + `.brain/` in English for AI agents, human-facing guide in Spanish.
+Provider Discovery System — phased foundation-first design written (`packages/kernel/plans/2026-07-14-provider-discovery-design.md`): config-wiring refactor, deterministic extractor, Kimi validation, test suite, per-user provider configs. Implementation not started.
 
 ## How to run
 
