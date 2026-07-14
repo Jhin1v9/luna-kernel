@@ -22,7 +22,7 @@ See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits 
 
 ## Current focus
 
-Provider Discovery System — Phase 0 implementation ongoing (TDD, per `plans/2026-07-14-pds-phase0-foundation.md`): `lib/provider-selectors.cjs` (v1/v2 fallback chains + `waitForChain`), deepseek.json config v2 (newChat added, cdpPatterns removed), and both `sendMessage` and `sendMessageStream` input lookups in `kimi-bridge.cjs` now resolve via the provider config selector chain, with `/sign_in` detected as LOGIN_REQUIRED; kimi.json stays untouched per owner directive (Kimi defaults remain in-code fallbacks). Remaining Phase 0 tasks (dead CDP removal, further config wiring) pending. DeepSeek still needs the owner to log in and run `save-deepseek-session.js` (bugs.md item B).
+Provider Discovery System — Phase 0 implementation ongoing (TDD, per `plans/2026-07-14-pds-phase0-foundation.md`): `lib/provider-selectors.cjs` (v1/v2 fallback chains + `waitForChain`), deepseek.json config v2 (newChat added, cdpPatterns removed), and in `kimi-bridge.cjs` the `sendMessage`/`sendMessageStream` input lookups, `injectSteer` (input + send) and `_submitWithVerification` (state read, click strategy, provider-aware error) now all resolve via the provider config selector chain, with `/sign_in` detected as LOGIN_REQUIRED; kimi.json stays untouched per owner directive (Kimi defaults remain in-code fallbacks). Remaining Phase 0 tasks (dead CDP removal, further config wiring) pending. DeepSeek still needs the owner to log in and run `save-deepseek-session.js` (bugs.md item B).
 
 ## How to run
 
