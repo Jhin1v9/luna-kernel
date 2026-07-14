@@ -7637,12 +7637,19 @@ class KimiBridge {
       }
 
       log.info(`[DEBUG-LUNA] Step 4: looking for input field`);
-      const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-      const inputCount = await inputLocator.count();
-      log.info(`[DEBUG-LUNA] Step 4: inputCount=${inputCount}`);
-      if (inputCount === 0) {
-        throw new Error('Input field not found on Kimi Web');
+      const streamProviderCfg = this._loadProviderConfig(resolvedProvider);
+      const streamInputChain = resolveChain(streamProviderCfg, 'input', 'textarea, [contenteditable="true"]');
+      // waitForChain (15s) replaces the instant count() that raced SPA
+      // rendering — the DeepSeek "inputCount=0 on a logged page" bug.
+      const { locator: inputLocator, selector: inputSelectorUsed } = await waitForChain(page, streamInputChain, { timeout: 15000 });
+      if (!inputLocator) {
+        const currentUrl = page.url();
+        if (/\/(sign[_-]?in|login|auth)(\/|$|\?|#)/i.test(currentUrl)) {
+          throw new Error(`${String(resolvedProvider).toUpperCase()}_LOGIN_REQUIRED: login page detected (${currentUrl}) — faça login no Chrome da Luna e recapture a sessão`);
+        }
+        throw new Error(`Input field not found on ${providerDisplayName(streamProviderCfg)}`);
       }
+      log.info(`[DEBUG-LUNA] Step 4: input found via '${inputSelectorUsed}'`);
 
       log.info(`[DEBUG-LUNA] Step 5: bringToFront`);
       await page.bringToFront();
