@@ -1591,6 +1591,7 @@ class KimiBridge {
         lastActivity: Date.now(),
         processing: false,
         mode: stored?.mode || 'instant',
+      sessionSaved: false,
       };
       this.userSessions.set(userId, session);
 
@@ -1712,6 +1713,7 @@ class KimiBridge {
       lastActivity: Date.now(),
       processing: false,
       mode: stored?.mode || 'instant',
+      sessionSaved: false,
     };
 
     this.userSessions.set(userId, session);
@@ -4761,6 +4763,17 @@ class KimiBridge {
           session.chatUrl = url;
           this._saveChatUrl(userId, url, { mode: session.mode });
         } catch {}
+        // v10.37-auto-save: save session cookies on login detection
+        if (!session.sessionSaved) {
+          try {
+            const providerName = this._resolveProvider(userId);
+            await this._saveSessionFromContext(page, providerName);
+            session.sessionSaved = true;
+            log.info(`[AutoSave] Session saved for ${providerName} after login detection`);
+          } catch (e) {
+            log.warn(`[AutoSave] Failed to save session: ${e.message}`);
+          }
+        }
         return { loggedIn: true, message: 'Login detectado! Pronto para usar.', url: state.url };
       }
       await new Promise(r => setTimeout(r, intervalMs));
