@@ -17,6 +17,7 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
+        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         LUNA_HOME: path.join(require('os').homedir(), '.luna'),
         LUNA_KERNEL_DIR: path.join(ROOT, 'packages', 'kernel'),
         LUNA_DIR: path.join(ROOT, 'packages', 'kernel'),
@@ -41,6 +42,7 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
+        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         LUNA_HOME: path.join(require('os').homedir(), '.luna'),
         LUNA_KERNEL_DIR: path.join(ROOT, 'packages', 'kernel'),
         LUNA_DIR: path.join(ROOT, 'packages', 'kernel'),
@@ -66,6 +68,7 @@ module.exports = {
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
+        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         PORT: 5173,
       },
       max_restarts: 50,
@@ -86,6 +89,9 @@ module.exports = {
       autorestart: true,
       watch: false,
       max_memory_restart: '256M',
+      env: {
+        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      },
       max_restarts: 50,
       min_uptime: '10s',
       restart_delay: 3000,
@@ -104,6 +110,7 @@ module.exports = {
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
+        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         NODE_OPTIONS: '--dns-result-order=ipv4first',
         LUNA_HOME: path.join(require('os').homedir(), '.luna'),
         LUNA_KERNEL_DIR: path.join(ROOT, 'packages', 'kernel'),

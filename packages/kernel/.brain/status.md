@@ -22,14 +22,48 @@ See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits 
 
 ## Current focus
 
-Provider Discovery System — Phase 0 implementation ongoing (TDD, per `plans/2026-07-14-pds-phase0-foundation.md`): `lib/provider-selectors.cjs` (v1/v2 fallback chains + `waitForChain`), deepseek.json config v2 (newChat added, cdpPatterns removed), and in `kimi-bridge.cjs` the `sendMessage`/`sendMessageStream` input lookups, `injectSteer` (input + send), `_submitWithVerification` (state read, click strategy, provider-aware error), `_openNewChat` (`newChat` chain) and `_checkLoginState` (incl. `/sign_in` URL detection) now all resolve via the provider config selector chain, with `/sign_in` detected as LOGIN_REQUIRED, `connect()` now restores localStorage per-provider with the cookie-sync domain derived from the provider `baseUrl`, `_isChatUrl` is config-driven, and the dead CDP Fetch branch plus `getProviderApiPatterns` were removed; kimi.json stays untouched per owner directive (Kimi defaults remain in-code fallbacks). Remaining Phase 0 config-wiring tasks pending. DeepSeek still needs the owner to log in and run `save-deepseek-session.js` (bugs.md item B).
+Dashboard: **Sistema de créditos unificado** — integrado con modelos Prisma existentes (Organization, Project, Contract, WorkspaceUser, CreditTransaction).
 
-## How to run
+### Credit system (local, working)
 
-`pm2 status` should show 5 online processes:
+- Migración `016-credit-system.sql`: 5 tablas raw (credit_plans, client_credits, credit_transactions, client_subscriptions, service_tickets)
+- `datastore-pg.js`: métodos CRUD + nuevas queries Prisma-compatibles (getPrismaOrganization, getPrismaProjectsByOrg, getPrismaContractsByOrg, getPrismaRequestsByOrg, getPrismaWorkspaceUsersByOrg, getPrismaTeamMembersByProject, getPrismaCreditTransactions)
+- `routes/credits.js`: endpoints públicos (plans, balance, transactions, history, perfil cliente) + admin (summary, adjust, auto-assign, perfil completo con edición, team-usage logging)
+- `routes/service-tickets.js`: CRUD, cotizar, aprobar con reserva automática
+- `server.js`: integración con separación auth pública/admin
+- Test end-to-end validado: suscripción → asignar → ticket → cotizar → aprobar → historial
+
+### Perfil unificado
+
+- `GET /api/credits/client/:id/profile` — organización + créditos + suscripción + proyectos + contratos + tickets + team users + transacciones recientes
+- `GET /api/credits/admin/client/:id/profile` — perfil completo admin, incluye historial completo de créditos y consumo interno del team (staff)
+- `POST /api/credits/admin/client/:id/team-usage` — log de consumo interno del team (no descuenta balance del cliente)
+
+### Nexo persona
+
+- `personas/nexo-assistant.json` + `personas/nexo.md` con prompt limpio
+- `luna-soul.cjs:2387`: auto-detección de nexo.md → persona 'nexo'
+
+### Kimi DOM fixes applied on VPS (not yet in local main)
+
+- `_pollThinkingAndResponse`: fallback `.markdown-container .markdown`
+- DomPoller: no se detiene en context limit
+- `_openNewChat`: wait 5s for `/chat/` URL
+- `_detectActualMode`: full DOM scan, 5 selectores + URL fallback
+- `setMode`: text scan + page.evaluate + URL navigation + localStorage override
+- `_stripThinkingPrefix`: remueve prefijo "Thinking" en modo instant
+
+## How to run (VPS)
+
+`pm2 status` muestra:
 
 - `luna-server` — Luna API + chat backend (:3458)
-- `nexo-dashboard` — NEXO dashboard (:3456)
-- `luna-telegram-adapter` — Telegram bot (owner's PC only, not distributed)
-- `luna-vite` — Vite dev server for the web UI (:5173)
-- `luna-health-watchdog` — health monitor
+- `nexo-dashboard-backend` — Dashboard API (:13500)
+- Workspace Cliente (Next.js) — puerto 13472, proxea `/api/dashboard/*` → localhost:3456
+- Dashboard legacy process — PID 191762, puerto 3456 (proceso viejo, no en PM2)
+- Caddy proxy inverso en puertos 3472 y 3601
+
+## Repos
+
+- `luna-kernel` (VPS): `/root/nexo-projects-abner/luna-kernel/`, branch `main`, commit `bf59316`
+- `nexo-workspace-src`: Prisma schema en `/root/nexo-workspace-src/packages/shared-domain/prisma/schema.prisma`

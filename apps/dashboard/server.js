@@ -1002,6 +1002,12 @@ app.use((req, res, next) => {
   // Rotas explicitamente públicas
   if (PUBLIC_API_ROUTES.includes(req.path)) return next();
 
+  // Prefixos públicos (rutas con parámetros dinámicos)
+  const PUBLIC_PREFIXES = ['/api/credits/plans', '/api/credits/client/'];
+  for (const prefix of PUBLIC_PREFIXES) {
+    if (req.path.startsWith(prefix)) return next();
+  }
+
   // Rotas que já têm seu próprio requireAuth (não precisa duplicar)
   // Mas por segurança vamos verificar aqui também
   const authHeader = req.headers.authorization;
@@ -3246,6 +3252,14 @@ app.use('/api/demo-leads', leadsRouter);
 // ── Roadmaps & Metas Routes ──
 const roadmapsRouter = require('./routes/roadmaps');
 app.use('/api/roadmaps', roadmapsRouter(dataStore, { requireAuth }));
+
+// ── Credit System Routes ──
+const creditsRouter = require('./routes/credits');
+app.use('/api/credits', creditsRouter(dataStore, { requireAuth }));
+
+// ── Service Tickets Routes ──
+const serviceTicketsRouter = require('./routes/service-tickets');
+app.use('/api/service-tickets', serviceTicketsRouter(dataStore, { requireAuth }));
 
 // ── Voting Routes ──
 setupVotingRoutes(app, { requireAuth, dataStore, auditLogService });

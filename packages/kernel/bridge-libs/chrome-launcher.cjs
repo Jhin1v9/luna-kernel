@@ -27,6 +27,7 @@ class ChromeLauncher {
       '/opt/google/chrome/chrome',
       '/usr/bin/google-chrome-stable',
       '/usr/bin/google-chrome',
+      path.join(os.homedir(), '.local', 'bin', 'google-chrome'),
       'google-chrome-stable',
       'google-chrome',
       '/usr/bin/chromium-browser',

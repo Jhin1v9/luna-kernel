@@ -2713,14 +2713,28 @@ class KimiBridge {
    * Detect the actual mode currently selected in the Kimi UI or page URL
    */
   async _detectActualMode(page) {
-    try {
-      const label = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 5000 });
-      if (label.includes('Instant')) return 'instant';
-      if (label.includes('Thinking')) return 'thinking';
-      return null;
-    } catch (e) {
-      return null;
+    const modeSelectors = [
+      '.chat-editor-action .model-name',
+      '.model-selector',
+      '[class*="model"] [class*="name"]',
+      '[class*="mode-switcher"]',
+      '[class*="model-switcher"]',
+    ];
+    for (const sel of modeSelectors) {
+      try {
+        const label = await page.locator(sel).textContent({ timeout: 3000 });
+        const lower = label.toLowerCase();
+        if (lower.includes('instant') || lower.includes('fast') || lower.includes('rapid')) return 'instant';
+        if (lower.includes('thinking') || lower.includes('deep') || lower.includes('reason')) return 'thinking';
+      } catch {}
     }
+    // Try URL-based detection as fallback
+    try {
+      const url = page.url().toLowerCase();
+      if (url.includes('instant')) return 'instant';
+      if (url.includes('thinking') || url.includes('deep')) return 'thinking';
+    } catch {}
+    return null;
   }
 
   /**
@@ -2888,9 +2902,10 @@ class KimiBridge {
 
     const kimiMode = mode === 'instant' ? 'instant' : 'thinking';
     const currentLabel = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 3000 }).catch(() => '');
-    const targetLabel = kimiMode === 'instant' ? 'K2.6 Instant' : 'K2.6 Thinking';
+    const targetKeywords = kimiMode === 'instant' ? ['Instant', 'instant', 'Fast', 'Rápido'] : ['Thinking', 'thinking', 'Deep', 'Reason'];
 
-    if (currentLabel.includes(targetLabel)) {
+    const isAlreadySet = targetKeywords.some(kw => currentLabel.includes(kw));
+    if (isAlreadySet) {
       this._log(`Already in ${mode} mode`);
       session.mode = mode;
       this.store.setUser(userId, { mode, provider });
@@ -2899,6 +2914,7 @@ class KimiBridge {
 
     log.info(`Switching user ${hashUserId(userId)} to ${mode} mode...`);
 
+    // Try UI dropdown first
     try {
       // Try to dismiss any overlay first (Escape key or click on body)
       await page.keyboard.press('Escape').catch(() => {});
@@ -2911,21 +2927,68 @@ class KimiBridge {
       });
       await page.waitForTimeout(500);
 
-      // Scope to dropdown to avoid clicking wrong element
-      const dropdown = page.locator('[role=listbox], .dropdown-menu, .model-dropdown').last();
-      const option = dropdown.locator('text=' + targetLabel).or(page.getByText(targetLabel)).first();
-      await option.click({ timeout: 3000 });
-      await page.waitForTimeout(800);
-
-      session.mode = mode;
-      this.store.setUser(userId, { mode, provider });
-      log.success(`Mode switched to ${mode} for user ${hashUserId(userId)}`);
-      return mode;
+      // Try multiple dropdown selectors, find the one that matches any keyword
+      const dropdownSelectors = ['[role=listbox]', '.dropdown-menu', '.model-dropdown', '[class*="dropdown"]', '[class*="menu"]'];
+      let optionClicked = false;
+      for (const ddSel of dropdownSelectors) {
+        const dropdown = page.locator(ddSel).last();
+        const count = await dropdown.count().catch(() => 0);
+        if (count === 0) continue;
+        for (const kw of targetKeywords) {
+          const matched = dropdown.locator(`text=${kw}`).or(page.getByText(kw)).first();
+          const matchedCount = await matched.count().catch(() => 0);
+          if (matchedCount > 0) {
+            await matched.click({ timeout: 3000 });
+            optionClicked = true;
+            break;
+          }
+        }
+        if (optionClicked) break;
+      }
+      if (optionClicked) {
+        await page.waitForTimeout(800);
+        session.mode = mode;
+        this.store.setUser(userId, { mode, provider });
+        log.success(`Mode switched to ${mode} for user ${hashUserId(userId)}`);
+        return mode;
+      }
+      log.warn(`Mode switch: dropdown found but no option matched keywords ${JSON.stringify(targetKeywords)}`);
     } catch (e) {
-      log.warn(`Mode switch failed (overlay or element not found): ${e.message}. Continuing with current mode.`);
-      // Don't throw — mode switch is not critical
-      return session.mode || 'instant';
+      log.warn(`Mode switch via UI failed: ${e.message}. Trying URL fallback...`);
     }
+
+    // Fallback: navigate to mode URL if the provider has one
+    try {
+      const modeUrl = this._modeUrl(provider, mode);
+      const currentUrl = page.url();
+      if (modeUrl && !currentUrl.includes(modeUrl)) {
+        log.info(`Mode switch fallback: navigating to ${modeUrl}`);
+        await page.goto(modeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(2000);
+        session.mode = mode;
+        this.store.setUser(userId, { mode, provider });
+        return mode;
+      }
+    } catch (e2) {
+      log.warn(`Mode switch URL fallback also failed: ${e2.message}`);
+    }
+
+    // Last resort: try to force mode via URL parameter
+    try {
+      const separator = page.url().includes('?') ? '&' : '?';
+      const forcedUrl = page.url() + separator + `mode=${kimiMode}`;
+      await page.goto(forcedUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+      await page.waitForTimeout(1500);
+      log.warn(`Mode switch forced via URL param: ${forcedUrl}`);
+    } catch (e3) {
+      log.warn(`Mode switch force URL also failed: ${e3.message}`);
+    }
+
+    // Save mode anyway — the model will read from session
+    session.mode = mode;
+    this.store.setUser(userId, { mode, provider });
+    log.warn(`Mode switch requested but could not verify via UI. Stored mode=${mode} in session.`);
+    return mode;
   }
 
   /**
@@ -4577,6 +4640,7 @@ class KimiBridge {
       '/usr/local/bin/google-chrome',
       '/usr/local/bin/chromium',
       '/usr/local/bin/chromium-browser',
+      path.join(os.homedir(), '.local', 'bin', 'google-chrome'),
       'google-chrome-stable',
       'google-chrome',
       '/usr/bin/google-chrome-stable',

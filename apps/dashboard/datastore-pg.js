@@ -1221,6 +1221,292 @@ async function saveOpsState(data) {
 }
 
 // ============================================================
+// CREDIT PLANS
+// ============================================================
+async function getCreditPlans() {
+  const rows = await db.query('SELECT * FROM credit_plans ORDER BY price_monthly ASC');
+  return rows.map(r => ({
+    id: r.id, name: r.name, description: r.description,
+    priceMonthly: parseFloat(r.price_monthly),
+    creditsPerMonth: r.credits_per_month,
+    hostingIncluded: r.hosting_included,
+    supportLevel: r.support_level,
+    features: r.features || [],
+    active: r.active,
+    createdAt: r.created_at, updatedAt: r.updated_at
+  }));
+}
+
+async function saveCreditPlan(plan) {
+  await db.run(
+    `INSERT INTO credit_plans (id, name, description, price_monthly, credits_per_month, hosting_included, support_level, features, active, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,NOW()),NOW())
+     ON CONFLICT (id) DO UPDATE SET
+       name=$2, description=$3, price_monthly=$4, credits_per_month=$5,
+       hosting_included=$6, support_level=$7, features=$8, active=$9, updated_at=NOW()`,
+    [plan.id, plan.name, plan.description || '', plan.priceMonthly || 0, plan.creditsPerMonth || 0,
+     plan.hostingIncluded || false, plan.supportLevel || 'basic',
+     JSON.stringify(plan.features || []), plan.active !== false,
+     plan.createdAt]
+  );
+  notifyChange('credit_plans', await getCreditPlans());
+  return plan;
+}
+
+// ============================================================
+// CLIENT CREDITS
+// ============================================================
+async function getClientCredits(clientId) {
+  const row = await db.get('SELECT * FROM client_credits WHERE client_id=$1', [clientId]);
+  if (!row) return null;
+  return {
+    clientId: row.client_id,
+    balance: row.balance,
+    totalAssigned: row.total_assigned,
+    totalConsumed: row.total_consumed,
+    totalReserved: row.total_reserved,
+    rollover: row.rollover,
+    autoReloadThreshold: row.auto_reload_threshold,
+    autoReloadAmount: row.auto_reload_amount,
+    lastReloadedAt: row.last_reloaded_at,
+    createdAt: row.created_at, updatedAt: row.updated_at
+  };
+}
+
+async function saveClientCredits(data) {
+  await db.run(
+    `INSERT INTO client_credits (client_id, balance, total_assigned, total_consumed, total_reserved, rollover, auto_reload_threshold, auto_reload_amount, last_reloaded_at, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,NOW()),NOW())
+     ON CONFLICT (client_id) DO UPDATE SET
+       balance=$2, total_assigned=$3, total_consumed=$4, total_reserved=$5, rollover=$6,
+       auto_reload_threshold=$7, auto_reload_amount=$8, last_reloaded_at=$9, updated_at=NOW()`,
+    [data.clientId, data.balance || 0, data.totalAssigned || 0, data.totalConsumed || 0,
+     data.totalReserved || 0, data.rollover || 0, data.autoReloadThreshold || null,
+     data.autoReloadAmount || null, data.lastReloadedAt || null, data.createdAt]
+  );
+  notifyChange('client_credits', await getClientCredits(data.clientId));
+  return data;
+}
+
+// ============================================================
+// CREDIT TRANSACTIONS
+// ============================================================
+async function getCreditTransactions(clientId, filters = {}) {
+  let sql = 'SELECT * FROM credit_transactions WHERE client_id=$1';
+  const params = [clientId];
+  if (filters.type) { sql += ' AND type=$2'; params.push(filters.type); }
+  sql += ' ORDER BY created_at DESC';
+  if (filters.limit) { sql += ` LIMIT ${parseInt(filters.limit)}`; }
+  const rows = await db.query(sql, params);
+  return rows.map(r => ({
+    id: r.id, clientId: r.client_id, type: r.type, amount: r.amount,
+    balanceAfter: r.balance_after, description: r.description,
+    referenceType: r.reference_type, referenceId: r.reference_id,
+    createdBy: r.created_by,
+    createdAt: r.created_at ? (typeof r.created_at === 'string' ? r.created_at : r.created_at.toISOString()) : null
+  }));
+}
+
+async function saveCreditTransaction(tx) {
+  const row = await db.get(
+    `INSERT INTO credit_transactions (client_id, type, amount, balance_after, description, reference_type, reference_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [tx.clientId, tx.type, tx.amount, tx.balanceAfter, tx.description || '',
+     tx.referenceType || null, tx.referenceId || null, tx.createdBy || null]
+  );
+  notifyChange('credit_transactions', row);
+  return {
+    id: row.id, clientId: row.client_id, type: row.type, amount: row.amount,
+    balanceAfter: row.balance_after, description: row.description,
+    referenceType: row.reference_type, referenceId: row.reference_id,
+    createdBy: row.created_by, createdAt: row.created_at
+  };
+}
+
+// ============================================================
+// CLIENT SUBSCRIPTIONS
+// ============================================================
+async function getClientSubscriptions(clientId) {
+  const rows = await db.query('SELECT * FROM client_subscriptions WHERE client_id=$1 ORDER BY created_at DESC', [clientId]);
+  return rows.map(r => ({
+    id: r.id, clientId: r.client_id, planId: r.plan_id, status: r.status,
+    currentPeriodStart: r.current_period_start, currentPeriodEnd: r.current_period_end,
+    autoRenew: r.auto_renew, hostingAddon: r.hosting_addon,
+    cancelledAt: r.cancelled_at, createdAt: r.created_at, updatedAt: r.updated_at
+  }));
+}
+
+async function saveClientSubscription(sub) {
+  await db.run(
+    `INSERT INTO client_subscriptions (id, client_id, plan_id, status, current_period_start, current_period_end, auto_renew, hosting_addon, cancelled_at, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,NOW()),NOW())
+     ON CONFLICT (client_id) DO UPDATE SET
+       plan_id=$3, status=$4, current_period_start=$5, current_period_end=$6,
+       auto_renew=$7, hosting_addon=$8, cancelled_at=$9, updated_at=NOW()`,
+    [sub.id || require('crypto').randomUUID(), sub.clientId, sub.planId, sub.status || 'active',
+     sub.currentPeriodStart || new Date().toISOString().split('T')[0],
+     sub.currentPeriodEnd || new Date(Date.now() + 30*86400000).toISOString().split('T')[0],
+     sub.autoRenew !== false, sub.hostingAddon || false, sub.cancelledAt || null, sub.createdAt]
+  );
+  notifyChange('client_subscriptions', await getClientSubscriptions(sub.clientId));
+  return sub;
+}
+
+// ============================================================
+// SERVICE TICKETS
+// ============================================================
+async function getServiceTickets(clientId, filters = {}) {
+  let sql = 'SELECT * FROM service_tickets WHERE client_id=$1';
+  const params = [clientId];
+  if (filters.status) { sql += ' AND status=$2'; params.push(filters.status); }
+  sql += ' ORDER BY created_at DESC';
+  const rows = await db.query(sql, params);
+  return rows.map(r => ({
+    id: r.id, clientId: r.client_id, title: r.title, description: r.description,
+    category: r.category, estimatedCredits: r.estimated_credits, actualCredits: r.actual_credits,
+    status: r.status, priority: r.priority,
+    creditTransactionId: r.credit_transaction_id,
+    assignedTo: r.assigned_to, adminNotes: r.admin_notes, clientNotes: r.client_notes,
+    completedAt: r.completed_at, createdAt: r.created_at, updatedAt: r.updated_at
+  }));
+}
+
+async function getAllClientCredits() {
+  const rows = await db.query('SELECT * FROM client_credits ORDER BY client_id');
+  return rows.map(r => ({
+    clientId: r.client_id, balance: r.balance,
+    totalAssigned: r.total_assigned, totalConsumed: r.total_consumed,
+    totalReserved: r.total_reserved, rollover: r.rollover,
+    createdAt: r.created_at, updatedAt: r.updated_at
+  }));
+}
+
+async function getAllServiceTickets(filters = {}) {
+  let sql = 'SELECT * FROM service_tickets';
+  const conditions = [];
+  const params = [];
+  if (filters.status) { conditions.push(`status=$${params.length + 1}`); params.push(filters.status); }
+  if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
+  sql += ' ORDER BY created_at DESC';
+  const rows = await db.query(sql, params);
+  return rows.map(r => ({
+    id: r.id, clientId: r.client_id, title: r.title,
+    description: r.description, category: r.category,
+    estimatedCredits: r.estimated_credits, actualCredits: r.actual_credits,
+    status: r.status, priority: r.priority,
+    creditTransactionId: r.credit_transaction_id,
+    assignedTo: r.assigned_to, adminNotes: r.admin_notes, clientNotes: r.client_notes,
+    completedAt: r.completed_at, createdAt: r.created_at, updatedAt: r.updated_at
+  }));
+}
+
+async function saveServiceTicket(ticket) {
+  if (ticket.id) {
+    await db.run(
+      `UPDATE service_tickets SET title=$2, description=$3, category=$4, estimated_credits=$5,
+       actual_credits=$6, status=$7, priority=$8, credit_transaction_id=$9, assigned_to=$10,
+       admin_notes=$11, client_notes=$12, completed_at=$13, updated_at=NOW()
+       WHERE id=$1`,
+      [ticket.id, ticket.title, ticket.description || '', ticket.category || 'general',
+       ticket.estimatedCredits || 0, ticket.actualCredits || 0, ticket.status || 'pendiente',
+       ticket.priority || 'normal', ticket.creditTransactionId || null,
+       ticket.assignedTo || null, ticket.adminNotes || '', ticket.clientNotes || '',
+       ticket.completedAt || null]
+    );
+  } else {
+    const row = await db.get(
+      `INSERT INTO service_tickets (client_id, title, description, category, estimated_credits, status, priority, client_notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [ticket.clientId, ticket.title, ticket.description || '', ticket.category || 'general',
+       ticket.estimatedCredits || 0, ticket.status || 'pendiente', ticket.priority || 'normal',
+       ticket.clientNotes || '']
+    );
+    ticket.id = row.id;
+    ticket.createdAt = row.created_at;
+  }
+  notifyChange('service_tickets', await getServiceTickets(ticket.clientId));
+  return ticket;
+}
+
+async function deleteServiceTicket(ticketId) {
+  await db.run('DELETE FROM service_tickets WHERE id=$1', [ticketId]);
+  return true;
+}
+
+// ============================================================
+// PRISMA-COMPATIBLE QUERIES (read-only — tables managed by Prisma)
+// ============================================================
+
+async function getPrismaOrganization(orgId) {
+  const row = await db.get('SELECT * FROM "Organization" WHERE id=$1', [orgId]);
+  if (!row) return null;
+  return { id: row.id, slug: row.slug, name: row.name, domain: row.domain, status: row.status, plan: row.plan, isWorkspaceOwner: row.isWorkspaceOwner, settings: row.settings, createdAt: row.createdAt, updatedAt: row.updatedAt, archivedAt: row.archivedAt };
+}
+
+async function getPrismaOrganizations() {
+  const rows = await db.query('SELECT * FROM "Organization" ORDER BY name');
+  return rows.map(r => ({ id: r.id, slug: r.slug, name: r.name, domain: r.domain, status: r.status, plan: r.plan, isWorkspaceOwner: r.isWorkspaceOwner, settings: r.settings, createdAt: r.createdAt, updatedAt: r.updatedAt, archivedAt: r.archivedAt }));
+}
+
+async function getPrismaProjectsByOrg(orgId) {
+  const rows = await db.query('SELECT * FROM "Project" WHERE "organizationId"=$1 AND status != \'ARCHIVED\' ORDER BY name', [orgId]);
+  return rows.map(r => ({ id: r.id, name: r.name, type: r.type, description: r.description, url: r.url, status: r.status, organizationId: r.organizationId, createdAt: r.createdAt, updatedAt: r.updatedAt }));
+}
+
+async function getPrismaContractsByOrg(orgId) {
+  const rows = await db.query(
+    'SELECT c.* FROM "Contract" c JOIN "Project" p ON c."projectId" = p.id WHERE p."organizationId"=$1 ORDER BY c."createdAt" DESC',
+    [orgId]
+  );
+  return rows.map(r => ({ id: r.id, projectId: r.projectId, title: r.title, content: r.content, status: r.status, signedAt: r.signedAt, signedBy: r.signedBy, expiresAt: r.expiresAt, createdAt: r.createdAt, updatedAt: r.updatedAt }));
+}
+
+async function getPrismaRequestsByOrg(orgId) {
+  const rows = await db.query(
+    'SELECT r.* FROM "Request" r JOIN "Project" p ON r."projectId" = p.id WHERE p."organizationId"=$1 ORDER BY r."createdAt" DESC',
+    [orgId]
+  );
+  return rows.map(r => ({ id: r.id, content: r.content, status: r.status, projectId: r.projectId, organizationId: r.organizationId, externalId: r.externalId, createdAt: r.createdAt, updatedAt: r.updatedAt, closedAt: r.closedAt }));
+}
+
+async function getPrismaWorkspaceUsersByOrg(orgId) {
+  const rows = await db.query('SELECT * FROM "WorkspaceUser" WHERE "organizationId"=$1 ORDER BY name', [orgId]);
+  return rows.map(r => ({ id: r.id, email: r.email, name: r.name, role: r.role, status: r.status, credits: r.credits, isNexoStaff: r.isNexoStaff, organizationId: r.organizationId, createdAt: r.createdAt }));
+}
+
+async function getPrismaTeamMembersByProject(projectId) {
+  const rows = await db.query('SELECT * FROM "TeamMember" WHERE "projectId"=$1', [projectId]);
+  return rows.map(r => ({ id: r.id, projectId: r.projectId, name: r.name, role: r.role, email: r.email }));
+}
+
+// ── Prisma CreditTransactions (per-user) ──
+
+async function getPrismaCreditTransactions(filters = {}) {
+  let sql = 'SELECT * FROM "CreditTransaction"';
+  const conditions = [];
+  const params = [];
+  if (filters.userId) { conditions.push(`"userId"=$${params.length + 1}`); params.push(filters.userId); }
+  if (filters.projectId) { conditions.push(`"projectId"=$${params.length + 1}`); params.push(filters.projectId); }
+  if (filters.type) { conditions.push(`type=$${params.length + 1}`); params.push(filters.type); }
+  if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
+  sql += ' ORDER BY "createdAt" DESC';
+  if (filters.limit) sql += ` LIMIT ${parseInt(filters.limit)}`;
+  const rows = await db.query(sql, params);
+  return rows.map(r => ({ id: r.id, userId: r.userId, projectId: r.projectId, requestId: r.requestId, amount: r.amount, description: r.description, type: r.type, createdAt: r.createdAt }));
+}
+
+async function savePrismaCreditTransaction(tx) {
+  const row = await db.get(
+    `INSERT INTO "CreditTransaction" (id, "userId", "projectId", "requestId", amount, description, type, "createdAt")
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) RETURNING *`,
+    [tx.id || require('crypto').randomUUID(), tx.userId, tx.projectId || null, tx.requestId || null,
+     tx.amount, tx.description || '', tx.type || 'usage']
+  );
+  return { id: row.id, userId: row.userId, projectId: row.projectId, requestId: row.requestId,
+    amount: row.amount, description: row.description, type: row.type, createdAt: row.createdAt };
+}
+
+// ============================================================
 // EXPORTS
 // ============================================================
 module.exports = {
@@ -1255,4 +1541,14 @@ module.exports = {
   getEmailDrafts, saveEmailDraft, deleteEmailDraft,
   getVotingSessions, getVotingSessionById, saveVotingSession, getVotingVotes, saveVotingVote,
   getOpsState, saveOpsState,
+  getCreditPlans, saveCreditPlan,
+  getClientCredits, saveClientCredits,
+  getCreditTransactions, saveCreditTransaction,
+  getClientSubscriptions, saveClientSubscription,
+  getServiceTickets, getAllServiceTickets, saveServiceTicket, deleteServiceTicket,
+  getAllClientCredits,
+  getPrismaOrganization, getPrismaOrganizations, getPrismaProjectsByOrg,
+  getPrismaContractsByOrg, getPrismaRequestsByOrg,
+  getPrismaWorkspaceUsersByOrg, getPrismaTeamMembersByProject,
+  getPrismaCreditTransactions, savePrismaCreditTransaction,
 };

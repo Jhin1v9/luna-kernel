@@ -1732,7 +1732,7 @@ class LunaSoul extends EventEmitter {
     this.metaExecutor = new MetaExecutor();
     this.maxIterations = options.maxIterations || 999999; // SEM LIMITES — DONO ABSOLUTO
     this.taskTimeoutMs = options.taskTimeoutMs || 999999999; // SEM LIMITES — DONO ABSOLUTO
-    this.defaultMode = options.defaultMode || 'thinking';
+    this.defaultMode = options.defaultMode || process.env.LUNA_DEFAULT_MODE || 'thinking';
     this.autoSwitchEnabled = options.autoSwitch !== false; // default true
     this.autoConfirmDestructive = options.autoConfirmDestructive === true; // default false for safety
     this.lunaGit = null;
@@ -2383,6 +2383,15 @@ class LunaSoul extends EventEmitter {
       mode: options.mode || this.defaultMode,
       persona: options.persona || 'default',
     }).id;
+
+    if (options.persona && options.persona !== 'default') {
+      // already set
+    } else if (fs.existsSync(path.join(PERSONAS_DIR, 'nexo.md'))) {
+      const sessionObj = this.sessionManager.loadSession(sessionId);
+      if (sessionObj && (!sessionObj.persona || sessionObj.persona === 'default')) {
+        sessionObj.persona = 'nexo';
+      }
+    }
 
     const session = this.sessionManager.loadSession(sessionId);
     let mode = options.mode || session?.mode || this.defaultMode;
