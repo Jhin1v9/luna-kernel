@@ -1658,8 +1658,23 @@ class KimiBridge {
       const loginSelector = getProviderSelector(providerCfg, 'loginIndicator');
       const appContentSelector = getProviderSelector(providerCfg, 'appContent');
       const isLoggedIn = await page.evaluate(({ loginSel, appSel }) => {
-        const hasLoginForm = loginSel ? !!document.querySelector(loginSel) : false;
-        const hasAppContent = appSel ? !!document.querySelector(appSel) : false;
+        const isVisible = (el) => {
+          if (!el) return false;
+          try {
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
+        };
+        const firstVisible = (sel) => {
+          if (!sel) return null;
+          try { for (const el of document.querySelectorAll(sel)) { if (isVisible(el)) return el; } } catch (_) {}
+          return null;
+        };
+        const hasLoginForm = !!firstVisible(loginSel);
+        const hasAppContent = !!firstVisible(appSel)
+          || !!firstVisible('.chat-input-editor, .chat-editor, [contenteditable=true], div[role=textbox]');
         return !hasLoginForm && hasAppContent;
       }, { loginSel: loginSelector, appSel: appContentSelector }).catch(() => false);
 
@@ -1685,8 +1700,23 @@ class KimiBridge {
         await this._injectMasterLocalStorage(page, provider);
 
         const stillLoggedOut = await page.evaluate(({ loginSel, appSel }) => {
-          const hasLoginForm = loginSel ? !!document.querySelector(loginSel) : false;
-          const hasAppContent = appSel ? !!document.querySelector(appSel) : false;
+          const isVisible = (el) => {
+            if (!el) return false;
+            try {
+              const st = window.getComputedStyle(el);
+              if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
+          };
+          const firstVisible = (sel) => {
+            if (!sel) return null;
+            try { for (const el of document.querySelectorAll(sel)) { if (isVisible(el)) return el; } } catch (_) {}
+            return null;
+          };
+          const hasLoginForm = !!firstVisible(loginSel);
+          const hasAppContent = !!firstVisible(appSel)
+            || !!firstVisible('.chat-input-editor, .chat-editor, [contenteditable=true], div[role=textbox]');
           return !hasLoginForm && !hasAppContent;
         }, { loginSel: loginSelector, appSel: appContentSelector }).catch(() => true);
 
@@ -1997,23 +2027,66 @@ class KimiBridge {
     const loginSelector = getProviderSelector(providerCfg, 'loginIndicator');
     const appContentSelector = getProviderSelector(providerCfg, 'appContent');
 
+    const isVisible = (el) => {
+      if (!el) return false;
+      try {
+        const st = window.getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
+    };
+
     const evalLoggedIn = async () => {
       return page.evaluate(({ loginSel, appSel }) => {
-        const loginEl = loginSel ? document.querySelector(loginSel) : null;
-        const pwdEl = document.querySelector('input[type="password"]');
-        const appEl = appSel ? document.querySelector(appSel) : null;
-        const result = {
-          hasLoginForm: !!loginEl,
-          hasPassword: !!pwdEl,
-          hasAppContent: !!appEl,
+        const isVisible = (el) => {
+          if (!el) return false;
+          try {
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
         };
-        return { loggedIn: !(result.hasLoginForm || result.hasPassword) && result.hasAppContent, debug: result };
+        const firstVisible = (sel) => {
+          if (!sel) return null;
+          try {
+            for (const el of document.querySelectorAll(sel)) {
+              if (isVisible(el)) return el;
+            }
+          } catch (_) {}
+          return null;
+        };
+        const loginEl = firstVisible(loginSel);
+        const pwdEl = firstVisible('input[type="password"]');
+        // Prefer chat input / editor as hard proof of logged-in app shell
+        const appEl = firstVisible(appSel)
+          || firstVisible('.chat-input-editor, .chat-editor, [contenteditable="true"], div[role="textbox"]')
+          || firstVisible('.user-avatar-container');
+        const hasLoginForm = !!loginEl;
+        const hasPassword = !!pwdEl;
+        const hasAppContent = !!appEl;
+        // If the chat shell is visible, treat as logged in even if a hidden
+        // login node exists in the DOM (Kimi often keeps modal markup mounted).
+        const loggedIn = hasAppContent && !(hasLoginForm && hasPassword);
+        return {
+          loggedIn,
+          debug: { hasLoginForm, hasPassword, hasAppContent, url: location.href },
+        };
       }, { loginSel: loginSelector, appSel: appContentSelector }).catch((e) => ({ loggedIn: false, debug: { error: e.message } }));
     };
 
-    const evalResult = await evalLoggedIn();
-    let isLoggedIn = evalResult.loggedIn;
-    log.info(`[_verifySession] provider=${provider} isLoggedIn=${isLoggedIn}`);
+    // Wait briefly for SPA shell after navigation before declaring logout
+    let evalResult = await evalLoggedIn();
+    if (!evalResult.loggedIn) {
+      for (let i = 0; i < 6; i++) {
+        await page.waitForTimeout(500);
+        evalResult = await evalLoggedIn();
+        if (evalResult.loggedIn) break;
+      }
+    }
+    let isLoggedIn = !!evalResult.loggedIn;
+    log.info(`[_verifySession] provider=${provider} isLoggedIn=${isLoggedIn} debug=${JSON.stringify(evalResult.debug || {})}`);
 
     if (!isLoggedIn) {
       // Attempt cookie restoration before giving up
@@ -2037,7 +2110,7 @@ class KimiBridge {
                 log.info(`[_verifySession] Clicking Kimi Google login button in modal for ${hashUserId(userId)}`);
                 await googleBtn.click();
                 await page.waitForTimeout(4000);
-                if (await evalLoggedIn()) {
+                if ((await evalLoggedIn()).loggedIn) {
                   log.success(`Google login modal click restored session for user ${hashUserId(userId)}`);
                   // The modal may still be open even though the cookie session is active.
                   // Reload to dismiss the overlay so subsequent clicks (new chat, send) work.
@@ -2058,7 +2131,7 @@ class KimiBridge {
                 log.info(`[_verifySession] Clicking Kimi Log In button to activate cookie session for ${hashUserId(userId)}`);
                 await loginBtn.click();
                 await page.waitForTimeout(3000);
-                if (await evalLoggedIn()) {
+                if ((await evalLoggedIn()).loggedIn) {
                   log.success(`Log In button click restored session for user ${hashUserId(userId)}`);
                   restored = true;
                 }
@@ -2082,7 +2155,7 @@ class KimiBridge {
                 log.info(`Loaded ${masterCookies.length} cookies from MASTER backup for user ${hashUserId(userId)} (provider=${provider})`);
                 await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
                 await page.waitForTimeout(2000);
-                if (await evalLoggedIn()) {
+                if ((await evalLoggedIn()).loggedIn) {
                   log.success(`MASTER cookies restored session for user ${hashUserId(userId)}`);
                   restored = true;
                 }
@@ -2101,7 +2174,7 @@ class KimiBridge {
             log.info(`Re-synced ${cookies.length} cookies from default context for user ${hashUserId(userId)}`);
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            if (await evalLoggedIn()) {
+            if ((await evalLoggedIn()).loggedIn) {
               log.success(`Cookie re-sync restored session for user ${hashUserId(userId)}`);
               restored = true;
             }
@@ -2114,7 +2187,7 @@ class KimiBridge {
           if (loaded) {
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            if (await evalLoggedIn()) {
+            if ((await evalLoggedIn()).loggedIn) {
               log.success(`Cookie backup restored session for user ${hashUserId(userId)}`);
               restored = true;
             }
@@ -3396,11 +3469,20 @@ class KimiBridge {
       const checkAndRecoverLogin = async (stepName) => {
         // First check — modal may appear temporarily during file processing
         let hasLoginModal = await page.evaluate(() => {
-          return !!(
-            document.querySelector('form[action*="login"], form[action*="auth"]') ||
-            document.querySelector('input[type="password"]') ||
-            document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
-          );
+          const visible = (sel) => {
+            try {
+              for (const el of document.querySelectorAll(sel)) {
+                const st = window.getComputedStyle(el);
+                if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) return true;
+              }
+            } catch (_) {}
+            return false;
+          };
+          return visible('input[type="password"]')
+            || visible('.login-modal-mask, .login-modal')
+            || (visible('form[action*="login"], form[action*="auth"]') && visible('input[type="password"], input[type="email"]'));
         }).catch(() => false);
         
         if (!hasLoginModal) return false;
@@ -3411,11 +3493,22 @@ class KimiBridge {
         
         // Check again
         hasLoginModal = await page.evaluate(() => {
-          return !!(
-            document.querySelector('form[action*="login"], form[action*="auth"]') ||
-            document.querySelector('input[type="password"]') ||
-            document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
-          );
+          const visible = (sel) => {
+            try {
+              for (const el of document.querySelectorAll(sel)) {
+                const st = window.getComputedStyle(el);
+                if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) return true;
+              }
+            } catch (_) {}
+            return false;
+          };
+          // Require a real auth surface (password field or visible modal mask),
+          // not any class that merely contains "login"/"auth" substrings.
+          return visible('input[type="password"]')
+            || visible('.login-modal-mask, .login-modal')
+            || (visible('form[action*="login"], form[action*="auth"]') && visible('input[type="password"], input[type="email"], input[name*="phone"]'));
         }).catch(() => false);
         
         if (!hasLoginModal) {
@@ -3604,14 +3697,22 @@ class KimiBridge {
     // v5.7-fix: Check for login modal BEFORE attempting upload
     const loginCheck = await wb.evaluate(`
       (() => {
-        const hasModal = !!(
-          document.querySelector('form[action*="login"], form[action*="auth"]') ||
-          document.querySelector('input[type="password"]') ||
-          document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
-        );
-        const loginTexts = ['Continue with Google', 'Google', '使用 Google 登录', 'Google 登录', '使用 Google 帳戶登入', 'Entrar com Google', 'Fazer login com Google'];
-        const hasLoginText = loginTexts.some(t => document.body.innerText.includes(t));
-        return { hasLoginModal: hasModal || hasLoginText };
+        const visible = (sel) => {
+          try {
+            for (const el of document.querySelectorAll(sel)) {
+              const st = window.getComputedStyle(el);
+              if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+              const r = el.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) return true;
+            }
+          } catch (_) {}
+          return false;
+        };
+        const hasModal = visible('input[type="password"]')
+          || visible('.login-modal-mask, .login-modal');
+        // Chat shell present => logged in (do not treat generic "Google" text as login)
+        const hasChat = visible('.chat-input-editor, .chat-editor, [contenteditable="true"]');
+        return { hasLoginModal: hasModal && !hasChat };
       })()
     `);
     if (loginCheck.data?.value?.hasLoginModal) {
