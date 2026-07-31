@@ -108,6 +108,12 @@ Implementado en el VPS (`/root/nexo-workspace-src`, branch `master`, pendiente d
 - Solución: copia manual de `.next/static` → `.next/standalone/apps/<app>/.next/static` y reinicio PM2.
 - Prevención: añadido script `postbuild` en `package.json` de ambas apps (`workspace-nexo` y `workspace-cliente`) para copiar los estáticos automáticamente tras cada build.
 
+### Dashboard Pro en :3500/:3501 — assets faltantes (2026-07-31)
+
+- Problema: `https://vps.nexo-digital.app:3501/` se quedaba en blanco.
+- Causa: `apps/dashboard/public/index.html` referenciaba `assets/index-CZ9uRbAg.js` y `assets/index-Bn4Oj2qG.css`, pero la carpeta `public/assets` no existía (estáticos del frontend NEXO Dashboard Pro no copiados).
+- Solución: copiado `NexoDashboard/frontend/dist/*` a `apps/dashboard/public/` (preservando `howto.html`). Ambos puertos (`:3500` y `:3501`) ahora sirven el JS/CSS correctamente.
+
 ### Windows local setup (2026-07-31)
 
 - Creado `scripts/setup-windows.ps1` para configurar Luna localmente en Windows:
