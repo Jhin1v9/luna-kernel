@@ -98,7 +98,15 @@ Implementado en el VPS (`/root/nexo-workspace-src`, branch `master`, pendiente d
 ### How-to del sistema de créditos
 
 - `apps/dashboard/public/howto.html` — página HTML servida en `https://vps.nexo-digital.app:3500/howto.html`. Cubre planes, suscripciones, créditos, tickets, auto-assign, admin summary, team-usage, ejemplos cURL admin y cliente, flujo de trabajo completo.
-- Desplegado en el VPS (`/root/nexo-projects-abner/luna-kernel/apps/dashboard/public/howto.html`). Build + deploy de workspace-nexo verificado.
+- Desplegado en el VPS (`/root/nexo-projects-abner/luna-kernel/apps/dashboard/public/howto.html`).
+- Enlace visible añadido en los sidebars de workspace-nexo (admin) y workspace-cliente (cliente) con ícono `HelpCircle`, abre en pestaña nueva.
+
+### Build standalone — static files faltantes (2026-07-31)
+
+- Problema: tras el rebuild, los dashboards de admin y cliente se veían rotos y el cliente mostraba `Loading chunk 3447 failed` en `_next/static/chunks/app/%5Blocale%5D/(dashboard)/layout-...js`.
+- Causa: `next build` con `output: 'standalone'` no copió la carpeta `.next/static` al directorio `.next/standalone/apps/<app>/.next/`.
+- Solución: copia manual de `.next/static` → `.next/standalone/apps/<app>/.next/static` y reinicio PM2.
+- Prevención: añadido script `postbuild` en `package.json` de ambas apps (`workspace-nexo` y `workspace-cliente`) para copiar los estáticos automáticamente tras cada build.
 
 ## How to run (VPS)
 
