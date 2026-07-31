@@ -1,8 +1,17 @@
 const path = require('path');
+const os = require('os');
 
-// Root of the monorepo (where this file lives). Using __dirname makes the
-// config portable across branches/worktrees and avoids hardcoded home paths.
+// Root do monorepo — detecta automaticamente
 const ROOT = __dirname;
+
+// Detecta se é Windows e ajusta PATH
+const IS_WINDOWS = process.platform === 'win32';
+const SYSTEM_PATH = IS_WINDOWS 
+  ? process.env.PATH || process.env.Path || ''
+  : '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
+// Home do usuário (cross-platform)
+const HOME = os.homedir();
 
 module.exports = {
   apps: [
@@ -17,8 +26,8 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
-        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        LUNA_HOME: path.join(require('os').homedir(), '.luna'),
+        PATH: SYSTEM_PATH,
+        LUNA_HOME: path.join(HOME, '.luna'),
         LUNA_KERNEL_DIR: path.join(ROOT, 'packages', 'kernel'),
         LUNA_DIR: path.join(ROOT, 'packages', 'kernel'),
         NEXO_DIR: path.join(ROOT, 'apps', 'dashboard'),
@@ -42,8 +51,8 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
-        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        LUNA_HOME: path.join(require('os').homedir(), '.luna'),
+        PATH: SYSTEM_PATH,
+        LUNA_HOME: path.join(HOME, '.luna'),
         LUNA_KERNEL_DIR: path.join(ROOT, 'packages', 'kernel'),
         LUNA_DIR: path.join(ROOT, 'packages', 'kernel'),
         NEXO_DIR: path.join(ROOT, 'apps', 'dashboard'),
@@ -58,17 +67,17 @@ module.exports = {
     },
     {
       name: 'luna-vite',
-      script: path.join(ROOT, 'packages', 'kernel', 'luna-web', 'node_modules', 'vite', 'bin', 'vite.js'),
-      args: '--host',
-      cwd: path.join(ROOT, 'packages', 'kernel', 'luna-web'),
+      script: 'npm',
+      args: 'run dev',
+      cwd: path.join(ROOT, 'apps', 'dashboard'),
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
       watch: false,
       max_memory_restart: '512M',
       env: {
-        NODE_ENV: 'production',
-        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        NODE_ENV: 'development',
+        PATH: SYSTEM_PATH,
         PORT: 5173,
       },
       max_restarts: 50,
@@ -90,7 +99,7 @@ module.exports = {
       watch: false,
       max_memory_restart: '256M',
       env: {
-        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        PATH: SYSTEM_PATH,
       },
       max_restarts: 50,
       min_uptime: '10s',
@@ -110,9 +119,9 @@ module.exports = {
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
-        PATH: '/home/noke/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        PATH: SYSTEM_PATH,
         NODE_OPTIONS: '--dns-result-order=ipv4first',
-        LUNA_HOME: path.join(require('os').homedir(), '.luna'),
+        LUNA_HOME: path.join(HOME, '.luna'),
         LUNA_KERNEL_DIR: path.join(ROOT, 'packages', 'kernel'),
         LUNA_DIR: path.join(ROOT, 'packages', 'kernel'),
         NEXO_DIR: path.join(ROOT, 'apps', 'dashboard'),

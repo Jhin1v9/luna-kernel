@@ -12,3 +12,4 @@ allowBuilds:
   sqlite3: true
   tldjs: true
   unrs-resolver: true
+  win-dpapi: false

@@ -30,6 +30,42 @@ const { shellQuote, toNonNegInt, assertSafeName } = require('./lib/shell-quote.c
 const { checkUrlSafety, fetchAllowList } = require('./lib/url-safety.cjs');
 const { resolveTerminal, enrichSessionEnv, _argvFor } = require('./lib/terminal-resolver.cjs');
 const { resolveShellTimeout } = require('./lib/build-detect.cjs');
+// ═══════════════════════════════════════════════════════════════════════════
+// WINDOWS GIT BASH DETECTION (v3.1-fix)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const IS_WINDOWS = process.platform === 'win32';
+
+function findGitBash() {
+  if (!IS_WINDOWS) return '/bin/bash';
+  const candidates = [
+    'C:\Program Files\Git\bin\bash.exe',
+    'C:\Program Files (x86)\Git\bin\bash.exe',
+    'C:\Git\bin\bash.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs\Git\bin\bash.exe'),
+    path.join(process.env.USERPROFILE || '', 'scoop\apps\git\current\bin\bash.exe'),
+    'bash.exe',
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        execSync(`"${candidate}" -c "echo luna-bash-test"`, { 
+          encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore']
+        });
+        return candidate;
+      }
+    } catch { continue; }
+  }
+  return null;
+}
+
+const GIT_BASH_PATH = findGitBash();
+const HAS_GIT_BASH = !!GIT_BASH_PATH;
+const DEFAULT_SHELL = IS_WINDOWS ? (HAS_GIT_BASH ? GIT_BASH_PATH : 'cmd.exe') : '/bin/bash';
+const DEFAULT_SHELL_FLAG = (IS_WINDOWS && !HAS_GIT_BASH) ? '/c' : '-c';
+
+console.log(`[LUNA] Platform: ${process.platform} | Git Bash: ${HAS_GIT_BASH ? GIT_BASH_PATH : 'NOT FOUND'} | Shell: ${DEFAULT_SHELL}`);
+
 
 // Wave3-fix G: SSRF caps for the LLM-facing network tools (fetchURL,
 // downloadFile, browser) — see lib/url-safety.cjs for the host policy.
@@ -153,6 +189,7 @@ function safeExec(cmd, opts = {}) {
   }
   try {
     const output = execSync(finalCmd, {
+      shell: IS_WINDOWS ? GIT_BASH_PATH : undefined,
       encoding: 'utf8',
       cwd: opts.cwd || process.cwd(),
       timeout: execTimeout,
@@ -353,9 +390,9 @@ function executeScript(code, opts = {}) {
 
   // Mapeia linguagem para extensão e executor
   const langMap = {
-    bash: { ext: 'sh', executor: 'bash', shell: true },
-    sh: { ext: 'sh', executor: 'bash', shell: true },
-    shell: { ext: 'sh', executor: 'bash', shell: true },
+    bash: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? GIT_BASH_PATH : 'bash', shell: true },
+    sh: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? GIT_BASH_PATH : 'bash', shell: true },
+    shell: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? GIT_BASH_PATH : 'bash', shell: true },
     powershell: { ext: 'ps1', executor: 'pwsh', shell: true },
     ps1: { ext: 'ps1', executor: 'pwsh', shell: true },
     python: { ext: 'py', executor: 'python3', shell: true },
@@ -1042,7 +1079,7 @@ function executeShell(command, opts = {}, onProgress) {
     let killed = false;
 
     // v10.27-fix: Always run via /bin/bash for consistent, surgical shell behavior.
-    const child = spawn('/bin/bash', ['-c', command], { cwd, env: process.env });
+    const child = spawn(DEFAULT_SHELL, [DEFAULT_SHELL_FLAG, command], { cwd, env: process.env });
     const timer = timeoutMs > 0 ? setTimeout(() => {
       killed = true;
       child.kill('SIGTERM');
