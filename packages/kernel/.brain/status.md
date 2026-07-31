@@ -35,9 +35,16 @@ Dashboard: **Sistema de créditos unificado** — integrado con modelos Prisma e
 
 ### Perfil unificado
 
-- `GET /api/credits/client/:id/profile` — organización + créditos + suscripción + proyectos + contratos + tickets + team users + transacciones recientes
+- `GET /api/credits/client/:id/profile` — organización + créditos + suscripción + proyectos + contratos + tickets + team users + transacciones recientes (público)
 - `GET /api/credits/admin/client/:id/profile` — perfil completo admin, incluye historial completo de créditos y consumo interno del team (staff)
 - `POST /api/credits/admin/client/:id/team-usage` — log de consumo interno del team (no descuenta balance del cliente)
+
+### UI integrada (workspace-cliente, Next.js)
+
+- `app/api/credits/profile/route.ts` — proxy al dashboard backend (`/api/credits/client/:orgId/profile`) usando `lib/dashboard-proxy.ts` (Bearer con DASHBOARD_API_KEY)
+- `app/[locale]/(dashboard)/perfil/page.tsx` — ahora consume el perfil unificado: nuevas secciones de suscripción (plan, vigencia, auto-renovación, próxima asignación), contratos (con badge de estado) y tickets (con créditos estimados)
+- i18n actualizado en pt/en/es con claves: subscription, plan, noSubscription, periodEnd, autoRenew, contracts, tickets, estimatedCredits, creditPlan, nextAssignment
+- Backend auth del dashboard usa `nexo-digital-2026` (PM2 env), no el token del .env
 
 ### Nexo persona
 
