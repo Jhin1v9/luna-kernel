@@ -108,6 +108,17 @@ Implementado en el VPS (`/root/nexo-workspace-src`, branch `master`, pendiente d
 - Solución: copia manual de `.next/static` → `.next/standalone/apps/<app>/.next/static` y reinicio PM2.
 - Prevención: añadido script `postbuild` en `package.json` de ambas apps (`workspace-nexo` y `workspace-cliente`) para copiar los estáticos automáticamente tras cada build.
 
+### Windows local setup (2026-07-31)
+
+- Creado `scripts/setup-windows.ps1` para configurar Luna localmente en Windows:
+  - Detecta/instala dependências (npm/pnpm)
+  - Procura Chrome/Edge/Chromium e opcionalmente añade al PATH
+  - Configura `DATABASE_URL=file:./luna.db` (SQLite) y `PUPPETEER_EXECUTABLE_PATH`
+  - Crea `.env` faltante
+  - Builda el frontend si no existe `dist`
+  - Inicia `luna-server` y hace health check
+- Uso: `powershell -ExecutionPolicy Bypass -File scripts/setup-windows.ps1 -ProjectDir "C:\caminho\luna-kernel"`
+
 ## How to run (VPS)
 
 `pm2 status` muestra:
