@@ -68,6 +68,18 @@ Dashboard: **Sistema de créditos unificado** — integrado con modelos Prisma e
 - `setMode`: text scan + page.evaluate + URL navigation + localStorage override
 - `_stripThinkingPrefix`: remueve prefijo "Thinking" en modo instant
 
+## Kimi login false-positive fix (2026-07-31, in local main)
+
+- Problema: adjuntar archivos en Luna fallaba con `KIMI_LOGIN_REQUIRED` aunque la sesión estuviera activa.
+- Causa: Kimi mantiene nodos de login "fantasma" montados en el DOM (`.login-modal`, inputs ocultos, texto "Google") aunque el chat shell sea visible; `_verifySession`, `sendFile` (checkAndRecoverLogin) y el WebBridge loginCheck usaban `querySelector` genérico sin filtrar visibilidad.
+- Fix aplicado en `kimi-bridge.cjs` (commit `307506e`):
+  - helper `isVisible` (display/visibility/opacity/getBoundingClientRect) + `firstVisible`.
+  - `evalLoggedIn` en `_verifySession`: `loggedIn = hasAppContent && !(hasLoginForm && hasPassword)`, espera SPA 6×500ms antes de declarar logout.
+  - `checkAndRecoverLogin` (sendFile): solo declara modal real con password/modal visible.
+  - WebBridge `loginCheck`: `hasModal && !hasChat` (el chat shell anula el modal).
+  - Verificación pre-navegación en `openChatPage` (isLoggedIn/stillLoggedOut) también es visibility-aware para evitar reloads innecesarios.
+- Sincronizado local (commit `307506e`) y aplicado en VPS (pm2 restart `luna-server`, arranque limpio).
+
 ## Workspace-nexo: sistema de créditos — role selector + sincronización Prisma (2026-07-31)
 
 Implementado en el VPS (`/root/nexo-workspace-src`, branch `master`, pendiente de commit):
