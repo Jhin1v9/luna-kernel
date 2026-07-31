@@ -20,6 +20,14 @@ Luna is an autonomous "mirror" agent: reasoning happens inside the Kimi or DeepS
 
 See `bugs.md`. Currently empty by the owner's decision (2026-07-11): old audits are unreliable, so bugs will be registered manually after verification against the code.
 
+## VPS session recovery (2026-07-31)
+
+- Un rsync manual con `--delete` sobrescribió `chrome-profile/`, `cookies/kimi-master*.json` y `apps/dashboard/data/luna-chat-sessions.json` del VPS, perdiendo la sesión activa de Kimi y el historial de chats.
+- **Sesión de Kimi restaurada** vía login manual del usuario en el VNC (ventana de Chrome estaba minimizada en `Xvfb :1`; se activó con xdotool). Tras el login, `_syncMasterCookiesFromContext` re-escribió `kimi-master-cookies.json` con `kimi-auth` (16 cookies Kimi, savedAt 09:02).
+- **Historial de chats** (28 sesiones) reconstruido desde `~/.luna/sessions/web-*/context.jsonl` por `/tmp/rebuild-sessions.py`.
+- **Prevención**: `.gitignore` ya excluye `chrome-profile/`, `cookies/` y `apps/dashboard/data/` — el rsync manual debe usar `--exclude` explícito (`rsync -av --exclude chrome-profile/ --exclude cookies/ --exclude apps/dashboard/data/`).
+- VNC para login manual: x11vnc `:5901` + websockify `:18445`, noVNC en `https://vps.nexo-digital.app:8445/vnc.html`.
+
 ## Current focus
 
 Dashboard: **Sistema de créditos unificado** — integrado con modelos Prisma existentes (Organization, Project, Contract, WorkspaceUser, CreditTransaction).

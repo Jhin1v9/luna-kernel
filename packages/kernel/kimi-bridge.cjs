@@ -3980,6 +3980,74 @@ class KimiBridge {
         await page.waitForTimeout(300);
       }
       log.warn(`[_submitWithVerification] attempt ${attempt + 1} ('${strategy}') NOT confirmed — no submit transition observed`);
+      try {
+        const failState = await readState();
+        log.warn(`[_submitWithVerification] attempt ${attempt + 1} post-fail state: ${JSON.stringify(failState)} baseline=${JSON.stringify(baseline)} inputHeldPrefix=${inputHeldPrefix}`);
+      } catch (e) { /* best-effort */ }
+    }
+
+    // v11.2-fix: Recovery pass. The dominant cause of all-3-attempts-failing is
+    // Kimi still transitioning from the previous turn (generating flag stuck,
+    // stop button present, editor re-rendering) when Luna re-sends a tool result
+    // ~2s after the previous turn ended. Instead of throwing SEND_NOT_CONFIRMED
+    // immediately, wait for generation to settle, re-fill, and retry once.
+    try {
+      let recoveryState = await readState();
+      if (recoveryState && recoveryState.generating) {
+        log.info('[_submitWithVerification] recovery: Kimi still generating — waiting up to 30s for the turn to settle');
+        const stopDeadline = Date.now() + 30_000;
+        while (Date.now() < stopDeadline) {
+          recoveryState = await readState();
+          if (recoveryState && !recoveryState.generating) break;
+          await page.waitForTimeout(1000);
+        }
+        await page.waitForTimeout(1000);
+      }
+      await this._fillContentEditable(inputLocator, text || '');
+      await page.waitForTimeout(500);
+      const recoveryInput = await readInput();
+      inputHeldPrefix = normPrefix ? recoveryInput.includes(normPrefix) : true;
+      await inputLocator.click({ timeout: 8000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
+      await page.waitForTimeout(500);
+      await page.keyboard.press('Enter');
+      let verifyDeadline = Date.now() + 12_000;
+      while (Date.now() < verifyDeadline) {
+        const current = await readInput();
+        if (current.includes(normPrefix)) inputHeldPrefix = true;
+        const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+        const state = await readState();
+        if (inputCleared
+          || (state && state.assistants > baseline.assistants)
+          || (state && !baseline.generating && state.generating)
+          || (state && !baseline.sendDisabled && state.sendDisabled)) {
+          log.info('[_submitWithVerification] recovery pass (wait-then-retry) confirmed the submit');
+          return { confirmed: true, strategy: 'recovery-wait-then-retry' };
+        }
+        await page.waitForTimeout(300);
+      }
+      const { locator: recoverySendBtn } = await firstMatchingLocator(page, submitSendChain);
+      if (await recoverySendBtn.count() > 0) {
+        await recoverySendBtn.click({ timeout: 8000 }).catch((e) => log.warn(`[_submitWithVerification] recovery send-button click failed: ${e.message}`));
+        verifyDeadline = Date.now() + 12_000;
+        while (Date.now() < verifyDeadline) {
+          const current = await readInput();
+          if (current.includes(normPrefix)) inputHeldPrefix = true;
+          const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+          const state = await readState();
+          if (inputCleared
+            || (state && state.assistants > baseline.assistants)
+            || (state && !baseline.generating && state.generating)
+            || (state && !baseline.sendDisabled && state.sendDisabled)) {
+            log.info('[_submitWithVerification] recovery send-button click confirmed the submit');
+            return { confirmed: true, strategy: 'recovery-send-click' };
+          }
+          await page.waitForTimeout(300);
+        }
+      }
+      const postRecovery = await readState();
+      log.warn(`[_submitWithVerification] recovery pass exhausted — state=${JSON.stringify(postRecovery)}`);
+    } catch (e) {
+      log.warn(`[_submitWithVerification] recovery pass failed: ${e.message}`);
     }
 
     throw new Error(`SEND_NOT_CONFIRMED: texto permanece no input do ${providerDisplayName(submitCfg)} — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)`);
