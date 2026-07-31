@@ -68,6 +68,38 @@ Dashboard: **Sistema de créditos unificado** — integrado con modelos Prisma e
 - `setMode`: text scan + page.evaluate + URL navigation + localStorage override
 - `_stripThinkingPrefix`: remueve prefijo "Thinking" en modo instant
 
+## Workspace-nexo: sistema de créditos — role selector + sincronización Prisma (2026-07-31)
+
+Implementado en el VPS (`/root/nexo-workspace-src`, branch `master`, pendiente de commit):
+
+### Creación de org en un solo paso
+
+- **`POST /api/admin/organizations`** crea en cadena: Organization → Project → Contract (plantilla con datos reales del plan, vigencia 12 meses) → WorkspaceUser admin (opcional, bcrypt) → suscripción + créditos iniciales en el dashboard backend (:13500) → **sincronización a Prisma** (`CreditTransaction` tipo `plan` + `WorkspaceUser.credits`).
+- Planes: `basico/profesional/premium/enterprise`. `types/admin.ts` actualizado.
+- El backend de créditos se invoca con `lib/dashboard-client.ts` (Bearer con DASHBOARD_API_KEY). Errores del dashboard no abortan — se reportan en `warnings`.
+- `clientId` del sistema de créditos == `organizationId`.
+
+### Role selector (nuevo 2026-07-31)
+
+- **Ruta**: acepta `adminRole` (ADMIN/MANAGER/MEMBER/VIEWER, default ADMIN). Validación con fallback.
+- **UI** (`organizacoes/page.tsx`): `<select>` con opciones ADMIN/MANAGER/MEMBER/VIEWER en el formulario de creación.
+- **i18n**: `form.adminRole` en es ("Rol del administrador"), en ("Administrator role"), pt ("Papel do administrador").
+
+### Sincronización Prisma (nuevo 2026-07-31)
+
+- Al crear org con plan y usuario admin, se crea `CreditTransaction` (tipo `plan`, amount = `creditsPerMonth`, userId = adminUser, projectId) y se incrementa `WorkspaceUser.credits` vía `prisma.$transaction`.
+- Esto resuelve el problema reportado donde el portal del cliente (`/api/credits/balance`) y `/creditos` admin mostraban saldo 0 porque solo existían los créditos del dashboard backend.
+- Test E2E verificado: org premium con adminRole=MANAGER → balance dashboard 2400 + Prisma CreditTransaction plan 2400 + WorkspaceUser.credits 2400 + rol MANAGER.
+
+### Reset de contraseña
+
+- `POST /api/admin/clients/[id]/reset-password` (bcrypt + log `RESET`) + botón/modal en `clientes/[id]`.
+
+### How-to del sistema de créditos
+
+- `apps/dashboard/public/howto.html` — página HTML servida en `https://vps.nexo-digital.app:3500/howto.html`. Cubre planes, suscripciones, créditos, tickets, auto-assign, admin summary, team-usage, ejemplos cURL admin y cliente, flujo de trabajo completo.
+- Desplegado en el VPS (`/root/nexo-projects-abner/luna-kernel/apps/dashboard/public/howto.html`). Build + deploy de workspace-nexo verificado.
+
 ## How to run (VPS)
 
 `pm2 status` muestra:
