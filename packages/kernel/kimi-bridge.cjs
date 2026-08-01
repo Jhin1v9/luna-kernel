@@ -3925,35 +3925,36 @@ class KimiBridge {
 
   /**
    * v10.35-fix: Fill a contenteditable/Lexical editor reliably.
-   * v2026-08-01: document.execCommand('insertText') was removed/deprecated in
-   * Chrome 149+ — it renders text into the DOM but Lexical's EditorState never
-   * registers it, so Enter becomes a no-op and the text sits unsent (the
-   * "texto sem enviar no chat" bug). Fall back to CDP Input.insertText, which
-   * fires real beforeinput/input events that Lexical observes.
+   * v2026-08-02: Chrome 149+ removed document.execCommand entirely — selectAll
+   * and delete are no-ops, and insertText PREPENDS text without clearing the
+   * old content. A dirty editor ends up with OLD+NEW text merged in the DOM
+   * while Lexical's EditorState desyncs (text visible but not registered),
+   * so Enter becomes a no-op → SEND_NOT_CONFIRMED. Only real CDP input events
+   * work: keyboard select-all + backspace to clear, then Input.insertText,
+   * which fires the beforeinput/input events Lexical observes. Verify the text
+   * landed in a data-lexical-text span (Lexical's own signal), not innerText.
    */
   async _fillContentEditable(inputLocator, text) {
+    const page = inputLocator.page();
     await inputLocator.evaluate((el) => el.focus());
-    await inputLocator.evaluate((el) => {
-      // Select all and delete first
-      document.execCommand('selectAll', false, null);
-      document.execCommand('delete', false, null);
-    });
-    await inputLocator.evaluate((el, txt) => {
-      try {
-        document.execCommand('insertText', false, txt);
-      } catch (e) { /* deprecated path may throw in newer Chrome */ }
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, text);
-    // Verify the text actually registered in the editor (Lexical state).
-    let stuck = await inputLocator.evaluate((el) => (el.innerText || '').trim().length).catch(() => 0);
+    await inputLocator.click({ timeout: 5000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.press('Backspace');
+    await page.waitForTimeout(150);
+    if (text) {
+      await page.keyboard.insertText(text);
+      await page.waitForTimeout(150);
+    }
+    // Verify Lexical actually registered the text (data-lexical-text spans).
     const expected = (text || '').trim().length;
-    if (expected > 0 && stuck < Math.min(expected, 10)) {
-      log.info(`[_fillContentEditable] execCommand did not register text (got ${stuck} chars) — falling back to CDP Input.insertText`);
-      await inputLocator.evaluate((el) => el.focus());
-      // CDP Input.insertText fires real text-input events that Lexical honors.
-      const { keyboard } = inputLocator.page();
-      await keyboard.insertText(text);
+    if (expected > 0) {
+      let registered = await inputLocator.evaluate((el) => el.querySelectorAll('span[data-lexical-text="true"]').length).catch(() => 0);
+      if (registered === 0) {
+        log.warn('[_fillContentEditable] text not registered by Lexical — refocusing and retrying CDP Input.insertText');
+        await inputLocator.evaluate((el) => el.focus());
+        await page.keyboard.insertText(text);
+        await page.waitForTimeout(200);
+      }
     }
   }
 
