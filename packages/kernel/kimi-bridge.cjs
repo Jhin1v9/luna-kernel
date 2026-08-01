@@ -7984,7 +7984,11 @@ class KimiBridge {
       // W6-T1: bounded wait — a renamed selector or a silent Enter failure must
       // not hang the stream forever (session.processing would stay true and
       // brick every future message from this user).
-      const NEW_ASSISTANT_TIMEOUT_MS = 120_000;
+      // v2026-08-01: scale the wait with prompt length — Kimi can take minutes
+      // to render the first .segment-assistant for very long prompts (e.g. an
+      // 18KB file pasted as text), and the fixed 120s timed out prematurely.
+      const PROMPT_LEN = (text || '').length;
+      const NEW_ASSISTANT_TIMEOUT_MS = Math.min(600_000, 120_000 + PROMPT_LEN * 5);
       const newAssistantDeadline = Date.now() + NEW_ASSISTANT_TIMEOUT_MS;
       if (resolvedProvider === 'kimi') {
         while (true) {
