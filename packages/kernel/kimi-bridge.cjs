@@ -1317,26 +1317,7 @@ class KimiBridge {
 
     // Register crash/disconnect listeners
     this.browser.on('disconnected', async () => {
-      log.warn('[CRASH-RECOVERY] Browser disconnected via CDP');
-      this.browser = null;
-      this.defaultContext = null;
-      this.userContexts.clear();
-      this._resetCdpUrl();
-      // v8.6-fix: Auto-restart Chrome preemptively so next operation doesn't wait
-      try {
-        log.info('[CRASH-RECOVERY] Auto-restarting Chrome...');
-        await this.checkChrome();
-        log.info('[CRASH-RECOVERY] Chrome auto-restarted successfully');
-      } catch (e) {
-        log.warn('[CRASH-RECOVERY] Auto-restart failed:', e.message);
-      }
-      // v8.6-fix: Clear global state to prevent stale sessions
-      this.domEventQueues.clear();
-      this.streamStopFlags.clear();
-      this.cancelledStreams.clear();
-      this.networkInterceptors.forEach(i => i.stop());
-      this.networkInterceptors.clear();
-      log.info('[DEBUG-LUNA] Global state cleared after browser disconnect');
+      await this._handleChromeDisconnect('cdp-disconnect');
     });
 
     // Start idle cleanup timer
@@ -3944,9 +3925,11 @@ class KimiBridge {
 
   /**
    * v10.35-fix: Fill a contenteditable/Lexical editor reliably.
-   * Playwright's fill() does not register in React/Lexical contenteditable
-   * on Kimi's landing/agent page. We use document.execCommand('insertText')
-   * inside the focused editor, which Lexical observes correctly.
+   * v2026-08-01: document.execCommand('insertText') was removed/deprecated in
+   * Chrome 149+ — it renders text into the DOM but Lexical's EditorState never
+   * registers it, so Enter becomes a no-op and the text sits unsent (the
+   * "texto sem enviar no chat" bug). Fall back to CDP Input.insertText, which
+   * fires real beforeinput/input events that Lexical observes.
    */
   async _fillContentEditable(inputLocator, text) {
     await inputLocator.evaluate((el) => el.focus());
@@ -3956,11 +3939,22 @@ class KimiBridge {
       document.execCommand('delete', false, null);
     });
     await inputLocator.evaluate((el, txt) => {
-      document.execCommand('insertText', false, txt);
-      // Dispatch input events so React/Lexical state updates and send button enables
+      try {
+        document.execCommand('insertText', false, txt);
+      } catch (e) { /* deprecated path may throw in newer Chrome */ }
       el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }, text);
+    // Verify the text actually registered in the editor (Lexical state).
+    let stuck = await inputLocator.evaluate((el) => (el.innerText || '').trim().length).catch(() => 0);
+    const expected = (text || '').trim().length;
+    if (expected > 0 && stuck < Math.min(expected, 10)) {
+      log.info(`[_fillContentEditable] execCommand did not register text (got ${stuck} chars) — falling back to CDP Input.insertText`);
+      await inputLocator.evaluate((el) => el.focus());
+      // CDP Input.insertText fires real text-input events that Lexical honors.
+      const { keyboard } = inputLocator.page();
+      await keyboard.insertText(text);
+    }
   }
 
   /**
@@ -5184,6 +5178,60 @@ class KimiBridge {
   }
 
   /**
+   * v2026-08-01: Centralized Chrome disconnect/restart path. Triggered both by
+   * the CDP 'disconnected' event and by the proactive memory watchdog (OOM
+   * prevention). Clears stale state, auto-restarts Chrome, and keeps sessions.
+   */
+  async _handleChromeDisconnect(reason = 'cdp-disconnect') {
+    log.warn(`[CRASH-RECOVERY] Browser disconnected (reason=${reason})`);
+    const wasConnected = !!this.browser;
+    this.browser = null;
+    this.defaultContext = null;
+    this.userContexts.clear();
+    this._resetCdpUrl();
+    if (wasConnected || reason === 'memory-watchdog') {
+      try {
+        log.info('[CRASH-RECOVERY] Auto-restarting Chrome...');
+        await this.checkChrome();
+        log.info('[CRASH-RECOVERY] Chrome auto-restarted successfully');
+      } catch (e) {
+        log.warn('[CRASH-RECOVERY] Auto-restart failed:', e.message);
+      }
+    }
+    this.domEventQueues.clear();
+    this.streamStopFlags.clear();
+    this.cancelledStreams.clear();
+    this.networkInterceptors.forEach(i => i.stop());
+    this.networkInterceptors.clear();
+    log.info('[DEBUG-LUNA] Global state cleared after browser disconnect');
+  }
+
+  /**
+   * v2026-08-01: Proactive Chrome memory watchdog. Called from the background
+   * poller every cycle. If aggregate Chrome RSS exceeds the threshold the page
+   * is thrashing (send/submit events stop processing) and the Linux OOM killer
+   * will kill it mid-operation — worse. Restart Chrome before that.
+   */
+  async _checkChromeMemory() {
+    const thresholdMB = parseInt(process.env.KIMI_MAX_CHROME_MB, 10) || 2400;
+    if (this._memoryWatchdogThrottle && Date.now() < this._memoryWatchdogThrottle) return false;
+    try {
+      const { execSync } = require('child_process');
+      const out = execSync(`ps aux | grep -E '[c]hrome' | awk '{sum+=$6} END {print int(sum/1024)}'`, { encoding: 'utf8', timeout: 5000 }).trim();
+      const totalMB = parseInt(out, 10) || 0;
+      if (totalMB > thresholdMB) {
+        log.warn(`[CRASH-RECOVERY] Chrome RSS=${totalMB}MB > ${thresholdMB}MB — proactively restarting to avoid OOM kill`);
+        this._memoryWatchdogThrottle = Date.now() + 180_000;
+        await this._handleChromeDisconnect('memory-watchdog');
+        return true;
+      }
+    } catch (e) {
+      log.warn(`[CRASH-RECOVERY] Memory watchdog check failed: ${e.message}`);
+    }
+    return false;
+  }
+
+  /**
    * v5.6-fix: Background polling to keep pages alive and detect new messages.
    * Prevents Chrome mobile from suspending the tab when user switches apps.
    * Polls every 30s: brings page to front and evaluates a no-op to keep alive.
@@ -5191,6 +5239,8 @@ class KimiBridge {
   _startBackgroundPolling() {
     if (this.bgPollTimer) clearInterval(this.bgPollTimer);
     this.bgPollTimer = setInterval(async () => {
+      // v2026-08-01: OOM prevention — restart Chrome before the kernel kills it.
+      await this._checkChromeMemory();
       for (const [userId, session] of this.userSessions) {
         if (!session.page || session.page.isClosed()) continue;
         try {
