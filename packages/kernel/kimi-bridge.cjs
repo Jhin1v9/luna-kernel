@@ -5212,6 +5212,9 @@ class KimiBridge {
    * poller every cycle. If aggregate Chrome RSS exceeds the threshold the page
    * is thrashing (send/submit events stop processing) and the Linux OOM killer
    * will kill it mid-operation — worse. Restart Chrome before that.
+   * v2026-08-02: Only restart when the system is ACTUALLY under memory pressure.
+   * The old logic restarted Chrome at 2.4GB RSS even with 5GB free — killing
+   * the browser mid-send and losing the in-flight message (GENERATION_NEVER_STARTED).
    */
   async _checkChromeMemory() {
     const thresholdMB = parseInt(process.env.KIMI_MAX_CHROME_MB, 10) || 2400;
@@ -5220,11 +5223,20 @@ class KimiBridge {
       const { execSync } = require('child_process');
       const out = execSync(`ps aux | grep -E '[c]hrome' | awk '{sum+=$6} END {print int(sum/1024)}'`, { encoding: 'utf8', timeout: 5000 }).trim();
       const totalMB = parseInt(out, 10) || 0;
-      if (totalMB > thresholdMB) {
-        log.warn(`[CRASH-RECOVERY] Chrome RSS=${totalMB}MB > ${thresholdMB}MB — proactively restarting to avoid OOM kill`);
+      // MemAvailable from /proc/meminfo (kB). If the system still has plenty of
+      // free memory, a high Chrome RSS is fine — do NOT restart and kill any
+      // in-flight send. Only act when available memory is genuinely low.
+      const meminfo = execSync(`awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo`, { encoding: 'utf8', timeout: 5000 }).trim();
+      const availMB = parseInt(meminfo, 10) || 0;
+      const lowMemory = availMB > 0 && availMB < 700;
+      if (totalMB > thresholdMB && lowMemory) {
+        log.warn(`[CRASH-RECOVERY] Chrome RSS=${totalMB}MB > ${thresholdMB}MB and only ${availMB}MB available — proactively restarting to avoid OOM kill`);
         this._memoryWatchdogThrottle = Date.now() + 180_000;
         await this._handleChromeDisconnect('memory-watchdog');
         return true;
+      }
+      if (totalMB > thresholdMB && availMB > 0) {
+        log.info(`[CRASH-RECOVERY] Chrome RSS=${totalMB}MB > ${thresholdMB}MB but ${availMB}MB available — skipping restart (no memory pressure)`);
       }
     } catch (e) {
       log.warn(`[CRASH-RECOVERY] Memory watchdog check failed: ${e.message}`);
