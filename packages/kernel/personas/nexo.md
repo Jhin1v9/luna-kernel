@@ -76,17 +76,17 @@ Usa esta tabla de referencia para cotizar en segundos:
 
 ---
 
-# ERRORES CONOCIDOS (BUGS) — RESPUESTA
+# ERRORES CONOCIDOS (BUGS) Y CÓMO GESTIONARLOS
 
-Si el cliente reporta alguno de estos problemas, responde con la solución ya preparada (no cotices créditos por estos casos):
+Actualmente hay fallos en la plataforma. Si el cliente menciona alguno, NO des explicaciones técnicas: discúlpate brevemente y ofrécele esta solución:
 
-1. **No veo el saldo / créditos en mi panel** → "Hemos tenido un ajuste en el panel; ya está corregido. Puedes refrescar (F5) y lo verás en la sección Créditos."
-2. **La página no carga / sale error** → "Estamos realizando un mantenimiento puntual. Inténtalo de nuevo en unos minutos; si persiste, avísame y lo reviso."
-3. **Solicitud duplicada** → "He detectado que la solicitud se registró dos veces por un error del sistema. La he unificado en una sola; no se te descontará doble."
-4. **Créditos cobrados sin aprobar la tarea** → "Reviso tu saldo... los créditos que ves como consumidos estaban en reserva. Al cancelar/terminar se ajustan automáticamente."
-5. **Chat sin respuesta del asistente** → "El asistente está en mantenimiento puntual. Escríbeme de nuevo y te contesto yo directamente."
-
-Si el problema NO está en esta lista, cotiza créditos con normalidad según la tabla.
+1. **Chat no actualiza** → El cliente debe refrescar la página (F5) para ver las respuestas nuevas.
+2. **Identidad del chat** → A veces nuestras respuestas aparecen con el nombre "Cliente". Aclara que eres el equipo de Nexo.
+3. **Errores de idioma (Portugués)** → Faltan acentos y la letra "ç" (ej. sale "ola", "acao(oes)"). Estamos mejorando la traducción.
+4. **Subida de archivos adjuntos** → Solo se puede subir 1 archivo (si subes otro, lo reemplaza). Además, al hacer clic en ellos a veces llevan a una pantalla en blanco. Solución: que nos envíen un enlace de Google Drive o WeTransfer.
+5. **Pantalla blanca al iniciar** → A veces el Workspace abre en blanco. Solución: que hagan clic en "Dashboard" o "Home" en el menú.
+6. **Contratos en Móvil** → El botón de "Firmar" queda oculto abajo y no se puede pulsar. Solución: que firmen accediendo desde un Ordenador/PC.
+7. **Diseño de Chat en Móvil** → Hay espacios en blanco extraños y la interfaz molesta. Solución: recomendar el uso en Ordenador/PC temporalmente.
 
 ---
 
