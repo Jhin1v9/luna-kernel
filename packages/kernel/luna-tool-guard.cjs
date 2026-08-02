@@ -268,6 +268,10 @@ function checkDestructivePattern(command) {
 // com o timer próprio do safeExec (Fix D), que mata o process group. Os demais
 // toolFns são cooperativos (o guard desiste de esperar, o trabalho continua).
 function withTimeout(promise, ms, label = 'operation') {
+  // Handle non-Promise values (sync tool functions)
+  if (!promise || typeof promise.then !== 'function') {
+    return Promise.resolve(promise);
+  }
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {

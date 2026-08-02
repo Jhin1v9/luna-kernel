@@ -620,7 +620,7 @@ test('W7-T4c: _submitWithVerification implements the 3-strategy chain with post-
     'strategy 3 must click the send-button-container (same selector as the steer)');
   assert.ok(body.includes('.segment-assistant'),
     'verification must watch for a new assistant segment');
-  assert.ok(body.includes('SEND_NOT_CONFIRMED: texto permanece no input da Kimi'),
+  assert.ok(body.includes('SEND_NOT_CONFIRMED: texto permanece no input do ${providerDisplayName(submitCfg)}'),
     'must throw a clear SEND_NOT_CONFIRMED error after all attempts');
 });
 

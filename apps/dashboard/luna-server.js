@@ -174,6 +174,32 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'luna-web', timestamp: new Date().toISOString() });
 });
 
+// ── Path Guard Config ──
+const lunaConfig = require(path.join(__dirname, '..', '..', 'packages', 'kernel', 'config', 'luna-config'));
+
+app.get('/api/path-guard', (req, res) => {
+  try {
+    const config = lunaConfig.PATH_GUARD.load();
+    res.json({ success: true, config });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/path-guard', (req, res) => {
+  try {
+    const { enabled, allowHomeDir, customPaths } = req.body;
+    const config = lunaConfig.PATH_GUARD.load();
+    if (enabled !== undefined) config.enabled = !!enabled;
+    if (allowHomeDir !== undefined) config.allowHomeDir = !!allowHomeDir;
+    if (customPaths !== undefined) config.customPaths = Array.isArray(customPaths) ? customPaths : [];
+    lunaConfig.PATH_GUARD.save(config);
+    res.json({ success: true, config });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Legacy config panel fallback (from old config-server.cjs)
 app.get('/config.html', (req, res) => {
   const configPath = path.join(LUNA_DIR, 'config.html');

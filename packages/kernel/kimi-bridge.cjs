@@ -32,7 +32,8 @@ const { makeDomEventDedupKey } = require('./lib/tool-dedup-key.cjs');
 // detects Kimi's "conversation too long" notice even when it renders as a
 // modal/banner outside the response bubbles.
 const { scanPageContextLimit } = require('./bridge-libs/dom-scripts/poll-dom-structure.js');
-const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors, getProviderApiPatterns } = require('./provider-loader.cjs');
+const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors } = require('./provider-loader.cjs');
+const { resolveChain, providerDisplayName, firstMatchingLocator, waitForChain } = require('./lib/provider-selectors.cjs');
 
 // Lazy-load turndown — fail gracefully if not installed
 let TurndownService = null;
@@ -736,10 +737,10 @@ class Semaphore {
 // ============================================================
 // PROVIDER NETWORK INTERCEPTOR v7.5 — Multi-Provider
 // ============================================================
-// Replaces fragile JavaScript injection with native CDP network interception.
-// Uses Chrome DevTools Protocol Fetch domain to intercept SSE streams in
-// real-time, server-side. Immune to page anti-tampering, SPA navigation,
-// React resets, or fetch restoration.
+// Intercepts provider responses server-side via the Playwright
+// page.on('response') listener (PDS Fase 0: the CDP Fetch branch was
+// removed — it never worked, see bugs.md:23). Immune to page
+// anti-tampering, SPA navigation, React resets, or fetch restoration.
 
 class ProviderNetworkInterceptor {
   constructor(page, providerConfig) {
@@ -758,57 +759,12 @@ class ProviderNetworkInterceptor {
   async start() {
     if (this._active) return;
     this._active = true;
-
-    // v7.5: Use CDP Fetch domain for real-time response interception
-    // This captures SSE chunks as they arrive, not just at the end.
-    try {
-      this._cdpSession = await this.page.context().newCDPSession(this.page);
-      
-      // Build patterns from provider config + fallback
-      const patterns = this._buildFetchPatterns();
-      
-      await this._cdpSession.send('Fetch.enable', { patterns });
-
-      this._cdpSession.on('Fetch.requestPaused', async (event) => {
-        const { requestId, responseStatusCode, responseHeaders } = event;
-
-        // Only intercept successful responses
-        if (responseStatusCode && responseStatusCode >= 200 && responseStatusCode < 300) {
-          this._requestId = requestId;
-          this.lastActivity = Date.now();
-
-          try {
-            // Get response body (may be partial for streaming)
-            const bodyResult = await this._cdpSession.send('Fetch.getResponseBody', { requestId });
-            if (bodyResult.body) {
-              const text = bodyResult.base64Encoded
-                ? Buffer.from(bodyResult.body, 'base64').toString('utf-8')
-                : bodyResult.body;
-              // v8.7-fix: Limit buffer size to prevent memory growth / crash
-              if (this._responseBuffer.length > 10 * 1024 * 1024) {
-                this._responseBuffer = this._responseBuffer.slice(-5 * 1024 * 1024);
-              }
-              this._responseBuffer += text;
-              this._parseSse(text);
-            }
-          } catch (e) {
-            // Body may not be available yet for streaming responses
-          }
-        }
-
-        // Always continue the request so the page works normally
-        try {
-          await this._cdpSession.send('Fetch.continueRequest', { requestId });
-        } catch (e) {
-          // Request may have been already continued
-        }
-      });
-
-      log.info('[KimiNetworkInterceptor] Started — listening via CDP Fetch domain');
-    } catch (e) {
-      log.warn(`[KimiNetworkInterceptor] CDP Fetch failed (${e.message}), falling back to page.on('response')`);
-      this._startPlaywrightFallback();
-    }
+    // PDS Fase 0: the CDP Fetch branch was removed — it depended on
+    // _buildFetchPatterns, which never existed, so every start() threw and
+    // fell back to the Playwright listener anyway. The listener is now the
+    // sole interception path.
+    this._startPlaywrightFallback();
+    log.info('[ProviderNetworkInterceptor] Started — listening via page.on("response")');
   }
 
   _startPlaywrightFallback() {
@@ -860,14 +816,20 @@ class ProviderNetworkInterceptor {
   }
 
   _isChatUrl(url) {
-    return typeof url === 'string' && (
-      url.includes('/api/chat') ||
-      url.includes('/ChatService/Chat') ||
-      url.includes('/kimi.gateway.chat') ||
-      url.includes('/apiv2/kimi.chat') ||
-      url.includes('/kimi.chat.v1.ChatService') ||
-      url.includes('/ChatService/ChatCompletion')
-    );
+    if (typeof url !== 'string') return false;
+    // PDS Fase 0: provider-config apiEndpoints UNIONED with the legacy
+    // hardcoded defaults — kimi.json stays untouched (owner directive) and
+    // Kimi's URL coverage is identical to the pre-refactor hardcoded list.
+    const endpoints = this.providerConfig?.apiEndpoints || [];
+    const defaults = [
+      '/api/chat',
+      '/ChatService/Chat',
+      '/kimi.gateway.chat',
+      '/apiv2/kimi.chat',
+      '/kimi.chat.v1.ChatService',
+      '/ChatService/ChatCompletion',
+    ];
+    return endpoints.concat(defaults).some(ep => url.includes(ep));
   }
 
   _parseSse(text) {
@@ -1044,15 +1006,18 @@ class KimiBridge {
     try {
       // v10.36-fix: Click the native "New Chat" button when available.
       // This preserves login state because it does not reload the origin.
-      const newChatBtn = page.locator('.new-chat-btn').first();
-      if (await newChatBtn.count() > 0) {
+      // PDS Fase 0: provider-configured chain, .new-chat-btn as final fallback.
+      const newChatCfg = this._loadProviderConfig(provider);
+      const newChatChain = resolveChain(newChatCfg, 'newChat', '.new-chat-btn');
+      const { locator: newChatBtn, selector: newChatSel } = await firstMatchingLocator(page, newChatChain);
+      if (newChatSel && await newChatBtn.count() > 0) {
         const isVisible = await newChatBtn.evaluate(el => {
           const r = el.getBoundingClientRect();
           return r.width > 0 && r.height > 0;
         }).catch(() => false);
         if (isVisible) {
           await newChatBtn.click({ timeout: 10000 });
-          log.info(`[_openNewChat] Clicked .new-chat-btn for provider=${provider}`);
+          log.info(`[_openNewChat] Clicked '${newChatSel}' for provider=${provider}`);
           await page.waitForTimeout(1500);
           const urlAfterClick = page.url();
           log.info(`[_openNewChat] URL after click: ${urlAfterClick}`);
@@ -1321,23 +1286,30 @@ class KimiBridge {
       log.warn(`Failed to inject MASTER cookies into defaultContext: ${e.message}`);
     }
 
-    // v3.9-fix: Also inject localStorage into defaultContext pages
+    // v3.9-fix: Also inject localStorage into defaultContext pages.
+    // PDS Fase 0: per-provider (was hardcoded to the kimi file), and only
+    // into pages whose URL matches the provider host — localStorage is
+    // per-origin, so injecting anywhere else was a no-op anyway.
     try {
-      const masterLsPath = path.join(__dirname, 'cookies', 'kimi-master-localstorage.json');
-      if (fs.existsSync(masterLsPath)) {
+      for (const providerName of listProviders()) {
+        const providerCfg = loadProviderConfig(providerName);
+        const cookiePaths = getProviderCookies(providerCfg);
+        const masterLsPath = cookiePaths.localStorage;
+        if (!fs.existsSync(masterLsPath)) continue;
         const masterLsData = JSON.parse(fs.readFileSync(masterLsPath, 'utf8'));
         const lsData = masterLsData.data || {};
         const keys = Object.keys(lsData);
-        if (keys.length > 0) {
-          for (const page of this.defaultContext.pages()) {
-            await page.evaluate((items) => {
-              for (const [key, value] of Object.entries(items)) {
-                try { localStorage.setItem(key, value); } catch (e) {}
-              }
-            }, lsData).catch(() => {});
-          }
-          log.info(`Injected ${keys.length} localStorage items into defaultContext pages`);
+        if (keys.length === 0) continue;
+        const providerHost = this._providerDomain(providerName);
+        for (const page of this.defaultContext.pages()) {
+          if (!page.url().includes(providerHost)) continue;
+          await page.evaluate((items) => {
+            for (const [key, value] of Object.entries(items)) {
+              try { localStorage.setItem(key, value); } catch (e) {}
+            }
+          }, lsData).catch(() => {});
         }
+        log.info(`Injected ${keys.length} localStorage items for ${providerName} into matching defaultContext pages`);
       }
     } catch (e) {
       log.warn(`Failed to inject MASTER localStorage into defaultContext: ${e.message}`);
@@ -1345,26 +1317,7 @@ class KimiBridge {
 
     // Register crash/disconnect listeners
     this.browser.on('disconnected', async () => {
-      log.warn('[CRASH-RECOVERY] Browser disconnected via CDP');
-      this.browser = null;
-      this.defaultContext = null;
-      this.userContexts.clear();
-      this._resetCdpUrl();
-      // v8.6-fix: Auto-restart Chrome preemptively so next operation doesn't wait
-      try {
-        log.info('[CRASH-RECOVERY] Auto-restarting Chrome...');
-        await this.checkChrome();
-        log.info('[CRASH-RECOVERY] Chrome auto-restarted successfully');
-      } catch (e) {
-        log.warn('[CRASH-RECOVERY] Auto-restart failed:', e.message);
-      }
-      // v8.6-fix: Clear global state to prevent stale sessions
-      this.domEventQueues.clear();
-      this.streamStopFlags.clear();
-      this.cancelledStreams.clear();
-      this.networkInterceptors.forEach(i => i.stop());
-      this.networkInterceptors.clear();
-      log.info('[DEBUG-LUNA] Global state cleared after browser disconnect');
+      await this._handleChromeDisconnect('cdp-disconnect');
     });
 
     // Start idle cleanup timer
@@ -1619,6 +1572,7 @@ class KimiBridge {
         lastActivity: Date.now(),
         processing: false,
         mode: stored?.mode || 'instant',
+      sessionSaved: false,
       };
       this.userSessions.set(userId, session);
 
@@ -1685,8 +1639,23 @@ class KimiBridge {
       const loginSelector = getProviderSelector(providerCfg, 'loginIndicator');
       const appContentSelector = getProviderSelector(providerCfg, 'appContent');
       const isLoggedIn = await page.evaluate(({ loginSel, appSel }) => {
-        const hasLoginForm = loginSel ? !!document.querySelector(loginSel) : false;
-        const hasAppContent = appSel ? !!document.querySelector(appSel) : false;
+        const isVisible = (el) => {
+          if (!el) return false;
+          try {
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
+        };
+        const firstVisible = (sel) => {
+          if (!sel) return null;
+          try { for (const el of document.querySelectorAll(sel)) { if (isVisible(el)) return el; } } catch (_) {}
+          return null;
+        };
+        const hasLoginForm = !!firstVisible(loginSel);
+        const hasAppContent = !!firstVisible(appSel)
+          || !!firstVisible('.chat-input-editor, .chat-editor, [contenteditable=true], div[role=textbox]');
         return !hasLoginForm && hasAppContent;
       }, { loginSel: loginSelector, appSel: appContentSelector }).catch(() => false);
 
@@ -1712,8 +1681,23 @@ class KimiBridge {
         await this._injectMasterLocalStorage(page, provider);
 
         const stillLoggedOut = await page.evaluate(({ loginSel, appSel }) => {
-          const hasLoginForm = loginSel ? !!document.querySelector(loginSel) : false;
-          const hasAppContent = appSel ? !!document.querySelector(appSel) : false;
+          const isVisible = (el) => {
+            if (!el) return false;
+            try {
+              const st = window.getComputedStyle(el);
+              if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
+          };
+          const firstVisible = (sel) => {
+            if (!sel) return null;
+            try { for (const el of document.querySelectorAll(sel)) { if (isVisible(el)) return el; } } catch (_) {}
+            return null;
+          };
+          const hasLoginForm = !!firstVisible(loginSel);
+          const hasAppContent = !!firstVisible(appSel)
+            || !!firstVisible('.chat-input-editor, .chat-editor, [contenteditable=true], div[role=textbox]');
           return !hasLoginForm && !hasAppContent;
         }, { loginSel: loginSelector, appSel: appContentSelector }).catch(() => true);
 
@@ -1740,6 +1724,7 @@ class KimiBridge {
       lastActivity: Date.now(),
       processing: false,
       mode: stored?.mode || 'instant',
+      sessionSaved: false,
     };
 
     this.userSessions.set(userId, session);
@@ -2023,23 +2008,66 @@ class KimiBridge {
     const loginSelector = getProviderSelector(providerCfg, 'loginIndicator');
     const appContentSelector = getProviderSelector(providerCfg, 'appContent');
 
+    const isVisible = (el) => {
+      if (!el) return false;
+      try {
+        const st = window.getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
+    };
+
     const evalLoggedIn = async () => {
       return page.evaluate(({ loginSel, appSel }) => {
-        const loginEl = loginSel ? document.querySelector(loginSel) : null;
-        const pwdEl = document.querySelector('input[type="password"]');
-        const appEl = appSel ? document.querySelector(appSel) : null;
-        const result = {
-          hasLoginForm: !!loginEl,
-          hasPassword: !!pwdEl,
-          hasAppContent: !!appEl,
+        const isVisible = (el) => {
+          if (!el) return false;
+          try {
+            const st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          } catch (_) { return !!(el.offsetWidth || el.offsetHeight); }
         };
-        return { loggedIn: !(result.hasLoginForm || result.hasPassword) && result.hasAppContent, debug: result };
+        const firstVisible = (sel) => {
+          if (!sel) return null;
+          try {
+            for (const el of document.querySelectorAll(sel)) {
+              if (isVisible(el)) return el;
+            }
+          } catch (_) {}
+          return null;
+        };
+        const loginEl = firstVisible(loginSel);
+        const pwdEl = firstVisible('input[type="password"]');
+        // Prefer chat input / editor as hard proof of logged-in app shell
+        const appEl = firstVisible(appSel)
+          || firstVisible('.chat-input-editor, .chat-editor, [contenteditable="true"], div[role="textbox"]')
+          || firstVisible('.user-avatar-container');
+        const hasLoginForm = !!loginEl;
+        const hasPassword = !!pwdEl;
+        const hasAppContent = !!appEl;
+        // If the chat shell is visible, treat as logged in even if a hidden
+        // login node exists in the DOM (Kimi often keeps modal markup mounted).
+        const loggedIn = hasAppContent && !(hasLoginForm && hasPassword);
+        return {
+          loggedIn,
+          debug: { hasLoginForm, hasPassword, hasAppContent, url: location.href },
+        };
       }, { loginSel: loginSelector, appSel: appContentSelector }).catch((e) => ({ loggedIn: false, debug: { error: e.message } }));
     };
 
-    const evalResult = await evalLoggedIn();
-    let isLoggedIn = evalResult.loggedIn;
-    log.info(`[_verifySession] provider=${provider} isLoggedIn=${isLoggedIn}`);
+    // Wait briefly for SPA shell after navigation before declaring logout
+    let evalResult = await evalLoggedIn();
+    if (!evalResult.loggedIn) {
+      for (let i = 0; i < 6; i++) {
+        await page.waitForTimeout(500);
+        evalResult = await evalLoggedIn();
+        if (evalResult.loggedIn) break;
+      }
+    }
+    let isLoggedIn = !!evalResult.loggedIn;
+    log.info(`[_verifySession] provider=${provider} isLoggedIn=${isLoggedIn} debug=${JSON.stringify(evalResult.debug || {})}`);
 
     if (!isLoggedIn) {
       // Attempt cookie restoration before giving up
@@ -2063,7 +2091,7 @@ class KimiBridge {
                 log.info(`[_verifySession] Clicking Kimi Google login button in modal for ${hashUserId(userId)}`);
                 await googleBtn.click();
                 await page.waitForTimeout(4000);
-                if (await evalLoggedIn()) {
+                if ((await evalLoggedIn()).loggedIn) {
                   log.success(`Google login modal click restored session for user ${hashUserId(userId)}`);
                   // The modal may still be open even though the cookie session is active.
                   // Reload to dismiss the overlay so subsequent clicks (new chat, send) work.
@@ -2084,7 +2112,7 @@ class KimiBridge {
                 log.info(`[_verifySession] Clicking Kimi Log In button to activate cookie session for ${hashUserId(userId)}`);
                 await loginBtn.click();
                 await page.waitForTimeout(3000);
-                if (await evalLoggedIn()) {
+                if ((await evalLoggedIn()).loggedIn) {
                   log.success(`Log In button click restored session for user ${hashUserId(userId)}`);
                   restored = true;
                 }
@@ -2108,7 +2136,7 @@ class KimiBridge {
                 log.info(`Loaded ${masterCookies.length} cookies from MASTER backup for user ${hashUserId(userId)} (provider=${provider})`);
                 await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
                 await page.waitForTimeout(2000);
-                if (await evalLoggedIn()) {
+                if ((await evalLoggedIn()).loggedIn) {
                   log.success(`MASTER cookies restored session for user ${hashUserId(userId)}`);
                   restored = true;
                 }
@@ -2127,7 +2155,7 @@ class KimiBridge {
             log.info(`Re-synced ${cookies.length} cookies from default context for user ${hashUserId(userId)}`);
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            if (await evalLoggedIn()) {
+            if ((await evalLoggedIn()).loggedIn) {
               log.success(`Cookie re-sync restored session for user ${hashUserId(userId)}`);
               restored = true;
             }
@@ -2140,7 +2168,7 @@ class KimiBridge {
           if (loaded) {
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            if (await evalLoggedIn()) {
+            if ((await evalLoggedIn()).loggedIn) {
               log.success(`Cookie backup restored session for user ${hashUserId(userId)}`);
               restored = true;
             }
@@ -2739,14 +2767,28 @@ class KimiBridge {
    * Detect the actual mode currently selected in the Kimi UI or page URL
    */
   async _detectActualMode(page) {
-    try {
-      const label = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 5000 });
-      if (label.includes('Instant')) return 'instant';
-      if (label.includes('Thinking')) return 'thinking';
-      return null;
-    } catch (e) {
-      return null;
+    const modeSelectors = [
+      '.chat-editor-action .model-name',
+      '.model-selector',
+      '[class*="model"] [class*="name"]',
+      '[class*="mode-switcher"]',
+      '[class*="model-switcher"]',
+    ];
+    for (const sel of modeSelectors) {
+      try {
+        const label = await page.locator(sel).textContent({ timeout: 3000 });
+        const lower = label.toLowerCase();
+        if (lower.includes('instant') || lower.includes('fast') || lower.includes('rapid')) return 'instant';
+        if (lower.includes('thinking') || lower.includes('deep') || lower.includes('reason')) return 'thinking';
+      } catch {}
     }
+    // Try URL-based detection as fallback
+    try {
+      const url = page.url().toLowerCase();
+      if (url.includes('instant')) return 'instant';
+      if (url.includes('thinking') || url.includes('deep')) return 'thinking';
+    } catch {}
+    return null;
   }
 
   /**
@@ -2914,9 +2956,10 @@ class KimiBridge {
 
     const kimiMode = mode === 'instant' ? 'instant' : 'thinking';
     const currentLabel = await page.locator('.chat-editor-action .model-name').textContent({ timeout: 3000 }).catch(() => '');
-    const targetLabel = kimiMode === 'instant' ? 'K2.6 Instant' : 'K2.6 Thinking';
+    const targetKeywords = kimiMode === 'instant' ? ['Instant', 'instant', 'Fast', 'Rápido'] : ['Thinking', 'thinking', 'Deep', 'Reason'];
 
-    if (currentLabel.includes(targetLabel)) {
+    const isAlreadySet = targetKeywords.some(kw => currentLabel.includes(kw));
+    if (isAlreadySet) {
       this._log(`Already in ${mode} mode`);
       session.mode = mode;
       this.store.setUser(userId, { mode, provider });
@@ -2925,6 +2968,7 @@ class KimiBridge {
 
     log.info(`Switching user ${hashUserId(userId)} to ${mode} mode...`);
 
+    // Try UI dropdown first
     try {
       // Try to dismiss any overlay first (Escape key or click on body)
       await page.keyboard.press('Escape').catch(() => {});
@@ -2937,21 +2981,68 @@ class KimiBridge {
       });
       await page.waitForTimeout(500);
 
-      // Scope to dropdown to avoid clicking wrong element
-      const dropdown = page.locator('[role=listbox], .dropdown-menu, .model-dropdown').last();
-      const option = dropdown.locator('text=' + targetLabel).or(page.getByText(targetLabel)).first();
-      await option.click({ timeout: 3000 });
-      await page.waitForTimeout(800);
-
-      session.mode = mode;
-      this.store.setUser(userId, { mode, provider });
-      log.success(`Mode switched to ${mode} for user ${hashUserId(userId)}`);
-      return mode;
+      // Try multiple dropdown selectors, find the one that matches any keyword
+      const dropdownSelectors = ['[role=listbox]', '.dropdown-menu', '.model-dropdown', '[class*="dropdown"]', '[class*="menu"]'];
+      let optionClicked = false;
+      for (const ddSel of dropdownSelectors) {
+        const dropdown = page.locator(ddSel).last();
+        const count = await dropdown.count().catch(() => 0);
+        if (count === 0) continue;
+        for (const kw of targetKeywords) {
+          const matched = dropdown.locator(`text=${kw}`).or(page.getByText(kw)).first();
+          const matchedCount = await matched.count().catch(() => 0);
+          if (matchedCount > 0) {
+            await matched.click({ timeout: 3000 });
+            optionClicked = true;
+            break;
+          }
+        }
+        if (optionClicked) break;
+      }
+      if (optionClicked) {
+        await page.waitForTimeout(800);
+        session.mode = mode;
+        this.store.setUser(userId, { mode, provider });
+        log.success(`Mode switched to ${mode} for user ${hashUserId(userId)}`);
+        return mode;
+      }
+      log.warn(`Mode switch: dropdown found but no option matched keywords ${JSON.stringify(targetKeywords)}`);
     } catch (e) {
-      log.warn(`Mode switch failed (overlay or element not found): ${e.message}. Continuing with current mode.`);
-      // Don't throw — mode switch is not critical
-      return session.mode || 'instant';
+      log.warn(`Mode switch via UI failed: ${e.message}. Trying URL fallback...`);
     }
+
+    // Fallback: navigate to mode URL if the provider has one
+    try {
+      const modeUrl = this._modeUrl(provider, mode);
+      const currentUrl = page.url();
+      if (modeUrl && !currentUrl.includes(modeUrl)) {
+        log.info(`Mode switch fallback: navigating to ${modeUrl}`);
+        await page.goto(modeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(2000);
+        session.mode = mode;
+        this.store.setUser(userId, { mode, provider });
+        return mode;
+      }
+    } catch (e2) {
+      log.warn(`Mode switch URL fallback also failed: ${e2.message}`);
+    }
+
+    // Last resort: try to force mode via URL parameter
+    try {
+      const separator = page.url().includes('?') ? '&' : '?';
+      const forcedUrl = page.url() + separator + `mode=${kimiMode}`;
+      await page.goto(forcedUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+      await page.waitForTimeout(1500);
+      log.warn(`Mode switch forced via URL param: ${forcedUrl}`);
+    } catch (e3) {
+      log.warn(`Mode switch force URL also failed: ${e3.message}`);
+    }
+
+    // Save mode anyway — the model will read from session
+    session.mode = mode;
+    this.store.setUser(userId, { mode, provider });
+    log.warn(`Mode switch requested but could not verify via UI. Stored mode=${mode} in session.`);
+    return mode;
   }
 
   /**
@@ -3359,11 +3450,20 @@ class KimiBridge {
       const checkAndRecoverLogin = async (stepName) => {
         // First check — modal may appear temporarily during file processing
         let hasLoginModal = await page.evaluate(() => {
-          return !!(
-            document.querySelector('form[action*="login"], form[action*="auth"]') ||
-            document.querySelector('input[type="password"]') ||
-            document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
-          );
+          const visible = (sel) => {
+            try {
+              for (const el of document.querySelectorAll(sel)) {
+                const st = window.getComputedStyle(el);
+                if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) return true;
+              }
+            } catch (_) {}
+            return false;
+          };
+          return visible('input[type="password"]')
+            || visible('.login-modal-mask, .login-modal')
+            || (visible('form[action*="login"], form[action*="auth"]') && visible('input[type="password"], input[type="email"]'));
         }).catch(() => false);
         
         if (!hasLoginModal) return false;
@@ -3374,11 +3474,22 @@ class KimiBridge {
         
         // Check again
         hasLoginModal = await page.evaluate(() => {
-          return !!(
-            document.querySelector('form[action*="login"], form[action*="auth"]') ||
-            document.querySelector('input[type="password"]') ||
-            document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
-          );
+          const visible = (sel) => {
+            try {
+              for (const el of document.querySelectorAll(sel)) {
+                const st = window.getComputedStyle(el);
+                if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) return true;
+              }
+            } catch (_) {}
+            return false;
+          };
+          // Require a real auth surface (password field or visible modal mask),
+          // not any class that merely contains "login"/"auth" substrings.
+          return visible('input[type="password"]')
+            || visible('.login-modal-mask, .login-modal')
+            || (visible('form[action*="login"], form[action*="auth"]') && visible('input[type="password"], input[type="email"], input[name*="phone"]'));
         }).catch(() => false);
         
         if (!hasLoginModal) {
@@ -3567,14 +3678,22 @@ class KimiBridge {
     // v5.7-fix: Check for login modal BEFORE attempting upload
     const loginCheck = await wb.evaluate(`
       (() => {
-        const hasModal = !!(
-          document.querySelector('form[action*="login"], form[action*="auth"]') ||
-          document.querySelector('input[type="password"]') ||
-          document.querySelector('.login-modal, [class*="login-modal"], [class*="auth-modal"]')
-        );
-        const loginTexts = ['Continue with Google', 'Google', '使用 Google 登录', 'Google 登录', '使用 Google 帳戶登入', 'Entrar com Google', 'Fazer login com Google'];
-        const hasLoginText = loginTexts.some(t => document.body.innerText.includes(t));
-        return { hasLoginModal: hasModal || hasLoginText };
+        const visible = (sel) => {
+          try {
+            for (const el of document.querySelectorAll(sel)) {
+              const st = window.getComputedStyle(el);
+              if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+              const r = el.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) return true;
+            }
+          } catch (_) {}
+          return false;
+        };
+        const hasModal = visible('input[type="password"]')
+          || visible('.login-modal-mask, .login-modal');
+        // Chat shell present => logged in (do not treat generic "Google" text as login)
+        const hasChat = visible('.chat-input-editor, .chat-editor, [contenteditable="true"]');
+        return { hasLoginModal: hasModal && !hasChat };
       })()
     `);
     if (loginCheck.data?.value?.hasLoginModal) {
@@ -3806,23 +3925,74 @@ class KimiBridge {
 
   /**
    * v10.35-fix: Fill a contenteditable/Lexical editor reliably.
-   * Playwright's fill() does not register in React/Lexical contenteditable
-   * on Kimi's landing/agent page. We use document.execCommand('insertText')
-   * inside the focused editor, which Lexical observes correctly.
+   * v2026-08-02: Chrome 149+ removed document.execCommand entirely — selectAll
+   * and delete are no-ops, and insertText PREPENDS text without clearing the
+   * old content. A dirty editor ends up with OLD+NEW text merged in the DOM
+   * while Lexical's EditorState desyncs (text visible but not registered),
+   * so Enter becomes a no-op → SEND_NOT_CONFIRMED. Only real CDP input events
+   * work: keyboard select-all + backspace to clear, then Input.insertText,
+   * which fires the beforeinput/input events Lexical observes. Verify the text
+   * landed in a data-lexical-text span (Lexical's own signal), not innerText.
    */
   async _fillContentEditable(inputLocator, text) {
+    const page = inputLocator.page();
+    // v2026-08-02: Kimi access_token lives ~15min. If stale (e.g. a stale
+    // cached token after a Chrome restart), Kimi's Chat API rejects the send
+    // with `invalid user token` and the submit silently reverts. Refresh the
+    // token BEFORE typing so a reload can't wipe what we are about to type.
+    await this._ensureAccessTokenFresh(page).catch(() => {});
     await inputLocator.evaluate((el) => el.focus());
-    await inputLocator.evaluate((el) => {
-      // Select all and delete first
-      document.execCommand('selectAll', false, null);
-      document.execCommand('delete', false, null);
-    });
-    await inputLocator.evaluate((el, txt) => {
-      document.execCommand('insertText', false, txt);
-      // Dispatch input events so React/Lexical state updates and send button enables
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, text);
+    await inputLocator.click({ timeout: 5000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.press('Backspace');
+    await page.waitForTimeout(150);
+    if (text) {
+      await page.keyboard.insertText(text);
+      await page.waitForTimeout(150);
+    }
+    // Verify Lexical actually registered the text (data-lexical-text spans).
+    const expected = (text || '').trim().length;
+    if (expected > 0) {
+      let registered = await inputLocator.evaluate((el) => el.querySelectorAll('span[data-lexical-text="true"]').length).catch(() => 0);
+      if (registered === 0) {
+        log.warn('[_fillContentEditable] text not registered by Lexical — refocusing and retrying CDP Input.insertText');
+        await inputLocator.evaluate((el) => el.focus());
+        await page.keyboard.insertText(text);
+        await page.waitForTimeout(200);
+      }
+    }
+  }
+
+  /**
+   * v2026-08-02: Kimi's `access_token` (localStorage) is short-lived (~15 min).
+   * The bridge persists a cached token and re-injects a stale one after Chrome
+   * restarts, at which point Kimi's ChatService/Chat API returns
+   * `{"error":{"code":"unauthenticated","message":"invalid user token"}}`.
+   * The editor fills and Enter looks fine, but the message never leaves.
+   * Reloading the provider page lets the SPA refresh access_token from the
+   * long-lived refresh_token. Health check: decode the JWT `exp`; reload once
+   * when it is absent or has < reserveMs left. Returns true when it reloaded.
+   */
+  async _ensureAccessTokenFresh(page, reserveMs = 120000) {
+    if (!page || page.isClosed()) return false;
+    try {
+      const tok = await page.evaluate(() => localStorage.getItem('access_token') || '');
+      if (!tok) return false;
+      const part = tok.split('.')[1];
+      if (!part) return false;
+      const json = JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+      const expMs = Number(json && json.exp) * 1000;
+      if (!Number.isFinite(expMs)) return false;
+      const remainMs = expMs - Date.now();
+      if (remainMs > reserveMs) return false; // healthy
+      log.info(`[_ensureAccessTokenFresh] access_token expires in ${Math.round(remainMs / 1000)}s — reloading provider page to force token refresh`);
+      try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) { log.warn(`[_ensureAccessTokenFresh] reload failed: ${e.message}`); }
+      await page.waitForTimeout(2500);
+      return true;
+    } catch (e) {
+      log.warn(`[_ensureAccessTokenFresh] check failed: ${e.message}`);
+      return false;
+    }
   }
 
   /**
@@ -3842,6 +4012,10 @@ class KimiBridge {
    * so the turn errors visibly instead of hanging silently (Wave 6 contract).
    */
   async _submitWithVerification(page, inputLocator, text, options = {}) {
+    const submitCfg = this._loadProviderConfig(options.provider || 'kimi');
+    const submitAssistantChain = resolveChain(submitCfg, 'assistantMessage', '.segment-assistant');
+    const submitSendChain = resolveChain(submitCfg, 'sendButton', '.send-button-container');
+    const submitStopChain = resolveChain(submitCfg, 'stopButton', '.stop-button-container');
     const prefix = (text || '').slice(0, 100);
     // Whitespace-normalized comparison: contenteditable innerText can render
     // whitespace differently from the inserted string (collapsed runs, NBSP).
@@ -3853,15 +4027,21 @@ class KimiBridge {
       );
       return (current || '').replace(/\s+/g, ' ').trim();
     };
-    const readState = () => page.evaluate(() => {
-      const assistants = document.querySelectorAll('.segment-assistant').length;
-      const sendBtn = document.querySelector('.send-button-container');
+    const readState = () => page.evaluate(({ assistantChain, sendChain, stopChain }) => {
+      const firstMatch = (sels) => {
+        for (const s of sels) { const el = document.querySelector(s); if (el) return el; }
+        return null;
+      };
+      const assistants = assistantChain.length
+        ? document.querySelectorAll(assistantChain.join(',')).length
+        : 0;
+      const sendBtn = firstMatch(sendChain);
       const sendDisabled = sendBtn
-        ? (sendBtn.classList.contains('disabled') || sendBtn.getAttribute('aria-disabled') === 'true')
+        ? (sendBtn.classList.contains('disabled') || sendBtn.getAttribute('aria-disabled') === 'true' || sendBtn.disabled === true)
         : false;
-      const generating = !!document.querySelector('.stop-button-container');
+      const generating = !!firstMatch(stopChain);
       return { assistants, sendDisabled, generating };
-    }).catch(() => null);
+    }, { assistantChain: submitAssistantChain, sendChain: submitSendChain, stopChain: submitStopChain }).catch(() => null);
 
     // Pre-submit baseline. Only CHANGES relative to this state confirm the
     // submit — a stop button left over from a previous turn or a send button
@@ -3897,11 +4077,11 @@ class KimiBridge {
           await inputLocator.click({ timeout: 5000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
           await page.keyboard.press('Enter');
         } else {
-          const sendBtn = page.locator('.send-button-container').first();
+          const { locator: sendBtn } = await firstMatchingLocator(page, submitSendChain);
           if (await sendBtn.count() > 0) {
             await sendBtn.click({ timeout: 5000 });
           } else {
-            log.warn('[_submitWithVerification] .send-button-container not found — click strategy skipped');
+            log.warn('[_submitWithVerification] send button not found via provider chain — click strategy skipped');
           }
         }
       } catch (e) {
@@ -3933,9 +4113,108 @@ class KimiBridge {
         await page.waitForTimeout(300);
       }
       log.warn(`[_submitWithVerification] attempt ${attempt + 1} ('${strategy}') NOT confirmed — no submit transition observed`);
+      try {
+        const failState = await readState();
+        log.warn(`[_submitWithVerification] attempt ${attempt + 1} post-fail state: ${JSON.stringify(failState)} baseline=${JSON.stringify(baseline)} inputHeldPrefix=${inputHeldPrefix}`);
+      } catch (e) { /* best-effort */ }
     }
 
-    throw new Error('SEND_NOT_CONFIRMED: texto permanece no input da Kimi — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)');
+    // v11.2-fix: Recovery pass. The dominant cause of all-3-attempts-failing is
+    // Kimi still transitioning from the previous turn (generating flag stuck,
+    // stop button present, editor re-rendering) when Luna re-sends a tool result
+    // ~2s after the previous turn ended. Instead of throwing SEND_NOT_CONFIRMED
+    // immediately, wait for generation to settle, re-fill, and retry once.
+    try {
+      let recoveryState = await readState();
+      if (recoveryState && recoveryState.generating) {
+        log.info('[_submitWithVerification] recovery: Kimi still generating — waiting up to 30s for the turn to settle');
+        const stopDeadline = Date.now() + 30_000;
+        while (Date.now() < stopDeadline) {
+          recoveryState = await readState();
+          if (recoveryState && !recoveryState.generating) break;
+          await page.waitForTimeout(1000);
+        }
+        await page.waitForTimeout(1000);
+      }
+      await this._fillContentEditable(inputLocator, text || '');
+      await page.waitForTimeout(500);
+      const recoveryInput = await readInput();
+      inputHeldPrefix = normPrefix ? recoveryInput.includes(normPrefix) : true;
+      await inputLocator.click({ timeout: 8000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
+      await page.waitForTimeout(500);
+      await page.keyboard.press('Enter');
+      let verifyDeadline = Date.now() + 12_000;
+      while (Date.now() < verifyDeadline) {
+        const current = await readInput();
+        if (current.includes(normPrefix)) inputHeldPrefix = true;
+        const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+        const state = await readState();
+        if (inputCleared
+          || (state && state.assistants > baseline.assistants)
+          || (state && !baseline.generating && state.generating)
+          || (state && !baseline.sendDisabled && state.sendDisabled)) {
+          log.info('[_submitWithVerification] recovery pass (wait-then-retry) confirmed the submit');
+          return { confirmed: true, strategy: 'recovery-wait-then-retry' };
+        }
+        await page.waitForTimeout(300);
+      }
+      const { locator: recoverySendBtn } = await firstMatchingLocator(page, submitSendChain);
+      if (await recoverySendBtn.count() > 0) {
+        await recoverySendBtn.click({ timeout: 8000 }).catch((e) => log.warn(`[_submitWithVerification] recovery send-button click failed: ${e.message}`));
+        verifyDeadline = Date.now() + 12_000;
+        while (Date.now() < verifyDeadline) {
+          const current = await readInput();
+          if (current.includes(normPrefix)) inputHeldPrefix = true;
+          const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+          const state = await readState();
+          if (inputCleared
+            || (state && state.assistants > baseline.assistants)
+            || (state && !baseline.generating && state.generating)
+            || (state && !baseline.sendDisabled && state.sendDisabled)) {
+            log.info('[_submitWithVerification] recovery send-button click confirmed the submit');
+            return { confirmed: true, strategy: 'recovery-send-click' };
+          }
+          await page.waitForTimeout(300);
+        }
+      }
+      const postRecovery = await readState();
+      log.warn(`[_submitWithVerification] recovery pass exhausted — state=${JSON.stringify(postRecovery)}`);
+    } catch (e) {
+      log.warn(`[_submitWithVerification] recovery pass failed: ${e.message}`);
+    }
+
+    // v2026-08-02: last-resort token repair. The dominant silent-failure mode
+    // is a stale ~15-min access_token (invalid user token) — the editor fills
+    // but Kimi rejects the send. Reload refreshes the token; re-fill + resubmit.
+    try {
+      log.info('[_submitWithVerification] token-repair: reloading page and resending once');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2500);
+      const repairedInput = page.locator('textarea, [contenteditable="true"]').first();
+      await repairedInput.click({ timeout: 8000 }).catch(() => repairedInput.evaluate((el) => el.focus()));
+      await this._fillContentEditable(repairedInput, text || '');
+      await repairedInput.click({ timeout: 8000 }).catch(() => repairedInput.evaluate((el) => el.focus()));
+      await page.keyboard.press('Enter');
+      let repairDeadline = Date.now() + 12_000;
+      while (Date.now() < repairDeadline) {
+        const current = await readInput();
+        if (current.includes(normPrefix)) inputHeldPrefix = true;
+        const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+        const state = await readState();
+        if (inputCleared
+          || (state && state.assistants > baseline.assistants)
+          || (state && !baseline.generating && state.generating)
+          || (state && !baseline.sendDisabled && state.sendDisabled)) {
+          log.info('[_submitWithVerification] token-repair reload resend confirmed the submit');
+          return { confirmed: true, strategy: 'token-repair-reload' };
+        }
+        await page.waitForTimeout(300);
+      }
+    } catch (e) {
+      log.warn(`[_submitWithVerification] token-repair reload resend failed: ${e.message}`);
+    }
+
+    throw new Error(`SEND_NOT_CONFIRMED: texto permanece no input do ${providerDisplayName(submitCfg)} — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)`);
   }
 
   async sendMessage(userId, text, options = {}, provider = 'kimi') {
@@ -4037,11 +4316,15 @@ class KimiBridge {
       const actualMode = await this._detectActualMode(page) || session.mode || 'instant';
       log.info(`User ${hashUserId(userId)} sending message (len=${text.length}, mode=${actualMode}, url=${page.url()})`);
 
-      // Use locator (auto-resolves at action time, never stale)
-      const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+      // Provider-configured input chain (PDS Fase 0). The hardcoded
+      // 'textarea, [contenteditable]' pair stays as the final fallback, so
+      // Kimi behaves exactly as before.
+      const inputProviderCfg = this._loadProviderConfig(resolvedProvider);
+      const inputChain = resolveChain(inputProviderCfg, 'input', 'textarea, [contenteditable="true"]');
+      const { locator: inputLocator } = await firstMatchingLocator(page, inputChain);
       const inputCount = await inputLocator.count();
       if (inputCount === 0) {
-        throw new Error('Input field not found on Kimi Web');
+        throw new Error(`Input field not found on ${providerDisplayName(inputProviderCfg)}`);
       }
 
       // Bring page to front (Chrome may throttle inactive tabs)
@@ -4071,7 +4354,9 @@ class KimiBridge {
       let targetAssistantIndex = -1;
       if (resolvedProvider === 'kimi') {
         let newAssistantWaitCount = 0;
-        while (targetAssistantIndex < 0 && newAssistantWaitCount < 100) { // 10s
+        // Poll at 2Hz instead of 10Hz to stop hammering Chrome with
+        // page.evaluate during the assistant-detection window (~10s max).
+        while (targetAssistantIndex < 0 && newAssistantWaitCount < 20) { // 20 * 500ms = 10s
           const assistants = await page.evaluate(() => {
             const nodes = document.querySelectorAll('.segment-assistant');
             return Array.from(nodes).map((el, i) => ({
@@ -4088,7 +4373,7 @@ class KimiBridge {
               log.info(`[sendMessage] New assistant detected at index ${targetAssistantIndex}, textLen=${newAssistant.textLength}`);
             }
           }
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 500));
           newAssistantWaitCount++;
         }
       } else {
@@ -4587,6 +4872,7 @@ class KimiBridge {
       '/usr/local/bin/google-chrome',
       '/usr/local/bin/chromium',
       '/usr/local/bin/chromium-browser',
+      path.join(os.homedir(), '.local', 'bin', 'google-chrome'),
       'google-chrome-stable',
       'google-chrome',
       '/usr/bin/google-chrome-stable',
@@ -4657,27 +4943,33 @@ class KimiBridge {
   }
 
   /**
-   * Check login state on a page using browser-native selectors (no :has-text()).
+   * Check login state on a page using the provider's loginIndicator/appContent
+   * selector chains (PDS Fase 0). A forced-auth URL (/sign_in, /login, /auth)
+   * is decisive regardless of DOM content — DeepSeek keeps a textarea-less
+   * page on chat.deepseek.com/sign_in when logged out.
    */
-  async _checkLoginState(page) {
+  async _checkLoginState(page, provider = 'kimi') {
     try {
-      return await page.evaluate(() => {
+      const loginCfg = this._loadProviderConfig(provider);
+      const loginChain = resolveChain(loginCfg, 'loginIndicator', 'a[href*="login"], a[href*="signin"]');
+      const appChain = resolveChain(loginCfg, 'appContent', 'textarea[placeholder], [contenteditable="true"]');
+      return await page.evaluate(({ loginChain, appChain }) => {
+        const url = location.href;
+        if (/\/(sign[_-]?in|login|auth)(\/|$|\?|#)/i.test(url)) {
+          return { loggedIn: false, loginRequired: true, url };
+        }
+        const firstMatch = (sels) => {
+          for (const s of sels) { try { if (document.querySelector(s)) return true; } catch (e) {} }
+          return false;
+        };
+        const hasLoginBtn = firstMatch(loginChain) || !!document.querySelector('input[type="password"]');
+        const hasChatInput = firstMatch(appChain) || !!document.querySelector('div[role="textbox"]');
         const bodyText = document.body?.innerText?.toLowerCase() || '';
-        // Look for actual login indicators
-        const hasLoginBtn = !!(
-          document.querySelector('a[href*="login"], a[href*="signin"], button[class*="login"], button[class*="signin"]') ||
-          document.querySelector('input[type="password"]')
-        );
-        const hasChatInput = !!(
-          document.querySelector('textarea[placeholder], [contenteditable="true"]') ||
-          document.querySelector('div[role="textbox"]')
-        );
         const hasLoginText = bodyText.includes('log in') || bodyText.includes('sign in') || bodyText.includes('登录') || bodyText.includes('entrar');
-        const hasWelcome = bodyText.includes('welcome') || bodyText.includes('kimi');
         // Consider logged in if we see chat input AND no login text/button
         const loggedIn = hasChatInput && !hasLoginText && !hasLoginBtn;
-        return { loggedIn, hasLoginBtn, hasChatInput, hasLoginText, hasWelcome, url: location.href };
-      });
+        return { loggedIn, hasLoginBtn, hasChatInput, hasLoginText, url };
+      }, { loginChain, appChain });
     } catch (e) {
       return { loggedIn: false, error: e.message };
     }
@@ -4701,7 +4993,7 @@ class KimiBridge {
     }
 
     // Check current state
-    const state = await this._checkLoginState(page);
+    const state = await this._checkLoginState(page, provider);
     if (state.loggedIn) {
       return { loggedIn: true, message: `Já está logado em ${providerCfg.displayName}`, url: state.url, provider };
     }
@@ -4730,7 +5022,7 @@ class KimiBridge {
     }
 
     // Quick re-check after navigation
-    const state2 = await this._checkLoginState(page);
+    const state2 = await this._checkLoginState(page, provider);
     if (state2.loggedIn) {
       return { loggedIn: true, message: `Já está logado em ${providerCfg.displayName}`, url: state2.url, provider };
     }
@@ -4758,7 +5050,7 @@ class KimiBridge {
     let lastState = null;
 
     while (Date.now() - start < maxWaitMs) {
-      const state = await this._checkLoginState(page);
+      const state = await this._checkLoginState(page, this._resolveProvider(userId));
       lastState = state;
       if (state.loggedIn) {
         // Update stored chat URL
@@ -4767,6 +5059,17 @@ class KimiBridge {
           session.chatUrl = url;
           this._saveChatUrl(userId, url, { mode: session.mode });
         } catch {}
+        // v10.37-auto-save: save session cookies on login detection
+        if (!session.sessionSaved) {
+          try {
+            const providerName = this._resolveProvider(userId);
+            await this._saveSessionFromContext(page, providerName);
+            session.sessionSaved = true;
+            log.info(`[AutoSave] Session saved for ${providerName} after login detection`);
+          } catch (e) {
+            log.warn(`[AutoSave] Failed to save session: ${e.message}`);
+          }
+        }
         return { loggedIn: true, message: 'Login detectado! Pronto para usar.', url: state.url };
       }
       await new Promise(r => setTimeout(r, intervalMs));
@@ -4888,7 +5191,7 @@ class KimiBridge {
         return false;
       }
       // Build master file in the expected format
-      const providerDomain = providerCfg.domain || '.kimi.com';
+      const providerDomain = providerCfg.domain || '.' + this._providerDomain(providerName).replace(/^www\./, '');
       const providerCookies = cookies.filter(c => c.domain.includes(providerDomain.replace(/^\./, '')) || c.domain.endsWith(providerDomain));
       const masterData = {
         savedAt: new Date().toISOString(),
@@ -4944,6 +5247,72 @@ class KimiBridge {
   }
 
   /**
+   * v2026-08-01: Centralized Chrome disconnect/restart path. Triggered both by
+   * the CDP 'disconnected' event and by the proactive memory watchdog (OOM
+   * prevention). Clears stale state, auto-restarts Chrome, and keeps sessions.
+   */
+  async _handleChromeDisconnect(reason = 'cdp-disconnect') {
+    log.warn(`[CRASH-RECOVERY] Browser disconnected (reason=${reason})`);
+    const wasConnected = !!this.browser;
+    this.browser = null;
+    this.defaultContext = null;
+    this.userContexts.clear();
+    this._resetCdpUrl();
+    if (wasConnected || reason === 'memory-watchdog') {
+      try {
+        log.info('[CRASH-RECOVERY] Auto-restarting Chrome...');
+        await this.checkChrome();
+        log.info('[CRASH-RECOVERY] Chrome auto-restarted successfully');
+      } catch (e) {
+        log.warn('[CRASH-RECOVERY] Auto-restart failed:', e.message);
+      }
+    }
+    this.domEventQueues.clear();
+    this.streamStopFlags.clear();
+    this.cancelledStreams.clear();
+    this.networkInterceptors.forEach(i => i.stop());
+    this.networkInterceptors.clear();
+    log.info('[DEBUG-LUNA] Global state cleared after browser disconnect');
+  }
+
+  /**
+   * v2026-08-01: Proactive Chrome memory watchdog. Called from the background
+   * poller every cycle. If aggregate Chrome RSS exceeds the threshold the page
+   * is thrashing (send/submit events stop processing) and the Linux OOM killer
+   * will kill it mid-operation — worse. Restart Chrome before that.
+   * v2026-08-02: Only restart when the system is ACTUALLY under memory pressure.
+   * The old logic restarted Chrome at 2.4GB RSS even with 5GB free — killing
+   * the browser mid-send and losing the in-flight message (GENERATION_NEVER_STARTED).
+   */
+  async _checkChromeMemory() {
+    const thresholdMB = parseInt(process.env.KIMI_MAX_CHROME_MB, 10) || 2400;
+    if (this._memoryWatchdogThrottle && Date.now() < this._memoryWatchdogThrottle) return false;
+    try {
+      const { execSync } = require('child_process');
+      const out = execSync(`ps aux | grep -E '[c]hrome' | awk '{sum+=$6} END {print int(sum/1024)}'`, { encoding: 'utf8', timeout: 5000 }).trim();
+      const totalMB = parseInt(out, 10) || 0;
+      // MemAvailable from /proc/meminfo (kB). If the system still has plenty of
+      // free memory, a high Chrome RSS is fine — do NOT restart and kill any
+      // in-flight send. Only act when available memory is genuinely low.
+      const meminfo = execSync(`awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo`, { encoding: 'utf8', timeout: 5000 }).trim();
+      const availMB = parseInt(meminfo, 10) || 0;
+      const lowMemory = availMB > 0 && availMB < 700;
+      if (totalMB > thresholdMB && lowMemory) {
+        log.warn(`[CRASH-RECOVERY] Chrome RSS=${totalMB}MB > ${thresholdMB}MB and only ${availMB}MB available — proactively restarting to avoid OOM kill`);
+        this._memoryWatchdogThrottle = Date.now() + 180_000;
+        await this._handleChromeDisconnect('memory-watchdog');
+        return true;
+      }
+      if (totalMB > thresholdMB && availMB > 0) {
+        log.info(`[CRASH-RECOVERY] Chrome RSS=${totalMB}MB > ${thresholdMB}MB but ${availMB}MB available — skipping restart (no memory pressure)`);
+      }
+    } catch (e) {
+      log.warn(`[CRASH-RECOVERY] Memory watchdog check failed: ${e.message}`);
+    }
+    return false;
+  }
+
+  /**
    * v5.6-fix: Background polling to keep pages alive and detect new messages.
    * Prevents Chrome mobile from suspending the tab when user switches apps.
    * Polls every 30s: brings page to front and evaluates a no-op to keep alive.
@@ -4951,6 +5320,8 @@ class KimiBridge {
   _startBackgroundPolling() {
     if (this.bgPollTimer) clearInterval(this.bgPollTimer);
     this.bgPollTimer = setInterval(async () => {
+      // v2026-08-01: OOM prevention — restart Chrome before the kernel kills it.
+      await this._checkChromeMemory();
       for (const [userId, session] of this.userSessions) {
         if (!session.page || session.page.isClosed()) continue;
         try {
@@ -7420,12 +7791,15 @@ class KimiBridge {
       // Find input and inject text. W7-T4 review follow-up: Lexical-safe
       // fill — fill() desyncs the Lexical EditorState, and the send-button
       // click below would then silently send nothing.
-      const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
+      const steerCfg = this._loadProviderConfig(this._resolveProvider(userId));
+      const steerInputChain = resolveChain(steerCfg, 'input', 'textarea, [contenteditable="true"]');
+      const { locator: inputLocator } = await firstMatchingLocator(page, steerInputChain);
       await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(300);
 
       // Click send or press Enter
-      const sendBtn = page.locator('.send-button-container').first();
+      const steerSendChain = resolveChain(steerCfg, 'sendButton', '.send-button-container');
+      const { locator: sendBtn } = await firstMatchingLocator(page, steerSendChain);
       const hasSendBtn = await sendBtn.count() > 0;
 
       if (hasSendBtn) {
@@ -7630,12 +8004,19 @@ class KimiBridge {
       }
 
       log.info(`[DEBUG-LUNA] Step 4: looking for input field`);
-      const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
-      const inputCount = await inputLocator.count();
-      log.info(`[DEBUG-LUNA] Step 4: inputCount=${inputCount}`);
-      if (inputCount === 0) {
-        throw new Error('Input field not found on Kimi Web');
+      const streamProviderCfg = this._loadProviderConfig(resolvedProvider);
+      const streamInputChain = resolveChain(streamProviderCfg, 'input', 'textarea, [contenteditable="true"]');
+      // waitForChain (15s) replaces the instant count() that raced SPA
+      // rendering — the DeepSeek "inputCount=0 on a logged page" bug.
+      const { locator: inputLocator, selector: inputSelectorUsed } = await waitForChain(page, streamInputChain, { timeout: 15000 });
+      if (!inputLocator) {
+        const currentUrl = page.url();
+        if (/\/(sign[_-]?in|login|auth)(\/|$|\?|#)/i.test(currentUrl)) {
+          throw new Error(`${String(resolvedProvider).toUpperCase()}_LOGIN_REQUIRED: login page detected (${currentUrl}) — faça login no Chrome da Luna e recapture a sessão`);
+        }
+        throw new Error(`Input field not found on ${providerDisplayName(streamProviderCfg)}`);
       }
+      log.info(`[DEBUG-LUNA] Step 4: input found via '${inputSelectorUsed}'`);
 
       log.info(`[DEBUG-LUNA] Step 5: bringToFront`);
       await page.bringToFront();
@@ -7734,7 +8115,11 @@ class KimiBridge {
       // W6-T1: bounded wait — a renamed selector or a silent Enter failure must
       // not hang the stream forever (session.processing would stay true and
       // brick every future message from this user).
-      const NEW_ASSISTANT_TIMEOUT_MS = 120_000;
+      // v2026-08-01: scale the wait with prompt length — Kimi can take minutes
+      // to render the first .segment-assistant for very long prompts (e.g. an
+      // 18KB file pasted as text), and the fixed 120s timed out prematurely.
+      const PROMPT_LEN = (text || '').length;
+      const NEW_ASSISTANT_TIMEOUT_MS = Math.min(600_000, 120_000 + PROMPT_LEN * 5);
       const newAssistantDeadline = Date.now() + NEW_ASSISTANT_TIMEOUT_MS;
       if (resolvedProvider === 'kimi') {
         while (true) {
@@ -7764,10 +8149,12 @@ class KimiBridge {
           // W6-T1: bounded wait (NEW_ASSISTANT_TIMEOUT_MS above) — Chrome may
           // lag on large prompts, but a broken selector or failed send now
           // errors out instead of hanging forever.
-          if (++newAssistantWaitCount > 100) {
-            log.info(`[sendMessageStream] New assistant not detected yet (wait=${newAssistantWaitCount*100}ms), continuing to wait...`);
+          // 2026-07-14: throttle poll from 10Hz to 2Hz; the 41s wait in the
+          // live test was observed hammering page.evaluate and pinning Chrome.
+          if (++newAssistantWaitCount > 20) {
+            log.info(`[sendMessageStream] New assistant not detected yet (wait=${newAssistantWaitCount*500}ms), continuing to wait...`);
           }
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 500));
         }
       } else {
         log.info(`[DEBUG-LUNA] Skipping Kimi assistant detection for provider=${resolvedProvider}`);
@@ -8719,6 +9106,8 @@ module.exports = {
   getKimiBridge,
   closeKimiBridge,
   KimiLogger,
+  // PDS Fase 0: exported for unit tests (wave11).
+  ProviderNetworkInterceptor,
   KimiSessionStore,
   // W6-T9: exported for unit tests. _extractJsonToolCalls is a pure method
   // (verified: no `this` usage in its body), so a prototype-level wrapper is safe.

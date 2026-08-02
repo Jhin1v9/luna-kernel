@@ -2,6 +2,23 @@
 
 > Living document. One entry per commit, newest first. Maintained by luna-brain-sync.
 
+- [2026-07-14 b4a7686] docs(kernel): PDS Fase 0 — header comment of the network interceptor in `kimi-bridge.cjs` updated to reflect the removal of the CDP Fetch branch (review T10)
+- [2026-07-14 848bf4c] fix(kernel): PDS Fase 0 — dead CDP Fetch branch removed from `kimi-bridge.cjs` (fixes bugs.md:23 `_buildFetchPatterns is not a function`), `_isChatUrl` now resolves via provider config, `getProviderApiPatterns` dropped; wave11 tests added
+- [2026-07-14 af889b4] refactor(kernel): PDS Fase 0 — `connect()` in `kimi-bridge.cjs` now restores localStorage per-provider and derives the cookie-sync domain from the provider `baseUrl`
+- [2026-07-14 ca4c62b] fix(kernel): PDS Fase 0 — `_checkLoginState` in `kimi-bridge.cjs` now resolves via the provider config chains and treats `/sign_in` URLs as logged-out (DeepSeek bugs.md:22 item C)
+- [2026-07-14 c97ae1c] test(kernel): PDS Fase 0 — W7-T4c needle in `wave2-bridge.test.cjs` updated to track the provider-aware `SEND_NOT_CONFIRMED` error text
+- [2026-07-14 ebebdf0] refactor(kernel): PDS Fase 0 — `_openNewChat` in `kimi-bridge.cjs` now resolves via the provider config `newChat` chain
+- [2026-07-14 48bfe54] refactor(kernel): PDS Fase 0 — `_submitWithVerification` in `kimi-bridge.cjs` now resolves its state read, click strategy and error reporting via the provider config chains, with provider-aware error text
+- [2026-07-14 43a6eb7] refactor(kernel): PDS Fase 0 — `injectSteer` input lookup and send in `kimi-bridge.cjs` now resolve via the provider config selector chain
+- [2026-07-14 fa190b5] fix(kernel): PDS Fase 0 — `sendMessageStream` input lookup now resolves via the provider config selector chain with `waitForChain`, the not-found error names the real provider, and `/sign_in` is detected as LOGIN_REQUIRED (DeepSeek bugs.md:22 items A/C)
+- [2026-07-14 453de6b] refactor(kernel): PDS Fase 0 — sendMessage input lookup in `kimi-bridge.cjs` now resolves via the provider config selector chain instead of hardcoded selectors
+- [2026-07-14 34f62f0] feat(kernel): PDS Phase 0 — deepseek.json migrated to config v2 (newChat added, cdpPatterns removed); kimi.json untouched per owner directive
+- [2026-07-14 21da1ff] feat(kernel): PDS Phase 0 — added `lib/provider-selectors.cjs` with v1/v2 selector fallback chains and `waitForChain`, plus `wave11-provider-config.test.cjs`
+- [2026-07-14 0baf482] docs(plans): PDS Fase 0 plan revision — kimi.json stays untouched (owner directive) with Kimi defaults kept as in-code fallbacks; expected test totals adjusted to 299
+- [2026-07-14 796e781] docs(plans): PDS Fase 0 implementation plan — added `plans/2026-07-14-pds-phase0-foundation.md`: 12 TDD tasks covering config-driven selectors and dead CDP removal
+- [2026-07-14 b4eddcb] docs(plans): PDS — drop anti-bot risk note per owner — removed the anti-bot risk note from the provider-discovery plan after owner confirmed no incidents with Kimi/DeepSeek automation
+- [2026-07-14 b036230] docs(plans): Provider Discovery System design — added `plans/2026-07-14-provider-discovery-design.md`: phased foundation-first plan (config-wiring refactor, deterministic extractor, Kimi validation, test suite, per-user provider configs)
+- [2026-07-14 75ba77e] fix(kernel): kill 3 load amplifiers — removed dead nexo-lp services from the health watchdog, cut assistant-detection polls in kimi-bridge from 10Hz to 2Hz, and replaced the DB retry storm on invalid DATABASE_URL with fail-fast + JSON fallback
 - [2026-07-11 65f7895] docs: fix broken links in root README — corrected three broken links in README.md
 - [2026-07-11 0f40e37] chore: remove tracked backups, old audit and screenshots — deleted ~35k lines of tracked backup copies, the old audit doc, kernel install.sh and stale screenshots
 - [2026-07-11 8da749f] docs(brain): backfill changelog for pre-hook commits — added 7 changelog entries for commits that predated the sync hook

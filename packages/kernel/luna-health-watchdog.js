@@ -8,10 +8,12 @@
  *
  * Monitored services:
  *   - luna-server      : 3458
- *   - luna-vite        : 5173
+ *   - luna-vite        : 5173 (https)
  *   - nexo-dashboard   : 3456
- *   - nexo-lp-server   : 3460
- *   - nexo-lp-web      : 5174
+ *
+ * (nexo-lp-server/nexo-lp-web removed 2026-07-14: those PM2 processes do not
+ * exist on this machine — the watchdog was spawning two failing
+ * `pm2 restart` attempts every 30s.)
  */
 
 const http = require('http');
@@ -21,8 +23,6 @@ const SERVICES = [
   { name: 'luna-server', port: parseInt(process.env.LUNA_PORT, 10) || 3458, protocol: 'http' },
   { name: 'luna-vite', port: parseInt(process.env.LUNA_VITE_PORT, 10) || 5173, protocol: 'https', rejectUnauthorized: false },
   { name: 'nexo-dashboard', port: parseInt(process.env.DASHBOARD_PORT, 10) || 3456, protocol: 'http' },
-  { name: 'nexo-lp-server', port: parseInt(process.env.NEXO_LP_PORT, 10) || 3460, protocol: 'http' },
-  { name: 'nexo-lp-web', port: parseInt(process.env.NEXO_LP_WEB_PORT, 10) || 5174, protocol: 'http' },
 ];
 
 const CHECK_INTERVAL_MS = 30000;

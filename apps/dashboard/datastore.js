@@ -25,7 +25,7 @@ function writeJSONFile(file, data) {
   fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-const USE_PG = !!process.env.DATABASE_URL;
+const USE_PG = db.DB_ENABLED; // 2026-07-14: also rejects malformed URLs (was: !!process.env.DATABASE_URL)
 
 // ============================================================
 // USERS

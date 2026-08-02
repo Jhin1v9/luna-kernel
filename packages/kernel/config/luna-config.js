@@ -131,6 +131,39 @@ const FEATURES = {
   enableDebug: process.env.LUNA_DEBUG === 'true',
 };
 
+// ── Path Guard ──
+const PATH_GUARD_CONFIG_FILE = path.join(LUNA_HOME, 'path-guard.json');
+
+function loadPathGuardConfig() {
+  try {
+    if (fs.existsSync(PATH_GUARD_CONFIG_FILE)) {
+      return JSON.parse(fs.readFileSync(PATH_GUARD_CONFIG_FILE, 'utf-8'));
+    }
+  } catch {}
+  return {
+    enabled: true,
+    allowHomeDir: true,
+    customPaths: []
+  };
+}
+
+function savePathGuardConfig(config) {
+  try {
+    ensureDir(path.dirname(PATH_GUARD_CONFIG_FILE));
+    fs.writeFileSync(PATH_GUARD_CONFIG_FILE, JSON.stringify(config, null, 2));
+    return true;
+  } catch (err) {
+    console.error(`[PathGuard] Failed to save config: ${err.message}`);
+    return false;
+  }
+}
+
+const PATH_GUARD = {
+  configFile: PATH_GUARD_CONFIG_FILE,
+  load: loadPathGuardConfig,
+  save: savePathGuardConfig,
+};
+
 module.exports = {
   HOME_DIR,
   LUNA_HOME,
@@ -145,5 +178,6 @@ module.exports = {
   AUTH,
   DB,
   FEATURES,
+  PATH_GUARD,
   ensureDir,
 };

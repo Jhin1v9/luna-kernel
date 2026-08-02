@@ -4,10 +4,25 @@
  */
 const { Pool } = require('pg');
 
+function isValidPostgresUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return !!(u.hostname && u.protocol && (u.protocol === 'postgres:' || u.protocol === 'postgresql:'));
+  } catch {
+    return false;
+  }
+}
+
 const isRender = process.env.DATABASE_URL?.includes('render.com');
 const isNeon = process.env.DATABASE_URL?.includes('neon.tech');
+const DB_ENABLED = isValidPostgresUrl(process.env.DATABASE_URL);
 
-const pool = new Pool({
+if (!DB_ENABLED) {
+  console.warn('[DB] DATABASE_URL not configured or invalid — PostgreSQL operations disabled (JSON fallback active).');
+}
+
+const pool = DB_ENABLED ? new Pool({
   connectionString: process.env.DATABASE_URL,
   connectionTimeoutMillis: 5000,
   idleTimeoutMillis: 10000,
@@ -17,17 +32,22 @@ const pool = new Pool({
     : false,
   // Render/Neon require short statement_timeout to avoid hanging on unreachable hosts.
   options: (isNeon || isRender) ? '-c statement_timeout=5000' : '',
-});
+}) : null;
 
 // Log connection events
-pool.on('error', (err) => {
-  console.error('PostgreSQL pool error:', err.message);
-});
+if (pool) {
+  pool.on('error', (err) => {
+    console.error('PostgreSQL pool error:', err.message);
+  });
+}
 
 /**
  * Retry wrapper for Neon PostgreSQL instability (ETIMEDOUT / ENETUNREACH)
  */
 async function _withRetry(fn, operationName = 'db') {
+  if (!DB_ENABLED) {
+    throw new Error('DATABASE_URL not configured or invalid');
+  }
   const maxRetries = 3;
   const baseDelay = 500; // ms
   let lastErr;
@@ -101,6 +121,9 @@ async function run(sql, params = []) {
  * @param {Function} fn - async (client) => { ... }
  */
 async function transaction(fn) {
+  if (!DB_ENABLED) {
+    throw new Error('DATABASE_URL not configured or invalid');
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -134,4 +157,5 @@ module.exports = {
   run,
   transaction,
   healthCheck,
+  DB_ENABLED,
 };
