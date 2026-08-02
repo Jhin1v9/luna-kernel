@@ -3936,6 +3936,11 @@ class KimiBridge {
    */
   async _fillContentEditable(inputLocator, text) {
     const page = inputLocator.page();
+    // v2026-08-02: Kimi access_token lives ~15min. If stale (e.g. a stale
+    // cached token after a Chrome restart), Kimi's Chat API rejects the send
+    // with `invalid user token` and the submit silently reverts. Refresh the
+    // token BEFORE typing so a reload can't wipe what we are about to type.
+    await this._ensureAccessTokenFresh(page).catch(() => {});
     await inputLocator.evaluate((el) => el.focus());
     await inputLocator.click({ timeout: 5000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
     await page.keyboard.press('ControlOrMeta+a');
@@ -3955,6 +3960,38 @@ class KimiBridge {
         await page.keyboard.insertText(text);
         await page.waitForTimeout(200);
       }
+    }
+  }
+
+  /**
+   * v2026-08-02: Kimi's `access_token` (localStorage) is short-lived (~15 min).
+   * The bridge persists a cached token and re-injects a stale one after Chrome
+   * restarts, at which point Kimi's ChatService/Chat API returns
+   * `{"error":{"code":"unauthenticated","message":"invalid user token"}}`.
+   * The editor fills and Enter looks fine, but the message never leaves.
+   * Reloading the provider page lets the SPA refresh access_token from the
+   * long-lived refresh_token. Health check: decode the JWT `exp`; reload once
+   * when it is absent or has < reserveMs left. Returns true when it reloaded.
+   */
+  async _ensureAccessTokenFresh(page, reserveMs = 120000) {
+    if (!page || page.isClosed()) return false;
+    try {
+      const tok = await page.evaluate(() => localStorage.getItem('access_token') || '');
+      if (!tok) return false;
+      const part = tok.split('.')[1];
+      if (!part) return false;
+      const json = JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+      const expMs = Number(json && json.exp) * 1000;
+      if (!Number.isFinite(expMs)) return false;
+      const remainMs = expMs - Date.now();
+      if (remainMs > reserveMs) return false; // healthy
+      log.info(`[_ensureAccessTokenFresh] access_token expires in ${Math.round(remainMs / 1000)}s — reloading provider page to force token refresh`);
+      try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) { log.warn(`[_ensureAccessTokenFresh] reload failed: ${e.message}`); }
+      await page.waitForTimeout(2500);
+      return true;
+    } catch (e) {
+      log.warn(`[_ensureAccessTokenFresh] check failed: ${e.message}`);
+      return false;
     }
   }
 
@@ -4144,6 +4181,37 @@ class KimiBridge {
       log.warn(`[_submitWithVerification] recovery pass exhausted — state=${JSON.stringify(postRecovery)}`);
     } catch (e) {
       log.warn(`[_submitWithVerification] recovery pass failed: ${e.message}`);
+    }
+
+    // v2026-08-02: last-resort token repair. The dominant silent-failure mode
+    // is a stale ~15-min access_token (invalid user token) — the editor fills
+    // but Kimi rejects the send. Reload refreshes the token; re-fill + resubmit.
+    try {
+      log.info('[_submitWithVerification] token-repair: reloading page and resending once');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2500);
+      const repairedInput = page.locator('textarea, [contenteditable="true"]').first();
+      await repairedInput.click({ timeout: 8000 }).catch(() => repairedInput.evaluate((el) => el.focus()));
+      await this._fillContentEditable(repairedInput, text || '');
+      await repairedInput.click({ timeout: 8000 }).catch(() => repairedInput.evaluate((el) => el.focus()));
+      await page.keyboard.press('Enter');
+      let repairDeadline = Date.now() + 12_000;
+      while (Date.now() < repairDeadline) {
+        const current = await readInput();
+        if (current.includes(normPrefix)) inputHeldPrefix = true;
+        const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+        const state = await readState();
+        if (inputCleared
+          || (state && state.assistants > baseline.assistants)
+          || (state && !baseline.generating && state.generating)
+          || (state && !baseline.sendDisabled && state.sendDisabled)) {
+          log.info('[_submitWithVerification] token-repair reload resend confirmed the submit');
+          return { confirmed: true, strategy: 'token-repair-reload' };
+        }
+        await page.waitForTimeout(300);
+      }
+    } catch (e) {
+      log.warn(`[_submitWithVerification] token-repair reload resend failed: ${e.message}`);
     }
 
     throw new Error(`SEND_NOT_CONFIRMED: texto permanece no input do ${providerDisplayName(submitCfg)} — a mensagem digitada não foi enviada após 3 tentativas (Enter sintético, Enter confiável, clique no botão de enviar)`);
