@@ -960,7 +960,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 // Middleware
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim())
-  : ['https://nexodashboard.onrender.com', 'http://localhost:3456', 'http://localhost:3457', 'http://localhost:5173'];
+  : ['https://nexodashboard.onrender.com', 'https://vps.nexo-digital.app:3501', 'https://vps.nexo-digital.app:3500', 'http://localhost:3456', 'http://localhost:3457', 'http://localhost:5173'];
 
 app.use(cors({
   origin: (origin, callback) => {

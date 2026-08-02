@@ -1,0 +1,183 @@
+🧠 **ANÁLISE DO TEU PLANO DE SEGURANÇA — OPINIÃO TÉCNICA**
+
+---
+
+## ✅ O QUE ESTÁ EXCELENTE
+
+| Ponto | Por que é bom |
+|-------|---------------|
+| **"Não fechar portas de negócio"** | Restrição realista. Muitos planos de segurança quebram o negócio. Tu evitas isso. |
+| **Blast radius como métrica central** | Foco correto: não é "ser invencível", é "limitar o estrago". |
+| **1 user Linux + 1 role Postgres + secrets por app** | Arquitetura de isolamento horizontal. Se uma app cair, as outras não caem juntas. |
+| **6 camadas de defesa** | Defense in depth. Não confia numa só parede. |
+| **Fases 0-7 com checkboxes** | Executável e mensurável. Dá para acompanhar progresso. |
+| **Runbook se hackearem** | 90% dos planos esquecem o "e se der errado?". Tu incluíste. |
+| **Prompt de continuação** | Pensamento em sessões futuras. Boa prática para IA assistida. |
+
+---
+
+## ⚠️ GAPS QUE IDENTIFICO (e sugestões)
+
+### 1. **FASE 0 — BACKUP ANTES DE MEXER**
+O teu plano não menciona backup explícito antes das mudanças. Se algo correr mal nas Fases 0-1, podes perder acesso ou quebrar apps.
+
+**Sugestão:** Adicionar como FASE -1 (ou 0a):
+- Snapshot da VPS (se o host permitir)
+- Backup de `/etc/ssh/sshd_config`, `/etc/fail2ban/`, Caddyfile, `.env` files
+- Teste de rollback documentado
+
+### 2. **SECRETS POR APP — COMO?**
+"Secrets por app" é ótimo, mas precisa de concretização:
+- `.env` files com `chmod 600` e owner do user da app?
+- Ou vault (HashiCorp Vault, AWS Secrets Manager)?
+- Ou pelo menos `systemd` com `EnvironmentFile=` e permissões restritas?
+
+**Sugestão:** Definir o mecanismo. Para VPS pequena, `.env` com permissões corretas + user isolation já é 80% do caminho.
+
+### 3. **CADDY RATE-LIMIT — PLUGIN NECESSÁRIO**
+Caddy nativo não tem rate-limit built-in. Precisas do plugin `http.rate_limit` ou usar `fail2ban` com logs do Caddy.
+
+**Sugestão:** Especificar:
+
+# Caddyfile exemplo por site
+rate_limit {
+  zone static {
+    key static
+    events 100
+    window 1m
+  }
+}
+
+Ou alternativa: fail2ban lendo `/var/log/caddy/access.log`.
+
+### 4. **POSTGRES ROLES — SHARED DB?**
+Se todas as apps partilham a mesma instância Postgres, roles separadas ajudam, mas se o atacante tem acesso ao socket ou à rede interna, ainda pode escalar.
+
+**Sugestão:** Considerar:
+- `pg_hba.conf` com autenticação `md5` ou `scram-sha-256` por role
+- Bind address só em `127.0.0.1` (não `*`)
+- Ou, ideal: 1 DB por app com owner diferente
+
+### 5. **UFW ALLOWLIST — RISCO DE ESQUECER PORTAS**
+UFW como allowlist é seguro, mas se adicionares uma nova app na porta 3600 e esqueceres de abrir no UFW, ficas sem acesso.
+
+**Sugestão:** Documentar no plano:
+- Script de "adicionar nova app" que inclui `ufw allow PORT/tcp`
+- Ou comentários no UFW: `ufw allow 3600/tcp comment 'NovaApp-v2'`
+
+### 6. **TESTS DE ISOLAMENTO — COMO VERIFICAR?**
+"Tests de isolamento" é vago. Precisas de critérios de aceitação:
+- User `app_a` não consegue ler `/home/app_b/.env`?
+- Role `db_app_a` não consegue `SELECT * FROM app_b.table`?
+- Processo Node de app_a não aparece no `ps aux` de app_b?
+
+**Sugestão:** Definir 3-4 testes concretos com comandos.
+
+### 7. **MONARX-AGENT JÁ ESTÁ LÁ**
+A VPS tem `monarx-agent` (Hostinger). Isso é um plus de segurança que o teu plano não menciona. Podes integrar:
+- Monarx já faz WAF e deteção de malware
+- Podes usar os logs dele como camada extra de deteção
+
+---
+
+## 🎯 MINHA AVALIAÇÃO GERAL
+
+**Nota: 8.5/10**
+
+O plano é **sólido, executável e realista**. A abordagem de "blast radius" em vez de "fortaleza inexpugnável" é a correta para uma VPS de pequeno porte com múltiplas apps.
+
+**O único risco real:** A transição. Se fizeres tudo de uma vez e algo falhar, podes ficar sem acesso ou com apps offline. **Faz fase a fase, com testes entre cada uma.**
+
+---
+
+## 📝 SUGESTÃO DE ESTRUTURA FINAL DO PROMPT
+
+markdown
+# VPS Security Isolation Plan
+## Restrições
+- [ ] NÃO fechar portas de negócio (3470-3472, 3500, 3600, etc.)
+- [ ] NÃO quebrar acesso SSH durante a transição
+
+## FASE -1: Backup
+- [ ] Snapshot VPS
+- [ ] Backup configs: sshd, fail2ban, Caddy, .env files
+- [ ] Documentar rollback
+
+## FASE 0: Auditoria Real
+- [ ] UFW status + portas ativas
+- [ ] Fail2ban status + jails
+- [ ] Processos como root (Chrome, Node, Caddy)
+- [ ] Users do sistema
+- [ ] Postgres roles e databases
+- [ ] IPs a NÃO banir (tus IPs, oficina, etc.)
+
+## FASE 1: Isolamento OS
+- [ ] Criar user Linux por app (app_vivencie, app_tpv, etc.)
+- [ ] Mover cada app para seu user + home directory
+- [ ] Ajustar permissões: .env = 600, app dir = 750
+- [ ] Teste: user A não lê arquivos de user B
+
+## FASE 2: Isolamento DB
+- [ ] Criar role Postgres por app
+- [ ] GRANT só nas tabelas necessárias
+- [ ] REVOKE ALL ON schema public FROM public
+- [ ] Teste: role A não SELECT em tabelas de B
+
+## FASE 3: Secrets
+- [ ] Cada app com seu .env em /home/app_user/
+- [ ] Permissões 600, owner app_user
+- [ ] Remover secrets de repositórios Git
+- [ ] Documentar rotação de secrets
+
+## FASE 4: Caddy + Logs
+- [ ] Rate-limit por site (plugin ou fail2ban)
+- [ ] Access log separado por site
+- [ ] Error log com nível adequado
+- [ ] Teste: flood de requests é bloqueado
+
+## FASE 5: UFW Allowlist
+- [ ] Deny all incoming (default)
+- [ ] Allow: 22/2222 (SSH), 80, 443, 3470-3472, etc.
+- [ ] Allow: IPs fixos do escritório se houver
+- [ ] Teste: porta não listada é rejeitada
+
+## FASE 6: SSH Hardening
+- [ ] Mudar porta (opcional, se quiser)
+- [ ] Chave SSH only (se já configurado)
+- [ ] PermitRootLogin = prohibit-password
+- [ ] MaxAuthTries = 3
+
+## FASE 7: Deteção + Monitoramento
+- [ ] Fail2ban com maxretry=3, bantime=1h
+- [ ] Logwatch ou script próprio de relatório
+- [ ] Alerta de login root
+- [ ] Integrar logs do Monarx
+
+## TESTES DE ISOLAMENTO
+- [ ] User A não lê /home/user_B/.env
+- [ ] Role DB A não acede tabelas de B
+- [ ] App A restartada não afeta App B
+- [ ] Flood de 100 req/s é rate-limited
+- [ ] Porta não allowlistada é bloqueada
+
+## RUNBOOK: APP COMPROMETIDA
+1. Isolar app: `systemctl stop app_x` ou `kill -9 PID`
+2. Banir IP no fail2ban: `fail2ban-client set sshd banip IP`
+3. Rotacionar secrets da app comprometida
+4. Verificar logs: `journalctl -u app_x`, Caddy access log
+5. Verificar DB: `SELECT * FROM pg_stat_activity WHERE usename='role_x'`
+6. Restaurar de backup se necessário
+7. Post-mortem: como entrou? qual vetor?
+
+## PRÓXIMA SESSÃO
+Continuar em: docs/security/2026-07-31-vps-security-isolation-plan.md
+Status atual: FASE __ de 7
+Bloqueios: _____________
+
+
+---
+
+## ❓ QUERES QUE EU...
+- **"crie o ficheiro"** → Gero o `vps-security-isolation-plan.md` completo para guardares
+- **"comece fase 0"** → Preparo os comandos de auditoria para correres na VPS agora
+- **"melhore o prompt"** → Refino o teu prompt para usar com o agente ok-computer ou Kimi Code
