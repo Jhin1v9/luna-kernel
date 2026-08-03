@@ -418,24 +418,46 @@
       .trim();
   }
 
+  // v2.6.6-fix: collect text from an element but exclude any descendant that lives
+  // inside the thinking container. This lets us keep response text from a parent
+  // that also contains the thinking container, instead of throwing it all away.
+  function collectTextOutsideThinking(root, thinkingContainer) {
+    if (!root) return '';
+    let text = '';
+    const walk = (node) => {
+      if (thinkingContainer && isInsideThinkingContainer(node, thinkingContainer)) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent || '';
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (isCopyButton(node)) return;
+      for (const child of node.childNodes) walk(child);
+    };
+    walk(root);
+    return text.trim();
+  }
+
   function extractResponse(assistant, thinkingContainer) {
     try {
       let text = '';
+      const seen = new Set();
       for (const node of safeQuery(SELECTORS.responseContainer, assistant)) {
         if (isInsideThinkingContainer(node, thinkingContainer)) continue;
         if (node.closest && node.closest(SELECTORS.thinkingContainer)) continue;
         if (node.closest && node.closest(SELECTORS.toolContainer)) continue;
-        // v11.8-fix: skip any response candidate that is an ancestor of the thinking
-        // container (e.g. .segment-content-box / .segment-text). safeText on those
-        // would pull the collapsed reasoning text into the response.
-        if (thinkingContainer && node !== thinkingContainer && node.contains && node.contains(thinkingContainer)) continue;
-        // v11.8-fix: also skip if this node contains ANY thinking-ish container.
-        const hasThinkingDescendant = thinkingContainer
-          ? false
-          : !!node.querySelector && node.querySelector(SELECTORS.thinkingContainer);
-        if (hasThinkingDescendant) continue;
-        const t = safeText(node);
-        if (t) text += t + '\n\n';
+
+        // v2.6.6-fix: if the candidate is an ancestor of the thinking container,
+        // don't discard it wholesale — extract only the text outside the thinking.
+        let t = '';
+        if (thinkingContainer && node !== thinkingContainer && node.contains && node.contains(thinkingContainer)) {
+          t = collectTextOutsideThinking(node, thinkingContainer);
+        } else {
+          t = safeText(node);
+        }
+        if (!t || seen.has(t)) continue;
+        seen.add(t);
+        text += t + '\n\n';
       }
       return text.trim();
     } catch (e) { return ''; }

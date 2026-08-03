@@ -825,11 +825,13 @@ class ProviderNetworkInterceptor {
   _startPlaywrightFallback() {
     this._listener = async (response) => {
       const url = response.url();
+      log.info('[NetworkInterceptor] response url: ' + url);
       if (!this._isChatUrl(url)) return;
       this.lastActivity = Date.now();
       try {
         const body = await response.body();
         const text = body.toString('utf-8');
+        log.info('[NetworkInterceptor] chat response body length=' + text.length + ' firstUrl=' + url);
         this._parseSse(text);
       } catch (e) {}
     };
@@ -2269,6 +2271,8 @@ class KimiBridge {
               if (t) text += t + '\n\n';
             }
             for (const p of allMatches(contentBox, selectors.paragraph)) {
+            // v2.6.6-fix: skip paragraphs inside the thinking container so reasoning text does not leak into the final response.
+            if (selectors.thinking?.length && p.closest && p.closest(selectors.thinking[0])) continue;
               const t = (p.innerText || p.textContent || '').trim();
               if (t) text += t + '\n\n';
             }
@@ -2328,6 +2332,75 @@ class KimiBridge {
   }
 
   /**
+   * v11.9-fix: Extract the FULL thinking text from the newest assistant bubble.   * Used at the end of sendMessageStream to fix truncated or delayed thinking
+   * bubbles — the DOM is the source of truth once the turn is complete.   */
+  async _extractFinalThinking(page, provider = 'kimi') {
+    const resolvedProvider = provider || page._lunaProvider || this.defaultProvider || 'kimi';
+    const chains = this._resolveDomSelectorChains(resolvedProvider);
+
+    // v2.6.6-fix: Kimi collapses the thinking container when the response starts,
+    // so innerText only returns a short preview. We expand the container by clicking
+    // its title/header, wait for the full reasoning DOM to render, then extract.
+    try {
+      const expandSelectors = chains.thinking.map(s => s + ' .toolcall-title-container, ' + s + ' .toolcall-title-name, ' + s).join(', ');
+      await page.evaluate(({ selectors }) => {
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+        const assistants = Array.from(document.querySelectorAll(selectors.assistant.join(', ')));
+        const lastAssistant = assistants[assistants.length - 1];
+        if (!lastAssistant) return;
+        const thinkContainer = firstMatch(lastAssistant, selectors.thinking);
+        if (!thinkContainer) return;
+        const title = thinkContainer.querySelector('.toolcall-title-container, .toolcall-title-name');
+        if (title) {
+          title.click();
+          title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        }
+      }, { selectors: chains });
+      await new Promise(r => setTimeout(r, 600));
+    } catch (e) {}
+
+    const result = await page.evaluate((selectors) => {
+      function allMatches(root, sels) {
+        const seen = new Set();
+        const out = [];
+        for (const sel of sels) {
+          for (const el of root.querySelectorAll(sel)) {
+            if (!seen.has(el)) { seen.add(el); out.push(el); }
+          }
+        }
+        return out;
+      }
+      function firstMatch(root, sels) {
+        for (const sel of sels) {
+          const el = root.querySelector(sel);
+          if (el) return el;
+        }
+        return null;
+      }
+      const assistants = allMatches(document, selectors.assistant);
+      if (!assistants.length) return '';
+      const lastAssistant = assistants[assistants.length - 1];
+      const thinkContainer = firstMatch(lastAssistant, selectors.thinking);
+      if (!thinkContainer) return '';
+      const raw = thinkContainer.textContent || '';
+      if (!raw) return '';
+      return raw
+        .replace(/\b(Copy|复制|複製|Copiar)\b/gi, '')
+        .replace(/^\s*\b(Thinking|Think|Pensando|Analisando|Analisar|Raciocínio|Raciocinando|Concluído|Concluindo|Raciocínio concluído|Reasoning|Processando|Searching|Buscando)\b\s*[.:]?\s*/i, '')
+        .replace(/\s*JSON\s*$/i, '')
+        .trim();
+    }, chains).catch(() => '');
+
+    return result || '';
+  }
+
+  /**
    * v7.7: Capture a snapshot of all assistant texts before sending.
    * This snapshot is used by _extractResponseDiff to compute the difference.
    */
@@ -2368,6 +2441,8 @@ class KimiBridge {
               if (t) text += t + '\n\n';
             }
             for (const p of allMatches(contentBox, selectors.paragraph)) {
+            // v2.6.6-fix: skip paragraphs inside the thinking container so reasoning text does not leak into the final response.
+            if (selectors.thinking?.length && p.closest && p.closest(selectors.thinking[0])) continue;
               const t = (p.innerText || p.textContent || '').trim();
               if (t) text += t + '\n\n';
             }
@@ -2460,8 +2535,13 @@ class KimiBridge {
 
         const thinkContainer = firstMatch(assistant, selectors.thinking);
         if (thinkContainer) {
-          const thinkMd = firstMatch(thinkContainer, selectors.thinkingText);
-          if (thinkMd) thinking = (thinkMd.innerText || '').trim();
+          const raw = thinkContainer.textContent || '';
+          if (raw) {
+            thinking = raw
+              .replace(/^\s*\b(Thinking|Think|Pensando|Analisando|Analisar|Raciocínio|Raciocinando|Concluído|Concluindo|Raciocínio concluído|Reasoning|Processando|Searching|Buscando)\b\s*[.:]?\s*/i, '')
+              .replace(/\s*JSON\s*Copy\s*$/i, '')
+              .trim();
+          }
         }
 
         const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
@@ -2474,14 +2554,18 @@ class KimiBridge {
         // v10.43-fix: helper reused from poll path
         function tryParseResponseJson(text) {
           if (!text || text.length < 10) return null;
-          const cleaned = text
-            .replace(/^\s*```(?:json)?\s*/i, '')
-            .replace(/\s*```\s*$/i, '')
-            .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+          let cleaned = text
+            .replace(/^s*```(?:json)?s*/i, '')
+            .replace(/s*```s*$/i, '')
+            .replace(/^s*JSONs*(?:Copy|复制|複製)s*/i, '')
             .trim();
-          if (!cleaned.startsWith('{')) return null;
+          // v2.6.7-fix: "JSON Copy" header may leave newlines before the actual JSON block.
+          // Find the first opening brace and parse from there instead of requiring it at index 0.
+          const braceIdx = cleaned.indexOf('{');
+          if (braceIdx === -1) return null;
+          const candidate = cleaned.slice(braceIdx);
           try {
-            const parsed = JSON.parse(cleaned);
+            const parsed = JSON.parse(candidate);
             if (parsed && typeof parsed.response === 'string') return parsed.response;
           } catch {}
           return null;
@@ -4067,17 +4151,52 @@ class KimiBridge {
    */
   async _fillContentEditable(inputLocator, text) {
     await inputLocator.evaluate((el) => el.focus());
-    await inputLocator.evaluate((el) => {
-      // Select all and delete first
-      document.execCommand('selectAll', false, null);
-      document.execCommand('delete', false, null);
+    const cleared = await inputLocator.evaluate((el) => {
+      const tag = (el.tagName || '').toLowerCase();
+      const isEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+      if (tag === 'textarea' || tag === 'input') {
+        el.value = '';
+        el.selectionStart = 0;
+        el.selectionEnd = 0;
+      } else if (isEditable) {
+        // Lexical/ProseMirror-safe clear: use a real Selection over the whole
+        // editor, then delete. execCommand('selectAll') can select the whole
+        // document on some editors and leave the editor state desynced.
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('delete', false, null);
+        // Nuclear fallback if anything remains.
+        if ((el.textContent || '').trim().length > 0) {
+          el.innerHTML = '';
+        }
+      } else {
+        el.textContent = '';
+      }
+      return (el.value || el.textContent || el.innerText || '').trim().length === 0;
     });
-    await inputLocator.evaluate((el, txt) => {
-      document.execCommand('insertText', false, txt);
+    if (!cleared) {
+      log.warn('[_fillContentEditable] input was not fully cleared before typing');
+    }
+    const inserted = await inputLocator.evaluate((el, txt) => {
+      const tag = (el.tagName || '').toLowerCase();
+      if (tag === 'textarea' || tag === 'input') {
+        el.value = txt;
+        el.selectionStart = el.selectionEnd = txt.length;
+      } else {
+        document.execCommand('insertText', false, txt);
+      }
       // Dispatch input events so React/Lexical state updates and send button enables
       el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
+      const current = (el.value || el.textContent || el.innerText || '').trim();
+      return current.includes(txt.trim());
     }, text);
+    if (!inserted) {
+      log.warn('[_fillContentEditable] typed text not found in input after insertion');
+    }
   }
 
   /**
@@ -4558,6 +4677,8 @@ class KimiBridge {
     if (!session) {
       throw new Error(`No session for user ${hashUserId(userId)}`);
     }
+
+    const resolvedProvider = session.provider || page._lunaProvider || this.defaultProvider || 'kimi';
 
     this._checkCooldown(userId);
 
@@ -6665,11 +6786,18 @@ class KimiBridge {
           return null;
         }
 
-        // v10.8-fix: robust thinking extraction via selector chain
+        // v10.8-fix: robust thinking extraction via selector chain.
+        // v2.6.6-fix: the thinking container itself is the source of truth. Its innerText
+        // already contains every reasoning paragraph; we only strip the header chrome.
+        // This mirrors the Chrome extension strategy and avoids losing text when nested
+        // markdown selectors fail to match all paragraphs.
         const thinkContainer = firstMatch(lastAssistant, selectors.thinking);
         if (thinkContainer) {
-          const thinkMd = firstMatch(thinkContainer, selectors.thinkingText);
-          if (thinkMd) thinking = (thinkMd.innerText || '').trim();
+          const rawThinking = thinkContainer.textContent || '';
+          thinking = rawThinking
+            .replace(/^\s*\b(Thinking|Think|Pensando|Analisando|Analisar|Raciocínio|Raciocinando|Concluído|Concluindo|Raciocínio concluído|Reasoning|Processando|Searching|Buscando)\b\s*[.:]?\s*/i, '')
+            .replace(/\s*JSON\s*Copy\s*$/i, '')
+            .trim();
         }
 
         const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
@@ -8510,6 +8638,9 @@ class KimiBridge {
               // The Kimi page is the source of truth; the cursor emits only the
               // new suffix so the frontend accumulates a perfect mirror.
               if (t) {
+                log.info(`[sendMessageStream] thinking_update from state_change: ${t.length} chars (lastThinking=${lastThinking.length})`);
+                const preview = t.slice(0, 80).replace(/s+/g, ' ');
+                log.info(`[sendMessageStream] thinking_update from state_change: ${t.length} chars preview="${preview}" source=${ev.source || 'state_change'} (lastThinking=${lastThinking.length})`);
                 // DEBUG: bypass cursor diff for thinking — emit full update every time
                 // const { emit, diverged } = thinkingCursor.next(ev.source, t);
                 // if (diverged) { ... }
@@ -8670,7 +8801,8 @@ class KimiBridge {
             // Chrome extension. Pass through as-is so the frontend replaces the
             // entire bubble content with Kimi's current reasoning.
             case 'thinking_update': {
-              const fullText = ev.fullText || '';              if (fullText) {
+              const fullText = ev.fullText || '';
+              log.info(`[sendMessageStream] thinking_update from chrome_extension: ${fullText.length} chars`);              if (fullText) {
                 lastThinking = fullText;
                 yield { type: 'thinking_update', fullText, source: ev.source || 'chrome_extension' };
               }
@@ -8758,9 +8890,72 @@ class KimiBridge {
         await new Promise(r => setTimeout(r, 100));
       }
 
+      // v11.9-fix: Drain any remaining events from the queue before finalizing.
+      // Extension events (thinking_update, response_delta) can arrive slightly
+      // after the completion candidate; without this drain the thinking bubble
+      // stays truncated and residual events leak into the next turn.
+      const drainStart = Date.now();
+      while (queue.lastReadIndex < queue.events.length && Date.now() - drainStart < 2000) {
+        while (queue.lastReadIndex < queue.events.length) {
+          const ev = queue.events[queue.lastReadIndex++];
+          switch (ev.type) {
+            case 'thinking_update': {
+              const fullText = ev.fullText || '';
+              if (fullText && fullText.length >= lastThinking.length) {
+                log.info(`[sendMessageStream] thinking_update from drain: ${fullText.length} chars`);
+                lastThinking = fullText;
+                yield { type: 'thinking_update', fullText, source: ev.source || 'drain' };
+              }
+              break;
+            }
+            case 'response_delta': {
+              const r = ev.fullResponse || ev.text || '';
+              if (r && r.length >= lastResponse.length) {
+                lastResponse = r;
+                yield { type: 'response_delta', text: r.slice(lastResponse.length) || r, fullResponse: r };
+              }
+              break;
+            }
+            case 'response_detected': {
+              const respText = this._stripJsonResponseWrapper(ev.response || '');
+              if (respText) {
+                yield { type: 'response_detected', text: respText, sessionId };
+              }
+              break;
+            }
+            case 'action_detected': {
+              const dedupKey = this._dedupKeyForAction(ev);
+              if (!emittedActionCodes.has(dedupKey)) {
+                emittedActionCodes.add(dedupKey);
+                domActionsCount++;
+                yield { type: 'action_detected', action: ev.action, source: ev.source, code: ev.code, kimiResult: ev.kimiResult, kimiImages: ev.kimiImages };
+              }
+              break;
+            }
+          }
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+
       // v7.7-INFALÍVEL: Final extraction using snapshot diff (PRIMARY strategy)
       // This captures ALL new content since preSendSnapshot, regardless of how
       // many assistants were created or how the DOM structure changed.
+
+      // v11.9-fix: Final source-of-truth thinking extraction from the Kimi DOM.
+      // During streaming we emit whatever the poller/extension sees; once the turn
+      // is complete we replace it with the final rendered thinking text so the
+      // Luna bubble matches Kimi exactly and never stays truncated.
+      try {
+        const finalThinking = await this._extractFinalThinking(page, resolvedProvider);
+        if (finalThinking && finalThinking.length >= lastThinking.length && finalThinking !== lastThinking) {
+          log.info(`[sendMessageStream] Final thinking extraction: ${finalThinking.length} chars (was ${lastThinking.length})`);
+          lastThinking = finalThinking;
+          yield { type: 'thinking_update', fullText: lastThinking, source: 'final_extraction' };
+        }
+      } catch (thinkingErr) {
+        log.warn(`[sendMessageStream] Final thinking extraction failed: ${thinkingErr.message}`);
+      }
+
       let finalResponse = '';
       let extractionSource = 'none';
 
@@ -8827,17 +9022,91 @@ class KimiBridge {
           extractionSource = 'lastResponse-fallback';
           log.info(`[sendMessageStream] Using lastResponse as fallback: ${finalResponse.length} chars`);
         } else if (lastThinking && lastThinking.length > 10) {
-          finalResponse = lastThinking;
-          extractionSource = 'lastThinking-fallback';
+          // v2.6.7-fix: NEVER use thinking as the chat response. The thinking bubble already
+          // shows the reasoning; the response must come from the real response JSON/code block.
+          log.warn(`[sendMessageStream] finalResponse empty and no lastResponse seen — leaving response blank (lastThinking=${lastThinking.length})`);
         }
       }
 
-      log.info(`[sendMessageStream] finalResponse=${finalResponse.length} domActions=${domActionsCount}`);
+      // v2.6.7-fix: final DOM extraction fallback. The streaming cursor can be left with
+      // a placeholder like "..." if the last state_change was stale/short. Re-read the DOM
+      // up to 10 times after generation ends, waiting for the real response to land.
+      // Use _pollThinkingAndResponse because the live poller sees the rendered response
+      // while _extractResponse snapshot may still see a stale JSON placeholder.
+      const parsedBeforeExtract = this._extractParsedText(finalResponse);
+      let needsFinalExtract = !finalResponse || finalResponse.trim() === '...' || finalResponse.length < 10;
+      log.info(`[sendMessageStream] final-extract START initial=${JSON.stringify({ len: finalResponse?.length || 0, source: extractionSource, parsedLen: parsedBeforeExtract?.length || 0, needsFinalExtract })}`);
+      if (parsedBeforeExtract && parsedBeforeExtract !== finalResponse) {
+        if (parsedBeforeExtract.trim() === '...' || parsedBeforeExtract.length < 10) {
+          needsFinalExtract = true;
+          log.info(`[sendMessageStream] parsedBeforeExtract still placeholder/short, keep final-extract`);
+        } else {
+          log.info(`[sendMessageStream] using parsedBeforeExtract: ${finalResponse?.length || 0} -> ${parsedBeforeExtract.length} chars`);
+          finalResponse = parsedBeforeExtract;
+        }
+      }
+      if (needsFinalExtract) {
+        for (let finalAttempt = 0; finalAttempt < 10; finalAttempt++) {
+          await new Promise(r => setTimeout(r, 1000));
+          let candidate = '';
+          let candidateSource = 'none';
+          try {
+            const poll = await this._pollThinkingAndResponse(page, userId);
+            if (poll) {
+              candidate = poll.response || '';
+              candidateSource = poll.source || 'poll';
+              log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: poll source=${candidateSource} candidate=${candidate.length} thinking=${poll.thinking?.length || 0} isGen=${poll.isGenerating} preview=${JSON.stringify(candidate.slice(0, 120))}`);
+            } else {
+              log.warn(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: _pollThinkingAndResponse returned null`);
+            }
+          } catch (pollErr) {
+            log.warn(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: _pollThinkingAndResponse error: ${pollErr.message}`);
+          }
 
-      // v9.6-fix: Guard against undefined session (userSessions may not have entry yet)
-      if (session) {
-        session.chatUrl = page.url();
-        this._saveChatUrl(userId, session.chatUrl);
+          // Also try snapshot-diff extraction inside the loop, in case the DOM is ahead of the poller.
+          try {
+            const diffExtract = await this._extractResponseDiff(page, preSendSnapshot, resolvedProvider);
+            if (diffExtract && diffExtract.trim().length > candidate.length) {
+              log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: snapshot-diff bigger than poll (${candidate.length} -> ${diffExtract.trim().length})`);
+              candidate = diffExtract.trim();
+              candidateSource = 'snapshot-diff';
+            } else if (diffExtract && diffExtract.trim()) {
+              log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: snapshot-diff=${diffExtract.trim().length} poll=${candidate.length}`);
+            }
+          } catch (diffErr) {
+            log.warn(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: _extractResponseDiff error: ${diffErr.message}`);
+          }
+
+          if (candidate) {
+            const parsedCandidate = this._extractParsedText(candidate);
+            const isPlaceholder = (t) => !t || t.trim() === '...' || t.trim().length < 3;
+            if (parsedCandidate && parsedCandidate !== candidate && !isPlaceholder(parsedCandidate)) {
+              log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: using parsed candidate ${candidate.length} -> ${parsedCandidate.length}`);
+              candidate = parsedCandidate;
+            }
+            if (!isPlaceholder(candidate)) {
+              if (candidate.length > (finalResponse?.length || 0)) {
+                log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: UPDATE response ${finalResponse?.length || 0} -> ${candidate.length} chars (source=${candidateSource})`);
+                finalResponse = candidate;
+                extractionSource = `final-poll:${candidateSource}`;
+              } else {
+                log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: candidate ${candidate.length} not longer than finalResponse ${finalResponse?.length || 0}`);
+              }
+            } else {
+              log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: candidate is placeholder/short, ignored`);
+            }
+          } else {
+            log.info(`[sendMessageStream] final-poll attempt ${finalAttempt + 1}: no candidate`);
+          }
+
+          if (finalResponse && finalResponse.trim() !== '...' && finalResponse.length > 80) {
+            log.info(`[sendMessageStream] final-poll: response looks complete (${finalResponse.length} chars), breaking early`);
+            break;
+          }
+        }
+        log.info(`[sendMessageStream] final-extract END finalResponse=${finalResponse?.length || 0} source=${extractionSource}`);
+      } else {
+        log.info(`[sendMessageStream] final-extract skipped, finalResponse already good (${finalResponse?.length || 0} chars)`);
       }
 
       const parsedText = this._extractParsedText(finalResponse);
