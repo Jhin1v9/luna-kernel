@@ -544,14 +544,13 @@ router.post('/api/chat', async (req, res) => {
               ? (ev.message || ev.error || ev.text || ev.fullResponse || '')
               : (ev.fullText || ev.text || ev.fullResponse || '');
 
-        // W6-T8+1: re-enable dedup now that thinking delivery is verified.
-        // thinking_update is handled separately (replace-last in addMessageToSession)
-        // because the bridge may emit the same reasoning text many times during polling.
-        const dedupKey = ev.id || `${ev.type}:${content}`;
-        if (ev.type !== 'action_progress' && ev.type !== 'thinking_update' && emittedEventIds.has(dedupKey)) {
-          continue;
-        }
-        emittedEventIds.add(dedupKey);
+        // DEBUG: dedup temporarily disabled to verify thinking delivery.
+        // Re-enabled carefully: only thinking_update is replaced in addMessageToSession.
+        // const dedupKey = ev.id || `${ev.type}:${Date.now()}:${++eventSeq}`;
+        // if (ev.type !== 'action_progress' && emittedEventIds.has(dedupKey)) {
+        //   continue;
+        // }
+        // emittedEventIds.add(dedupKey);
 
         // v6.1-fix: Attach messageId so frontend can validate against stale events
         addMessageToSession(session.id, {
