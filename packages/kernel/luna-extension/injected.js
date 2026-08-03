@@ -12,7 +12,7 @@
     return;
   }
 
-  const VERSION = '2.6.3';
+  const VERSION = '2.6.5';
   const POLL_MS = 80;           // read DOM every 80ms while generating
   const HEARTBEAT_MS = 600;     // full-state resync while streaming
   const BATCH_MS = 40;          // batch postMessage calls to content script
@@ -474,6 +474,7 @@
   let _lastSentThinking = '';
   let _lastSentResponse = '';
   let _thinkingStartedEmitted = false;
+  let _responseHasStarted = false; // v2.6.3-fix: freeze thinking once real response begins
   let _wasStreaming = false;
   let _detectedToolKeys = new Set();
   let _detectedResponseKeys = new Set();
@@ -481,6 +482,9 @@
   let _lastButtonState = {};
   let _lastSeenThinkingContainer = null;
   let _firstThinkingSnapshot = '';
+  let _lastChangeTime = Date.now();
+  let _lastChangeHash = '';
+  let _streamEndEmitted = false;
 
   function getToolKey(tool, params) {
     try {
@@ -528,8 +532,12 @@
     _lastSentThinking = '';
     _lastSentResponse = '';
     _thinkingStartedEmitted = false;
+    _responseHasStarted = false;
+    _streamEndEmitted = false;
     _lastSeenThinkingContainer = null;
     _firstThinkingSnapshot = '';
+    _lastChangeTime = Date.now();
+    _lastChangeHash = '';
   }
 
   function emitStreamState(thinking, response, isStreaming) {
@@ -594,6 +602,14 @@
         }
       }
 
+      // v2.6.3-fix: Kimi finishes reasoning before emitting any response. Once the
+      // real response text appears outside the thinking container, freeze the
+      // thinking bubble to prevent a collapsed/truncated thinking container from
+      // overwriting the full reasoning we already captured.
+      if (!_responseHasStarted && response && response.trim()) {
+        _responseHasStarted = true;
+      }
+
       // ── thinking lifecycle ──
       if (thinking && !_thinkingStartedEmitted) {
         queueEvent('thinking_start', { thinking: _firstThinkingSnapshot || thinking });
@@ -606,7 +622,7 @@
         _lastSentThinking = _firstThinkingSnapshot || thinking;
       }
 
-      if (thinking && (forceResync || thinking !== _lastSentThinking)) {
+      if (!_responseHasStarted && thinking && (forceResync || thinking !== _lastSentThinking)) {
         _lastSentThinking = thinking;
         emitStreamState(thinking, '', true);
         // v2.6.1-fix: source-of-truth full replacement so the frontend always mirrors Kimi.
@@ -616,7 +632,7 @@
       // ── response ──
       if (response && (forceResync || response !== _lastSentResponse)) {
         _lastSentResponse = response;
-        emitStreamState(thinking || _lastSentThinking, response, true);
+        emitStreamState(_lastSentThinking, response, true);
       }
 
       // ── tools / responses ──
@@ -644,8 +660,24 @@
           finalTextLength: _lastSentResponse.length,
           finalThinkingLength: _lastSentThinking.length
         });
+        _streamEndEmitted = true;
       }
       _wasStreaming = nowStreaming;
+
+      // v2.6.4-fix: If real response text has appeared and the DOM stops changing
+      // for 3s, emit stream_end so the backend can finalize the turn. This covers
+      // Kimi variants where the stop button state is not reliably detected.
+      const stateHash = `${_lastSentThinking.length}|${_lastSentResponse.length}|${btnState.stopVisible}|${nowStreaming}`;
+      if (stateHash !== _lastChangeHash) {
+        _lastChangeHash = stateHash;
+        _lastChangeTime = Date.now();
+      } else if (!_streamEndEmitted && _responseHasStarted && (Date.now() - _lastChangeTime > 3000)) {
+        queueEvent('stream_end', {
+          finalTextLength: _lastSentResponse.length,
+          finalThinkingLength: _lastSentThinking.length
+        });
+        _streamEndEmitted = true;
+      }
 
       // ── button state changes ──
       if (JSON.stringify(btnState) !== JSON.stringify(_lastButtonState)) {
