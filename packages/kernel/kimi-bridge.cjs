@@ -1413,9 +1413,7 @@ class KimiBridge {
       this.streamStopFlags.clear();
       this.cancelledStreams.clear();
       this.networkInterceptors.forEach(i => i.stop());
-      this.networkInterceptors.clear();
-      log.info('[DEBUG-LUNA] Global state cleared after browser disconnect');
-    });
+      this.networkInterceptors.clear();    });
 
     // Start idle cleanup timer
     this._startIdleCleanup();
@@ -1448,9 +1446,7 @@ class KimiBridge {
     // Close all user contexts (which also closes their pages)
     for (const [userId, ctx] of this.userContexts) {
       try {
-        if (ctx && typeof ctx.close === 'function') {
-          log.info('[DEBUG-LUNA] Closing context with 30s timeout');
-          await Promise.race([
+        if (ctx && typeof ctx.close === 'function') {          await Promise.race([
             ctx.close(),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000)),
           ]);
@@ -1466,9 +1462,7 @@ class KimiBridge {
 
     if (this.browser) {
       try {
-        if (typeof this.browser.disconnect === 'function') {
-          log.info('[DEBUG-LUNA] Disconnecting browser with 30s timeout');
-          await Promise.race([
+        if (typeof this.browser.disconnect === 'function') {          await Promise.race([
             this.browser.disconnect(),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000)),
           ]);
@@ -1568,9 +1562,7 @@ class KimiBridge {
       let currentUrl = '';
       try { currentUrl = page.url(); } catch (e) { currentUrl = ''; }
       if (!currentUrl.includes(chatUrl.split('?')[0].split('/').pop())) {
-        log.info(`[CRASH-RECOVERY] Navigating to saved chat URL: ${chatUrl}`);
-        log.info('[DEBUG-LUNA] Crash-recovery goto with no timeout');
-        await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
+        log.info(`[CRASH-RECOVERY] Navigating to saved chat URL: ${chatUrl}`);        await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
         await page.waitForTimeout(2000);
       }
 
@@ -2947,9 +2939,7 @@ class KimiBridge {
    *
    * Throws on timeout.
    */
-  async _waitForResponse(page, mode = 'instant', onPartial = null, initialText = '', targetAssistantIndex = -1, provider = 'kimi') {
-    log.info('[DEBUG-LUNA] _waitForResponse started');
-    // NO TIMEOUT — Kimi may execute Python for 10+ minutes. That's valid activity.
+  async _waitForResponse(page, mode = 'instant', onPartial = null, initialText = '', targetAssistantIndex = -1, provider = 'kimi') {    // NO TIMEOUT — Kimi may execute Python for 10+ minutes. That's valid activity.
     // We wait until buttons appear + text is stable, forever.
 
     const chains = provider === 'kimi' ? this._resolveDomSelectorChains(provider) : null;
@@ -3085,9 +3075,7 @@ class KimiBridge {
               log.success(`Text stable for ${stableFor}ms + buttons visible — response complete`);
               if (onPartial) {
                 try { onPartial(currentText, 'done'); } catch {}
-              }
-              log.info('[DEBUG-LUNA] _waitForResponse finished successfully');
-              return lastText;
+              }              return lastText;
             }
 
             // If stable >5s but no buttons yet = THINKING (Kimi paused)
@@ -3983,10 +3971,7 @@ class KimiBridge {
     let stableFor = 0;
     const pollInterval = 1000;
     const maxWait = Number.MAX_SAFE_INTEGER;
-    const startTime = Date.now();
-
-    log.info('[DEBUG-LUNA] _waitForResponse started (no timeout)');
-    while (Date.now() - startTime < maxWait) {
+    const startTime = Date.now();    while (Date.now() - startTime < maxWait) {
       await this._sleep(pollInterval);
 
       const evalRes = await wb.evaluate(`
@@ -5791,11 +5776,11 @@ class KimiBridge {
    * user's poller steal another user's streamed text/tool events.
    */
   _consumeExtensionEvents(expectedUrl) {
-    console.log(`[DEBUG-LUNA-CONSUME] FUNCTION CALLED expectedUrl=${expectedUrl}`);
+
     try {
       const buffers = global.__lunaExtensionEventBuffers;
       if (!buffers || buffers.size === 0) {
-        console.log(`[DEBUG-LUNA-CONSUME] no buffers`);
+
         return [];
       }
 
@@ -5818,11 +5803,11 @@ class KimiBridge {
       const multiBuffer = buffers.size > 1;
       let loggedNoUrl = false;
 
-      log.info(`[DEBUG-LUNA-CONSUME] expectedUrl=${expected} rawExpected=${expectedUrl} buffers=${buffers.size}`);
+
       for (const [sid, buf] of buffers) {
         if (!buf || buf.length === 0) continue;
         const first = buf[0];
-        log.info(`[DEBUG-LUNA-CONSUME] buffer ${sid}: len=${buf.length} tabUrl=${normalizeUrl(first.tabUrl || first.url || '')} eventType=${first.eventType || 'unknown'}`);
+
       }
 
       const allEvents = [];
@@ -5839,7 +5824,7 @@ class KimiBridge {
             // exactly one buffer exists (single-user dev scenario preserved).
             belongs = !multiBuffer;
             if (!loggedNoUrl) {
-              log.info(`[DEBUG-LUNA-CONSUME] Event without url/tabUrl — ${belongs ? 'consuming (single buffer)' : 'skipping (multiple buffers, ownership unknown)'}`);
+
               loggedNoUrl = true;
             }
           } else {
@@ -5849,7 +5834,7 @@ class KimiBridge {
             remaining.push(raw);
             continue;
           }
-          log.info(`[DEBUG-LUNA-CONSUME] consuming event ${raw.eventType} for ${expected}`);
+
           // Translate extension event format to bridge internal format
           switch (raw.eventType) {
             case 'thinking_start': {
@@ -5992,7 +5977,7 @@ class KimiBridge {
             // own tab are consumed (cross-user event theft fix).
             let pageUrl = '';
             try { pageUrl = session.page.url(); } catch (_) { pageUrl = ''; }
-            console.log(`[DEBUG-LUNA] about to call _consumeExtensionEvents pageUrl=${pageUrl}`);
+
             const extEvents = this._consumeExtensionEvents(pageUrl);
             for (const ev of extEvents) {
               // v11.1-fix: DeepSeek's DOM observer emits partial tool_call events while
@@ -6331,9 +6316,7 @@ class KimiBridge {
   /**
    * v7.0: Stop the DOM poller for a user. Returns a Promise that resolves when stopped.
    */
-  async _stopDomPoller(userId) {
-    log.info(`[DEBUG-LUNA] _stopDomPoller called for user ${hashUserId(userId)}`);
-    const session = this.userSessions.get(userId);
+  async _stopDomPoller(userId) {    const session = this.userSessions.get(userId);
     if (!session || !session.domPollerActive) return;
 
     const wasActive = session.domPollerActive;
@@ -6347,9 +6330,7 @@ class KimiBridge {
         // Safety: resolve after 2s even if poller didn't stop
         setTimeout(resolve, 2000);
       });
-    }
-    log.info(`[DEBUG-LUNA] _stopDomPoller finished for user ${hashUserId(userId)}`);
-  }
+    }  }
 
   /**
    * v7.0: Enqueue a DOM event for a user.
@@ -8124,44 +8105,27 @@ class KimiBridge {
    *
    * Pattern inspired by ShellAgent's Provider.chat() async generator.
    */
-  async *sendMessageStream(userId, text, options = {}, provider = 'kimi') {
-    log.info(`[DEBUG-LUNA] sendMessageStream started for user ${hashUserId(userId)}`);
-    if (!text || !text.trim()) {
+  async *sendMessageStream(userId, text, options = {}, provider = 'kimi') {    if (!text || !text.trim()) {
       throw new Error('Message text is required');
     }
 
     // Rate limiting
     this._checkCooldown(userId);
 
-    const resolvedProvider = this._resolveProvider(userId, provider);
-    log.info(`[DEBUG-LUNA] resolvedProvider=${resolvedProvider}`);
-    const page = await this._getOrCreateUserPage(userId, resolvedProvider);
-    log.info(`[DEBUG-LUNA] page acquired, url=${page?.url()}`);
-
-    // v8.6-fix: Reset completion state and soft-cancel flag at start of every message
-    let session = this.userSessions.get(userId);
-    log.info(`[DEBUG-LUNA] session acquired=${!!session}`);
-    if (session) {
+    const resolvedProvider = this._resolveProvider(userId, provider);    const page = await this._getOrCreateUserPage(userId, resolvedProvider);    // v8.6-fix: Reset completion state and soft-cancel flag at start of every message
+    let session = this.userSessions.get(userId);    if (session) {
       session._completionState = null;
       session.softCancelRequested = false;
       session.provider = resolvedProvider;
     }
 
     // v7.5: Initialize Network Interceptor for this message
-    // This replaces fragile JS injection with native Playwright response capture.
-    log.info(`[DEBUG-LUNA] getting interceptor`);
-    let interceptor = null;
+    // This replaces fragile JS injection with native Playwright response capture.    let interceptor = null;
     try {
       interceptor = await this._getOrCreateInterceptor(userId);
-    } catch (interceptorErr) {
-      log.warn(`[DEBUG-LUNA] Interceptor creation failed: ${interceptorErr.message} — continuing without it`);
-    }
-    log.info(`[DEBUG-LUNA] interceptor=${!!interceptor}`);
-    if (interceptor) interceptor.reset();
+    } catch (interceptorErr) {    }    if (interceptor) interceptor.reset();
 
-    // v7.5: Also reset legacy stream interceptor (transitional, will be removed)
-    log.info(`[DEBUG-LUNA] resetting legacy stream interceptor`);
-    await page.evaluate(() => {
+    // v7.5: Also reset legacy stream interceptor (transitional, will be removed)    await page.evaluate(() => {
       if (window.__lunaResetStream) {
         window.__lunaResetStream();
       } else if (window.__lunaStream) {
@@ -8182,9 +8146,7 @@ class KimiBridge {
     // BEFORE sending anything, with no event. Past 60s the previous stream is
     // provably dead — force-clear the flag and continue sending.
     const PROCESSING_DRAIN_TIMEOUT_MS = 60_000;
-    if (session?.processing) {
-      log.warn(`[DEBUG-LUNA] User ${hashUserId(userId)} already processing — waiting for drain (max ${PROCESSING_DRAIN_TIMEOUT_MS}ms)`);
-      const drainDeadline = Date.now() + PROCESSING_DRAIN_TIMEOUT_MS;
+    if (session?.processing) {      const drainDeadline = Date.now() + PROCESSING_DRAIN_TIMEOUT_MS;
       while (session?.processing) {
         if (Date.now() > drainDeadline) {
           log.warn(`[sendMessageStream] Processing drain timeout (${PROCESSING_DRAIN_TIMEOUT_MS}ms) for user ${hashUserId(userId)} — previous stream is dead, force-clearing processing flag`);
@@ -8192,9 +8154,7 @@ class KimiBridge {
           break;
         }
         await new Promise(r => setTimeout(r, 500));
-      }
-      log.warn(`[DEBUG-LUNA] Previous drain complete for user ${hashUserId(userId)}`);
-    }
+      }    }
 
     if (session) {
       session.processing = true;
@@ -8208,16 +8168,9 @@ class KimiBridge {
     this.domEventQueues.set(userId, { events: [], lastReadIndex: 0, createdAt: Date.now(), queueId });
     const queue = this.domEventQueues.get(userId);
 
-    // v7.0: Start DOM poller — runs INDEPENDENTLY of the stream
-    log.info(`[DEBUG-LUNA] starting DOM poller`);
-    this._startDomPoller(userId);
+    // v7.0: Start DOM poller — runs INDEPENDENTLY of the stream    this._startDomPoller(userId);
 
-    try {
-      log.info(`[DEBUG-LUNA] Step 1: verifySession for provider=${resolvedProvider}`);
-      await this._verifySession(page);
-      log.info(`[DEBUG-LUNA] Step 2: verifySession OK`);
-
-      if (options.newChat) {
+    try {      await this._verifySession(page);      if (options.newChat) {
         const pageContext = page.context();
         const pagesBefore = new Set(pageContext.pages());
         const openedUrl = await this._openNewChat(page, resolvedProvider);
@@ -8267,10 +8220,7 @@ class KimiBridge {
 
       if (options.mode) {
         await this.setMode(userId, options.mode, resolvedProvider);
-      }
-
-      log.info(`[DEBUG-LUNA] Step 3: detectActualMode`);
-      const actualMode = await this._detectActualMode(page, resolvedProvider) || session?.mode || 'instant';
+      }      const actualMode = await this._detectActualMode(page, resolvedProvider) || session?.mode || 'instant';
       log.info(`[v7.0] User ${hashUserId(userId)} streaming message (mode=${actualMode})`);
 
       // v6.1-fix: Inject text file contents directly into the prompt
@@ -8299,10 +8249,7 @@ class KimiBridge {
           }
         }
         options.files = options.files.filter(f => !f._injected);
-      }
-
-      log.info(`[DEBUG-LUNA] Step 4: looking for input field`);
-      const streamProviderCfg = this._loadProviderConfig(resolvedProvider);
+      }      const streamProviderCfg = this._loadProviderConfig(resolvedProvider);
       const streamInputChain = resolveChain(streamProviderCfg, 'input', 'textarea, [contenteditable="true"]');
       // waitForChain (15s) replaces the instant count() that raced SPA
       // rendering — the DeepSeek "inputCount=0 on a logged page" bug.
@@ -8313,11 +8260,7 @@ class KimiBridge {
           throw new Error(`${String(resolvedProvider).toUpperCase()}_LOGIN_REQUIRED: login page detected (${currentUrl}) — faça login no Chrome da Luna e recapture a sessão`);
         }
         throw new Error(`Input field not found on ${providerDisplayName(streamProviderCfg)}`);
-      }
-      log.info(`[DEBUG-LUNA] Step 4: input found via '${inputSelectorUsed}'`);
-
-      log.info(`[DEBUG-LUNA] Step 5: bringToFront`);
-      await page.bringToFront();
+      }      await page.bringToFront();
       // v9.6-fix: Use a real timeout (not 0) so innerText throws when no markdown
       // exists on Kimi's home screen, allowing .catch to return '' instead of
       // hanging forever waiting for an element that never appears.
@@ -8377,9 +8320,7 @@ class KimiBridge {
       // React/Lexical contenteditable (text visible in the DOM but EditorState
       // empty → Enter becomes a no-op and the message sits unsent in the box).
       await this._fillContentEditable(inputLocator, text);
-      await page.waitForTimeout(500);
-      log.info(`[DEBUG-LUNA] Step 6: pressing Enter`);
-      // W7-T4: verify-and-retry submit — typed text must never sit unsent.
+      await page.waitForTimeout(500);      // W7-T4: verify-and-retry submit — typed text must never sit unsent.
       await this._submitWithVerification(page, inputLocator, text, { provider: resolvedProvider });
       // Wave2-fix: discard everything the poller observed during send-prep —
       // it describes the PREVIOUS turn's DOM, not this message.
@@ -8416,10 +8357,7 @@ class KimiBridge {
         if (!options.isAutoContinue) {
           session._domEventSeen = new Map();
         }
-      }
-      log.info(`[DEBUG-LUNA] Step 7: Message sent, starting v7.0 stream consumer`);
-
-      // v7.7: Keep assistant detection for logging/compatibility, but extraction
+      }      // v7.7: Keep assistant detection for logging/compatibility, but extraction
       // will use snapshot diff which doesn't depend on correct index.
       // v10.27-fix: Kimi-specific .segment-assistant detection does not exist on
       // other providers (DeepSeek, etc.). Skip it for non-Kimi providers so the
@@ -8489,9 +8427,7 @@ class KimiBridge {
           }
           await new Promise(r => setTimeout(r, 500));
         }
-      } else {
-        log.info(`[DEBUG-LUNA] Skipping Kimi assistant detection for provider=${resolvedProvider}`);
-      }
+      } else {      }
 
       await page.waitForTimeout(600);
 
@@ -8546,9 +8482,7 @@ class KimiBridge {
       // Phase 0: Wait for first text change via queue events.
       // Wave 11-fix: NO timeout waiting for Kimi. The user explicitly wants Luna
       // to wait indefinitely for the provider to respond. A silent send failure is
-      // still surfaced by the heartbeat 'waiting' events.
-      log.info(`[DEBUG-LUNA] Phase 0: waiting for first text change. initialText='${initialText}' queueLen=${queue.events.length}`);
-      while (!textHasChanged && !stopConsuming) {
+      // still surfaced by the heartbeat 'waiting' events.      while (!textHasChanged && !stopConsuming) {
         while (queue.lastReadIndex < queue.events.length) {
           const ev = queue.events[queue.lastReadIndex++];
           // W10-T2: context limit detected by the page-level scanner before
@@ -8560,9 +8494,7 @@ class KimiBridge {
             break;
           }
           if (ev.type === 'state_change') {
-            const combined = (ev.thinking || '') + (ev.response || '');
-            log.info(`[DEBUG-LUNA] Phase 0 state_change: combined='${combined}' isGenerating=${ev.isGenerating} source=${ev.source}`);
-            if (combined !== initialText && combined.length > 0) {
+            const combined = (ev.thinking || '') + (ev.response || '');            if (combined !== initialText && combined.length > 0) {
               textHasChanged = true;
               lastThinking = ev.thinking || '';
               lastResponse = ev.response || '';
@@ -8572,23 +8504,17 @@ class KimiBridge {
               responseCursor.next(ev.source || 'phase0', lastResponse);
               // v11.8-fix: seed the thinking cursor too, so the first thinking
               // delta in Phase 1 is a clean diff instead of being swallowed.
-              thinkingCursor.next(ev.source || 'phase0', lastThinking);
-              log.info(`[DEBUG-LUNA] Phase 0 textHasChanged=true`);
-              break;
+              thinkingCursor.next(ev.source || 'phase0', lastThinking);              break;
             }
             // v10.35-fix: Trigger on generation start immediately, even at pollCount 0.
             // Non-Kimi providers (DeepSeek) may have the previous answer still visible;
             // isGenerating is the most reliable signal that a NEW response is beginning.
             if (ev.isGenerating) {
-              textHasChanged = true;
-              log.info(`[DEBUG-LUNA] Phase 0 textHasChanged=true via isGenerating`);
-              break;
+              textHasChanged = true;              break;
             }
           }
         }
-        if (++pollCount % 5 === 0) {
-          log.info(`[DEBUG-LUNA] Phase 0 still waiting (pollCount=${pollCount})`);
-          yield { type: 'waiting', message: 'Aguardando resposta do Kimi...' };
+        if (++pollCount % 5 === 0) {          yield { type: 'waiting', message: 'Aguardando resposta do Kimi...' };
         }
         await new Promise(r => setTimeout(r, 200));
       }
@@ -8669,9 +8595,7 @@ class KimiBridge {
                 // DEBUG: bypass cursor diff for thinking — emit full update every time
                 // const { emit, diverged } = thinkingCursor.next(ev.source, t);
                 // if (diverged) { ... }
-                // if (emit) { yield { type: 'thinking_delta', text: emit, fullThinking: t }; lastThinking = t; }
-                log.info(`[DEBUG-LUNA-BRIDGE] state_change thinking=${t.length} source=${ev.source||'unknown'}`);
-                yield { type: 'thinking_update', fullText: t, source: ev.source || 'state_change' };
+                // if (emit) { yield { type: 'thinking_delta', text: emit, fullThinking: t }; lastThinking = t; }                yield { type: 'thinking_update', fullText: t, source: ev.source || 'state_change' };
                 lastThinking = t;
               }
 
@@ -8820,9 +8744,7 @@ class KimiBridge {
 
             // v11.2-fix: chrome_extension can emit an explicit thinking_start —
             // forward it so the frontend creates the bubble immediately.
-            case 'thinking_start': {
-              log.info(`[DEBUG-LUNA-BRIDGE] yielding thinking_start source=${ev.source||'chrome_extension'}`);
-              yield { type: 'thinking_start', source: ev.source || 'chrome_extension' };
+            case 'thinking_start': {              yield { type: 'thinking_start', source: ev.source || 'chrome_extension' };
               break;
             }
 
@@ -8830,9 +8752,7 @@ class KimiBridge {
             // Chrome extension. Pass through as-is so the frontend replaces the
             // entire bubble content with Kimi's current reasoning.
             case 'thinking_update': {
-              const fullText = ev.fullText || '';
-              log.info(`[DEBUG-LUNA-BRIDGE] thinking_update len=${fullText.length} source=${ev.source||'unknown'}`);
-              if (fullText) {
+              const fullText = ev.fullText || '';              if (fullText) {
                 lastThinking = fullText;
                 yield { type: 'thinking_update', fullText, source: ev.source || 'chrome_extension' };
               }
@@ -8841,9 +8761,7 @@ class KimiBridge {
 
             // v8.5-fix: Direct thinking/response deltas from ultra-light observer
             case 'thinking_delta': {
-              const t = ev.fullThinking || ev.text || '';
-              log.info(`[DEBUG-LUNA-BRIDGE] thinking_delta len=${t.length}`);
-              if (t && t !== lastThinking) {
+              const t = ev.fullThinking || ev.text || '';              if (t && t !== lastThinking) {
                 const delta = t.slice(lastThinking.length);
                 if (delta) {
                   yield { type: 'thinking_delta', text: delta, fullThinking: t };
@@ -9035,10 +8953,7 @@ class KimiBridge {
         yield { type: 'context_limit', response: pageContextLimit?.response || finalResponse, thinking: lastThinking };
       } else {
         yield { type: 'done', response: finalResponse, thinking: lastThinking };
-      }
-      log.info(`[DEBUG-LUNA] sendMessageStream finished for user ${hashUserId(userId)}`);
-
-    } catch (err) {
+      }    } catch (err) {
       if (err.message === 'STREAM_CANCELLED') {
         log.info(`[sendMessageStream] Stream cancelled gracefully for user ${hashUserId(userId)}`);
       } else {

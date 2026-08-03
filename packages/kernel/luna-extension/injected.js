@@ -12,7 +12,7 @@
     return;
   }
 
-  const VERSION = '2.6.2';
+  const VERSION = '2.6.3';
   const POLL_MS = 80;           // read DOM every 80ms while generating
   const HEARTBEAT_MS = 600;     // full-state resync while streaming
   const BATCH_MS = 40;          // batch postMessage calls to content script
@@ -383,41 +383,11 @@
     } catch (e) { return ''; }
   }
 
-  // True if the thinking container has a JSON Copy button or a JSON code block inside it.
-  // That signals the model finished reasoning and is now emitting the real JSON wrapper.
-  function thinkingHasFinishedSigns(thinkingContainer) {
-    if (!thinkingContainer) return false;
-    try {
-      // Collapsed container = reasoning step is closed.
-      const cls = className(thinkingContainer);
-      if (cls.includes('is-expanded') === false && (cls.includes('collapsed') || cls.includes('closed'))) return true;
-      // Some Kimi variants never add is-expanded; detect by explicit closed marker.
-      if (!cls.includes('is-expanded') && cls.includes('thinking-container')) {
-        // Only declare finished if we also see real output outside OR a JSON copy/code inside.
-        if (hasJsonCopyButton(thinkingContainer) || hasJsonCodeBlock(thinkingContainer)) return true;
-      }
-
-      if (hasJsonCopyButton(thinkingContainer)) return true;
-      if (hasJsonCodeBlock(thinkingContainer)) return true;
-    } catch (e) {}
-    return false;
-  }
-
-  function hasJsonCopyButton(container) {
-    for (const btn of safeQuery('button, [role="button"], div, span', container)) {
-      const t = safeText(btn).toLowerCase();
-      if (isCopyButton(btn) && t.includes('json')) return true;
-    }
-    return false;
-  }
-
-  function hasJsonCodeBlock(container) {
-    for (const block of safeQuery(SELECTORS.codeBlock, container)) {
-      const t = safeText(block);
-      if (t.length > 5 && (t.startsWith('{') || t.startsWith('[')) && t.includes('"')) return true;
-    }
-    return false;
-  }
+  // v2.6.3: The boundary rule is absolute — everything inside the thinking
+  // container is reasoning; everything outside is response/tool. We no longer
+  // treat a "JSON Copy" button or a JSON code block inside the thinking container
+  // as a signal that reasoning ended; those elements are still part of Kimi's
+  // reasoning UI and must stay in the thinking bubble.
 
   // ── JSON block detection (response/tool blocks outside the thinking container) ──
   function extractFirstJsonObject(text) {
@@ -504,7 +474,6 @@
   let _lastSentThinking = '';
   let _lastSentResponse = '';
   let _thinkingStartedEmitted = false;
-  let _thinkingHasEnded = false;
   let _wasStreaming = false;
   let _detectedToolKeys = new Set();
   let _detectedResponseKeys = new Set();
@@ -559,7 +528,6 @@
     _lastSentThinking = '';
     _lastSentResponse = '';
     _thinkingStartedEmitted = false;
-    _thinkingHasEnded = false;
     _lastSeenThinkingContainer = null;
     _firstThinkingSnapshot = '';
   }
@@ -607,11 +575,13 @@
         _lastSeenThinkingContainer = thinkingContainer;
         _firstThinkingSnapshot = extractThinking(thinkingContainer);
         _thinkingStartedEmitted = false;
-        _thinkingHasEnded = false;
         _lastSentThinking = '';
       }
 
-      let thinking = _thinkingHasEnded ? '' : extractThinking(thinkingContainer);
+      // v2.6.3: Absolute boundary rule — everything inside the thinking container is
+      // reasoning; everything outside is response/tool. We never stop extracting
+      // thinking just because a JSON Copy button or code block appears inside it.
+      let thinking = extractThinking(thinkingContainer);
       let response = extractResponse(assistant, thinkingContainer);
 
       // v11.8-fix: if no dedicated thinking container was found, use heuristic fallback
@@ -619,15 +589,6 @@
       if (!thinkingContainer && response) {
         const split = splitThinkingAndResponse(response, false);
         if (split.thinking && !thinking) {
-          thinking = split.thinking;
-          response = split.response;
-        }
-      }
-
-      // v11.8-fix: last-line defense — if response still contains thinking prefix, split it.
-      if (response && !thinking) {
-        const split = splitThinkingAndResponse(response, false);
-        if (split.thinking && split.response) {
           thinking = split.thinking;
           response = split.response;
         }
@@ -645,27 +606,17 @@
         _lastSentThinking = _firstThinkingSnapshot || thinking;
       }
 
-      // Detect the exact moment reasoning stops and real output begins.
-      if (!_thinkingHasEnded && thinkingContainer && thinkingHasFinishedSigns(thinkingContainer)) {
-        _thinkingHasEnded = true;
-        if (thinking !== _lastSentThinking) {
-          _lastSentThinking = thinking;
-        }
-      }
-
-      if (!_thinkingHasEnded && thinking) {
-        if (forceResync || thinking !== _lastSentThinking) {
-          _lastSentThinking = thinking;
-          emitStreamState(thinking, '', true);
-          // v2.6.1-fix: source-of-truth full replacement so the frontend always mirrors Kimi.
-          emitThinkingUpdate(thinking);
-        }
+      if (thinking && (forceResync || thinking !== _lastSentThinking)) {
+        _lastSentThinking = thinking;
+        emitStreamState(thinking, '', true);
+        // v2.6.1-fix: source-of-truth full replacement so the frontend always mirrors Kimi.
+        emitThinkingUpdate(thinking);
       }
 
       // ── response ──
       if (response && (forceResync || response !== _lastSentResponse)) {
         _lastSentResponse = response;
-        emitStreamState(_thinkingHasEnded ? _lastSentThinking : '', response, true);
+        emitStreamState(thinking || _lastSentThinking, response, true);
       }
 
       // ── tools / responses ──
@@ -773,8 +724,7 @@
       url: window.location.href,
       lastAssistant: !!_currentAssistant,
       lastThinkingLen: _lastSentThinking.length,
-      lastResponseLen: _lastSentResponse.length,
-      thinkingEnded: _thinkingHasEnded
+      lastResponseLen: _lastSentResponse.length
     })
   };
 

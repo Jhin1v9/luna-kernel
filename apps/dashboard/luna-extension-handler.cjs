@@ -83,9 +83,7 @@ class LunaExtensionHandler extends EventEmitter {
 
     // Receive event from extension
     app.post('/ext/event', (req, res) => {
-      const { sessionId, ...eventData } = req.body;
-      console.log(`[LunaExt-RAW] /ext/event session=${sessionId} type=${eventData.eventType || eventData.type} dataKeys=${Object.keys(eventData.data || {}).join(',')}`);
-      if (!sessionId) {
+      const { sessionId, ...eventData } = req.body;      if (!sessionId) {
         return res.status(400).json({ error: 'sessionId required' });
       }
       // v11.8-fix: auto-register extension sessions after server restart. The

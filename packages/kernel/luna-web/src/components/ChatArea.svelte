@@ -396,7 +396,7 @@
     //   const exists = $messages.some(m => m.id === event.id);
     //   if (exists) return;
     // }
-    console.log('[DEBUG-LUNA-UI] event received:', event.type, event.id, event.messageId, event.text?.slice(0, 40), event.fullText?.slice(0, 40));
+
 
     const { type } = event;
 

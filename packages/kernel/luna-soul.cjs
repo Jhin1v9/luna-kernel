@@ -1898,9 +1898,7 @@ class LunaSoul extends EventEmitter {
    * Compact session context: build a rich checkpoint, create a new thread,
    * send the checkpoint, and reset local context.
    */
-  async *_compactContext(sessionId, userId = 'luna-default') {
-    console.log(`[DEBUG-LUNA] _compactContext started for session ${sessionId}`);
-    yield {
+  async *_compactContext(sessionId, userId = 'luna-default') {    yield {
       type: 'compact_start',
       message: '📦 Compactação manual iniciada. Criando checkpoint inteligente...',
       sessionId,
@@ -1944,9 +1942,7 @@ class LunaSoul extends EventEmitter {
           type: 'compact_error',
           message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`,
           sessionId,
-        };
-        console.log(`[DEBUG-LUNA] _compactContext finished (newChat failed)`);
-        return { success: false, error: err.message };
+        };        return { success: false, error: err.message };
       }
 
       yield {
@@ -1991,9 +1987,7 @@ class LunaSoul extends EventEmitter {
           type: 'compact_error',
           message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`,
           sessionId,
-        };
-        console.log(`[DEBUG-LUNA] _compactContext finished (checkpoint send failed)`);
-        return { success: false, error: sendErr.message };
+        };        return { success: false, error: sendErr.message };
       } finally {
         if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
       }
@@ -2035,9 +2029,7 @@ class LunaSoul extends EventEmitter {
         summary,
         chatUrl: finalUrl,
         sessionId,
-      };
-      console.log(`[DEBUG-LUNA] _compactContext finished (success)`);
-      return { success: true, summary, chatUrl: finalUrl };
+      };      return { success: true, summary, chatUrl: finalUrl };
     } catch (err) {
       console.error(`[DEBUG-LUNA] _compactContext finished (error): ${err.message}`);
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
@@ -2480,7 +2472,7 @@ class LunaSoul extends EventEmitter {
    * Pattern inspired by ShellAgent's queryLoop async generator.
    */
   async *processMessageStream(input, options = {}) {
-    console.log('[DEBUG-LUNA-SOUL] processMessageStream START', { input: input?.slice(0,30), options });
+
     const sessionId = options.sessionId || this.sessionManager.getOrCreateCurrentSession({
       title: options.sessionTitle || 'Sessão Luna',
       mode: options.mode || this.defaultMode,
@@ -2697,18 +2689,14 @@ class LunaSoul extends EventEmitter {
               // v11.8-fix: source-of-truth full thinking replacement from the
               // Chrome extension/bridge. Replace the accumulated reasoning instead
               // of appending deltas, so Luna always mirrors Kimi exactly.
-              const t = event.fullText || event.thinking || '';
-              console.log(`[DEBUG-LUNA-SOUL] thinking_update len=${t.length}`);
-              if (t && t !== fullThinking) {
+              const t = event.fullText || event.thinking || '';              if (t && t !== fullThinking) {
                 fullThinking = t;
                 yield { type: 'thinking_update', fullText: t, sessionId };
               }
               break;
             }
 
-            case 'thinking_delta':
-              console.log(`[DEBUG-LUNA-SOUL] thinking_delta text=${event.text?.slice(0, 40)}`);
-              fullThinking += event.text;
+            case 'thinking_delta':              fullThinking += event.text;
               yield { type: 'thinking_delta', text: event.text, fullThinking, sessionId };
               break;
 
@@ -2759,10 +2747,7 @@ class LunaSoul extends EventEmitter {
               }
               const toolKey = `${event.action?.tool || event.action?.type || 'unknown'}:${JSON.stringify(event.action?.params || event.action || {})}`;
               const toolHash = require('crypto').createHash('sha256').update(toolKey).digest('hex').slice(0, 16);
-              const toolInstanceId = nextToolEventId();
-              console.log(`[DEBUG-LUNA] DOM dedup hash calculated: toolKey=${toolKey}, toolHash=${toolHash}, toolInstanceId=${toolInstanceId}`);
-
-              const parsedAction = {
+              const toolInstanceId = nextToolEventId();              const parsedAction = {
                 mode: 'ACTION',
                 tool: event.action?.tool || event.action?.type,
                 params: event.action?.params || event.action,
@@ -3739,9 +3724,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
    * Non-generator version of _processModeStream.
    * Returns { events: [], output: string, tool: string } for auto-continue loop.
    */
-  async _processModeResult(parsed, sessionId, originalInput, options, eventBus = null) {
-    console.log(`[DEBUG-LUNA] _processModeResult started mode=${parsed.mode || 'CHAT'}`);
-    // W6-T9: backstop — a CHAT turn whose "response" is actually raw tool/script
+  async _processModeResult(parsed, sessionId, originalInput, options, eventBus = null) {    // W6-T9: backstop — a CHAT turn whose "response" is actually raw tool/script
     // JSON (the Kimi DOM can deliver it as plain text) is re-dispatched as an
     // action instead of being persisted as a chat reply. Raw JSON is NEVER
     // persisted: intent-JSON that fails validation becomes a friendly PT-BR error.
@@ -3784,10 +3767,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           parsed.params = Object.keys(rest).length > 0 ? rest : {};
         }
         const _toolKey = `${parsed.tool || 'unknown'}:${JSON.stringify(parsed.params || {})}`;
-        const _toolHash = require('crypto').createHash('sha256').update(_toolKey).digest('hex').slice(0, 16);
-        console.log(`[DEBUG-LUNA] dedup hash calculated: _toolKey=${_toolKey}, _toolHash=${_toolHash}`);
-
-        // v9.5-fix: Check for recently executed action. If found, replay the stored result
+        const _toolHash = require('crypto').createHash('sha256').update(_toolKey).digest('hex').slice(0, 16);        // v9.5-fix: Check for recently executed action. If found, replay the stored result
         // instead of skipping silently — this prevents infinite loops where Kimi re-sends
         // the same tool because it never received the result.
         const cachedResult = this._getRecentActionResult(sessionId, _toolHash);
@@ -4012,10 +3992,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
       default:
         events.push(this._handleChat({ response: `Modo desconhecido: ${mode}. Tool: ${parsed.tool || 'unknown'}` }, sessionId));
-    }
-
-    console.log(`[DEBUG-LUNA] _processModeResult finished mode=${mode} events=${events.length} pending=${pendingPromises.length}`);
-    return { events, output, tool, pendingPromises };
+    }    return { events, output, tool, pendingPromises };
   }
 
   /** Stream-aware plan handler */
