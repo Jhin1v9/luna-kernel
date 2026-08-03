@@ -12,11 +12,15 @@
     return;
   }
 
-  const VERSION = '2.6.5';
+  const VERSION = '2.6.6';
   const POLL_MS = 80;           // read DOM every 80ms while generating
   const HEARTBEAT_MS = 600;     // full-state resync while streaming
   const BATCH_MS = 40;          // batch postMessage calls to content script
   const TOOL_DEDUP_TTL_MS = 120000;
+
+  // v2.6.6-fix: remember which thinking containers we already expanded so we
+  // don't click their header on every poll cycle.
+  const _expandedThinkingContainers = new WeakSet();
 
   // ── Provider-specific selector chains. Order matters: first match wins. ──
   function getSelectors() {
@@ -290,6 +294,45 @@
     return null;
   }
 
+  // v2.6.6-fix: Kimi's new UI renders the thinking container collapsed by default
+  // once the response starts, so textContent only returns a short preview.
+  // Clicking the header/title expands the full reasoning DOM so we can mirror it.
+  function expandThinkingContainer(container) {
+    if (!container || _expandedThinkingContainers.has(container)) return;
+    try {
+      const titleSelectors = [
+        '.toolcall-title-container',
+        '.toolcall-title-name',
+        '[class*="toolcall-title"]',
+        '[class*="thinking-title"]',
+        '[class*="reasoning-title"]',
+        '[class*="thought-title"]',
+        '.thinking-header',
+        '.reasoning-header'
+      ];
+      let title = null;
+      for (const sel of titleSelectors) {
+        title = container.querySelector(sel);
+        if (title && isVisible(title)) break;
+      }
+      // Fallback: the first visible child that looks like a clickable header.
+      if (!title) {
+        for (const child of container.children) {
+          if (isVisible(child) && (child.tagName === 'BUTTON' || child.getAttribute('role') === 'button' || className(child).includes('title') || className(child).includes('header'))) {
+            title = child;
+            break;
+          }
+        }
+      }
+      if (title) {
+        title.click();
+        title.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        _expandedThinkingContainers.add(container);
+        console.log('[LunaExt DEBUG] expanded thinking container');
+      }
+    } catch (e) {}
+  }
+
   // Extract ALL reasoning text from the container, not just the first markdown leaf.
   function extractThinking(thinkingContainer) {
     if (!thinkingContainer) return '';
@@ -297,6 +340,21 @@
       // Try the explicit markdown container first, but collect ALL matching containers
       // in case Kimi splits the thinking into multiple blocks.
       let combined = '';
+      // v2.6.6-fix: use textContent (not innerText) so we capture the FULL reasoning
+      // even when Kimi collapses the thinking container after the response starts.
+      // innerText respects visibility and only returns the collapsed preview; textContent
+      // returns every text node in the DOM subtree. We strip the header/chrome afterwards.
+      const raw = thinkingContainer.textContent || '';
+      if (!raw) return '';
+      // Remove copy-button text and other UI chrome that textContent may include.
+      const noChrome = raw
+        .replace(/\b(Copy|复制|複製|Copiar)\b/gi, '')
+        .replace(/^\s*\b(Thinking|Think|Pensando|Analisando|Analisar|Raciocínio|Raciocinando|Concluído|Concluindo|Raciocínio concluído|Reasoning|Processando|Searching|Buscando)\b\s*[.:]?\s*/i, '')
+        .replace(/\s*JSON\s*$/i, '')
+        .trim();
+      return noChrome;
+
+      // LEGACY: explicit markdown container collection kept for reference.
       const explicitNodes = thinkingContainer.querySelectorAll(SELECTORS.thinkingText);
       if (explicitNodes.length > 0) {
         // v2.6.2-fix: selectors may match nested containers (e.g. .markdown-container
@@ -355,7 +413,7 @@
 
   function stripThinkingHeader(text) {
     return text
-      .replace(/^\s*(Think|Thinking|Pensando|Analisando|Analisar|Raciocínio|Raciocinando|Concluído|Concluindo|Raciocínio concluído|Reasoning|Processando|Searching|Buscando)\s*[.:]?\s*/i, '')
+      .replace(/^\s*\b(Thinking|Think|Pensando|Analisando|Analisar|Raciocínio|Raciocinando|Concluído|Concluindo|Raciocínio concluído|Reasoning|Processando|Searching|Buscando)\b\s*[.:]?\s*/i, '')
       .replace(/\s*JSON\s*Copy\s*$/i, '')
       .trim();
   }
@@ -474,7 +532,6 @@
   let _lastSentThinking = '';
   let _lastSentResponse = '';
   let _thinkingStartedEmitted = false;
-  let _responseHasStarted = false; // v2.6.3-fix: freeze thinking once real response begins
   let _wasStreaming = false;
   let _detectedToolKeys = new Set();
   let _detectedResponseKeys = new Set();
@@ -532,7 +589,6 @@
     _lastSentThinking = '';
     _lastSentResponse = '';
     _thinkingStartedEmitted = false;
-    _responseHasStarted = false;
     _streamEndEmitted = false;
     _lastSeenThinkingContainer = null;
     _firstThinkingSnapshot = '';
@@ -569,6 +625,9 @@
 
       // Reset state when the assistant bubble changes (new turn)
       if (assistant !== _currentAssistant) {
+        const oldClass = _currentAssistant ? className(_currentAssistant) : 'null';
+        const newClass = assistant ? className(assistant) : 'null';
+        console.log(`[LunaExt DEBUG] assistant changed: ${oldClass} -> ${newClass}`);
         _currentAssistant = assistant;
         resetAssistantState();
       }
@@ -580,8 +639,13 @@
       // v11.8-fix: if a brand-new thinking container appears inside the same assistant
       // bubble (e.g. before a second/third tool), treat it as a fresh reasoning step.
       if (thinkingContainer && thinkingContainer !== _lastSeenThinkingContainer) {
+        console.log(`[LunaExt DEBUG] new thinking container: ${className(thinkingContainer)}`);
         _lastSeenThinkingContainer = thinkingContainer;
+        // v2.6.6-fix: expand the container immediately so textContent reads the full
+        // reasoning instead of the collapsed preview.
+        expandThinkingContainer(thinkingContainer);
         _firstThinkingSnapshot = extractThinking(thinkingContainer);
+        console.log(`[LunaExt DEBUG] first thinking snapshot length: ${_firstThinkingSnapshot.length}`);
         _thinkingStartedEmitted = false;
         _lastSentThinking = '';
       }
@@ -602,27 +666,30 @@
         }
       }
 
-      // v2.6.3-fix: Kimi finishes reasoning before emitting any response. Once the
-      // real response text appears outside the thinking container, freeze the
-      // thinking bubble to prevent a collapsed/truncated thinking container from
-      // overwriting the full reasoning we already captured.
-      if (!_responseHasStarted && response && response.trim()) {
-        _responseHasStarted = true;
+      if (thinking || response) {
+        console.log(`[LunaExt DEBUG] extracted thinking=${thinking.length} response=${response.length} forceResync=${forceResync}`);
       }
 
       // ── thinking lifecycle ──
       if (thinking && !_thinkingStartedEmitted) {
-        queueEvent('thinking_start', { thinking: _firstThinkingSnapshot || thinking });
+        const snapshot = _firstThinkingSnapshot || thinking;
+        console.log(`[LunaExt DEBUG] emitting thinking_start len=${snapshot.length}`);
+        queueEvent('thinking_start', { thinking: snapshot });
         _thinkingStartedEmitted = true;
         // Emit a stream_state immediately with the full snapshot so the bridge/frontend
         // initialize the bubble with everything we have, not just future deltas.
-        emitStreamState(_firstThinkingSnapshot || thinking, '', true);
+        emitStreamState(snapshot, '', true);
         // v2.6.1-fix: also emit a source-of-truth full replacement for the thinking bubble.
-        emitThinkingUpdate(_firstThinkingSnapshot || thinking);
-        _lastSentThinking = _firstThinkingSnapshot || thinking;
+        emitThinkingUpdate(snapshot);
+        _lastSentThinking = snapshot;
       }
 
-      if (!_responseHasStarted && thinking && (forceResync || thinking !== _lastSentThinking)) {
+      // v11.8-fix: NEVER freeze thinking. The thinking container may collapse or
+      // Kimi may continue reasoning after response text starts. We keep the largest
+      // reasoning text we've ever seen so the Luna bubble only grows / updates,
+      // never shrinks or gets truncated.
+      if (thinking && (forceResync || (thinking.length >= _lastSentThinking.length && thinking !== _lastSentThinking))) {
+        console.log(`[LunaExt DEBUG] emitting thinking_update len=${thinking.length} (last=${_lastSentThinking.length})`);
         _lastSentThinking = thinking;
         emitStreamState(thinking, '', true);
         // v2.6.1-fix: source-of-truth full replacement so the frontend always mirrors Kimi.
@@ -631,6 +698,7 @@
 
       // ── response ──
       if (response && (forceResync || response !== _lastSentResponse)) {
+        console.log(`[LunaExt DEBUG] emitting response_update len=${response.length}`);
         _lastSentResponse = response;
         emitStreamState(_lastSentThinking, response, true);
       }
@@ -671,7 +739,7 @@
       if (stateHash !== _lastChangeHash) {
         _lastChangeHash = stateHash;
         _lastChangeTime = Date.now();
-      } else if (!_streamEndEmitted && _responseHasStarted && (Date.now() - _lastChangeTime > 3000)) {
+      } else if (!_streamEndEmitted && (Date.now() - _lastChangeTime > 3000)) {
         queueEvent('stream_end', {
           finalTextLength: _lastSentResponse.length,
           finalThinkingLength: _lastSentThinking.length
