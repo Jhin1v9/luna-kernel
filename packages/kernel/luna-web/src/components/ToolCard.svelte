@@ -12,12 +12,45 @@
   export let status = 'running'; // v9.4: external status from parent
   export let liveOutput = ''; // v9.5: real-time streaming output
 
+  // v3.3: destructive-operation confirmation gate
+  export let confirmationId = null;
+  export let confirmationMessage = '';
+  export let onConfirm = () => {};
+  export let onCancel = () => {};
+
+  // v11.8-debug: log confirmation gate lifecycle
+  $: if (confirmationId) console.log('[ToolCard] confirmation gate rendered:', { tool, confirmationId, confirmationMessage });
+
+  function handleConfirm() {
+    console.log('[ToolCard] Confirm clicked:', { confirmationId, tool });
+    if (onConfirm && confirmationId) onConfirm(confirmationId);
+  }
+  function handleCancel() {
+    console.log('[ToolCard] Cancel clicked:', { confirmationId, tool });
+    if (onCancel && confirmationId) onCancel(confirmationId);
+  }
+
   $: displayStatus = status || (result ? (result.success !== false ? 'completed' : 'failed') : 'running');
   $: color = TOOL_COLORS[tool] || '#6b7280';
   $: icon = TOOL_ICONS[tool] || '🔧';
   $: displayPath = params?.path || params?.file || params?.dir || params?.url || '';
   $: displayCommand = params?.command || params?.code || params?.script || '';
-  $: resultOutput = result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.result?.stdout !== undefined ? result.result.stdout : result?.result?.output !== undefined ? result.result.output : result?.content !== undefined ? result.content : '';
+
+  // v11.8-fix: strip stray code fences from tool output so ```json / ``` don't leak into the UI.
+  // Also remove JSON tool/script wrappers that sometimes leak into friendly messages.
+  function cleanCodeFences(text) {
+    if (!text || typeof text !== 'string') return text;
+    return text
+      .replace(/```[a-z0-9]*\s*\n?/gim, '')
+      .replace(/\n?```\s*/gim, '')
+      .replace(/\{\s*"tool"\s*:\s*"[^"]+"[\s\S]*?"params"\s*:\s*\{[\s\S]*?\}\s*\}/g, '')
+      .replace(/\{\s*"script"\s*:\s*"[\s\S]*?"\s*,?\s*"language"\s*:\s*"[^"]*"\s*\}/g, '')
+      .replace(/^\s*JSON\s*(?:Copy|复制|複製)?\s*\n?/gim, '')
+      .trim();
+  }
+
+  $: rawResultOutput = result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.result?.stdout !== undefined ? result.result.stdout : result?.result?.output !== undefined ? result.result.output : result?.content !== undefined ? result.content : '';
+  $: resultOutput = cleanCodeFences(rawResultOutput);
   $: truncatedOutput = resultOutput
     ? resultOutput.length > 500
       ? resultOutput.slice(0, 500) + '...'
@@ -27,7 +60,14 @@
   // Wave 8: the backend wraps results one level deeper
   // (action_end.result = {success, mode, tool, result: <inner>}) — read the
   // inner level too, without dropping the legacy flat reads above.
-  $: errorText = result?.error || result?.result?.error || result?.result?.friendlyMessage || '';
+  $: errorText = result?.error || result?.result?.error || '';
+  // v11.8-fix: friendlyMessage is NOT an error; it's a human-readable summary.
+  // Detect whether it signals success or failure so we can color it correctly.
+  // Expanded regexes to catch Portuguese/Spanish/English variants with or without emoji.
+  $: friendlyMessageRaw = result?.friendlyMessage || result?.result?.friendlyMessage || '';
+  $: friendlyMessage = cleanCodeFences(friendlyMessageRaw);
+  $: friendlyIsSuccess = friendlyMessage && /^(✅|✔|success|sucesso|executado|concluído|done|ok|pronto|finalizado|completo|exit\s*0|script\s+bash\s+executado\s+\(exit\s*0\))/i.test(friendlyMessage);
+  $: friendlyIsError = friendlyMessage && /^(❌|✖|error|erro|falha|failed|falhou|falhou|timeout|expirou|cancelado|exit\s*(?:1|[2-9][0-9]?))/i.test(friendlyMessage);
   $: paramsJson = params && Object.keys(params).length > 0 ? JSON.stringify(params, null, 2) : '';
   // Wave 8 review: cap the fallback body like truncatedOutput — a tool with
   // huge params (e.g. a big inline payload) must not dump it all into the DOM.
@@ -40,6 +80,7 @@
     displayStatus === 'running' ? 'running' : '',
     displayStatus === 'completed' ? 'success' : '',
     displayStatus === 'failed' ? 'error' : '',
+    displayStatus === 'awaiting_confirmation' ? 'awaiting-confirmation' : '',
     toolAnimationClass
   ].filter(Boolean).join(' ');
 </script>
@@ -73,6 +114,14 @@
           </svg>
           {formatDuration(duration)}
         </span>
+      {:else if displayStatus === 'awaiting_confirmation'}
+        <span class="status-badge awaiting">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 6v6l4 2"/>
+          </svg>
+          Aguardando confirmação
+        </span>
       {:else}
         <span class="status-badge error">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
@@ -102,26 +151,40 @@
     </div>
   {/if}
 
+  {#if displayStatus === 'awaiting_confirmation'}
+    <div class="confirmation-box">
+      <p class="confirmation-message">{confirmationMessage || 'Essa operação precisa de confirmação.'}</p>
+      <div class="confirmation-actions">
+        <button class="confirm-btn" on:click={handleConfirm}>Confirmar</button>
+        <button class="cancel-btn" on:click={handleCancel}>Cancelar</button>
+      </div>
+    </div>
+  {/if}
+
   {#if displayStatus === 'running' && liveOutput}
     <details class="tool-output live" open>
       <summary>📡 Output em tempo real</summary>
       <pre class="output-content live-content">{liveOutput}</pre>
     </details>
   {:else if truncatedOutput && displayStatus !== 'running'}
-    <details class="tool-output">
+    <details class="tool-output" open={displayStatus === 'failed'}>
       <summary>{displayStatus === 'failed' ? 'Ver erro' : 'Ver output'}</summary>
-      <pre class="output-content">{truncatedOutput}</pre>
+      <pre class="output-content" class:output-success={displayStatus === 'completed'} class:output-error={displayStatus === 'failed'}>{truncatedOutput}</pre>
     </details>
   {/if}
 
   <!-- Wave 8: never render a blank card — when there is no command/path and
        no known output, show the raw params as the card body. -->
-  {#if !displayPath && !displayCommand && !truncatedOutput && !errorText && !(displayStatus === 'running' && liveOutput) && paramsJson}
+  {#if !displayPath && !displayCommand && !truncatedOutput && !errorText && !friendlyMessage && !(displayStatus === 'running' && liveOutput) && paramsJson}
     <pre class="output-content">{paramsJsonDisplay}</pre>
   {/if}
 
   {#if result?.warning}
     <div class="tool-warning">{result.warning}</div>
+  {/if}
+
+  {#if friendlyMessage}
+    <div class="info-message" class:info-success={friendlyIsSuccess} class:info-error={friendlyIsError}>{friendlyMessage}</div>
   {/if}
 
   {#if errorText}
@@ -483,6 +546,34 @@
     font-family: 'JetBrains Mono', monospace;
     word-break: break-word;
   }
+  .info-message {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    word-break: break-word;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--luna-text-secondary);
+  }
+  .info-message.info-success {
+    background: rgba(34, 197, 94, 0.12);
+    color: #86efac;
+  }
+  .info-message.info-error {
+    background: rgba(239, 68, 68, 0.1);
+    color: #fca5a5;
+  }
+  .output-content.output-success {
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.15);
+    color: #86efac;
+  }
+  .output-content.output-error {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+  }
   .tool-command-details {
     margin: 6px 0;
     font-size: 12px;
@@ -509,6 +600,55 @@
     word-break: break-word;
     max-height: 200px;
     overflow-y: auto;
+  }
+
+  .tool-card.awaiting-confirmation {
+    border-left-color: #f59e0b;
+    box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.15);
+  }
+  .status-badge.awaiting {
+    background: rgba(245, 158, 11, 0.12);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+  .confirmation-box {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-radius: 8px;
+  }
+  .confirmation-message {
+    margin: 0 0 10px 0;
+    font-size: 13px;
+    color: #fbbf24;
+  }
+  .confirmation-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .confirm-btn, .cancel-btn {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .confirm-btn {
+    background: #16a34a;
+    color: #fff;
+  }
+  .confirm-btn:hover {
+    background: #15803d;
+  }
+  .cancel-btn {
+    background: rgba(255,255,255,0.08);
+    color: #e5e7eb;
+    border-color: rgba(255,255,255,0.15);
+  }
+  .cancel-btn:hover {
+    background: rgba(255,255,255,0.14);
   }
 
   /* Wave 10 T3: backdrop-filter over the animated canvas melts the iOS

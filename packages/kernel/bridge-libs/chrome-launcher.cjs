@@ -24,17 +24,31 @@ class ChromeLauncher {
     this.profileDir = this.config.PROFILE_DIR || path.join(lunaConfig.LUNA_DIR || path.join(os.homedir(), '.luna'), 'chrome-profile');
     this.extensionDir = this.config.EXTENSION_DIR || path.join(__dirname, '..', 'luna-extension');
     this.chromePathPriority = this.config.CHROME_PATH_PRIORITY || [
-      '/opt/google/chrome/chrome',
-      '/usr/bin/google-chrome-stable',
-      '/usr/bin/google-chrome',
-      path.join(os.homedir(), '.local', 'bin', 'google-chrome'),
-      'google-chrome-stable',
-      'google-chrome',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/chromium',
-      'chromium-browser',
-      'chromium',
-    ];
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      process.env.CHROME_EXECUTABLE_PATH,
+      process.env.LUNA_CHROME_PATH,
+    ].filter(Boolean);
+    if (process.platform === 'win32') {
+      this.chromePathPriority.push(
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+      );
+    } else {
+      this.chromePathPriority.push(
+        '/opt/google/chrome/chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+        path.join(os.homedir(), '.local', 'bin', 'google-chrome'),
+        'google-chrome-stable',
+        'google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+        'chromium-browser',
+        'chromium'
+      );
+    }
   }
 
   _makeCdpUrl(port) {
@@ -128,10 +142,14 @@ class ChromeLauncher {
     for (const cmd of this.chromePathPriority) {
       try {
         let resolved = null;
-        if (cmd.startsWith('/')) {
+        if (path.isAbsolute(cmd)) {
           if (fs.existsSync(cmd) && !fs.statSync(cmd).isDirectory()) {
-            try { fs.accessSync(cmd, fs.constants.X_OK); resolved = cmd; } catch {}
+            try { fs.accessSync(cmd, fs.constants.X_OK); resolved = cmd; } catch { resolved = cmd; }
           }
+        } else if (process.platform === 'win32') {
+          try {
+            resolved = execSync(`where ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim().split(/\r?\n/)[0];
+          } catch {}
         } else {
           resolved = execSync(`which ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim();
         }

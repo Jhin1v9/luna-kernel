@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { isStreaming, currentMode, currentProvider, messages, sessions, currentSessionId, planModeState, mascotState, mascotMessage, activeModal, compactState } from '../stores.js';
-  import { sendMessage, cancelStream, ackEvents, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, selfhealServices, systemLogs, executeLunaTool, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode, compactSession } from '../api.js';
+  import { sendMessage, cancelStream, ackEvents, SSEManager, fetchSessionMessages, sessionAction, startPlanMode, approvePlan, rejectPlan, submitRevision, systemRestart, systemStop, systemStart, systemStatus, systemHealth, selfhealServices, systemLogs, executeLunaTool, confirmToolAction, startHeartbeat, stopHeartbeat, turnOffAgent, agentStatus, setVisibleMode, compactSession } from '../api.js';
   import { SLASH_COMMANDS, isSlashCommand } from '../lib/slashCommands.js';
   import { evictOldestEntries } from '../lib/evictSet.js';
   import { createToolTimerRegistry } from '../lib/toolTimers.js';
@@ -72,6 +72,25 @@
 
   function removeAllThinking(msgs) {
     return msgs.filter(m => m.type !== 'thinking');
+  }
+
+  // v3.3: resolve a destructive-operation confirmation from the UI
+  async function handleConfirmTool(confirmationId) {
+    if (!confirmationId || !sessionId) return;
+    try {
+      await confirmToolAction(sessionId, confirmationId, 'confirm');
+    } catch (e) {
+      console.error('[ChatArea] Confirm failed:', e.message);
+    }
+  }
+
+  async function handleCancelTool(confirmationId) {
+    if (!confirmationId || !sessionId) return;
+    try {
+      await confirmToolAction(sessionId, confirmationId, 'cancel');
+    } catch (e) {
+      console.error('[ChatArea] Cancel failed:', e.message);
+    }
   }
 
   // v8.3-fix: Flush accumulated response buffer, parsing out any complete JSON blocks.
@@ -303,28 +322,21 @@
     }
   }
 
+  let eventHashSeq = 0;
   function getEventHash(event) {
-    // v5.5-fix: Create a unique hash for an event based on its CONTENT + params, not id.
-    // The backend generates unique ids per event ('ev-' + Date.now()), so using id
-    // in the hash makes deduplication useless — duplicates have different ids.
-    // For tool events, include params so two action_start's with different params
-    // don't get incorrectly deduplicated.
+    // Wave 11-fix: dedup by backend event id when available. Every persisted event
+    // has a unique id, so duplicates from reconnect replay collapse safely.
+    // When no id is present (rare / synthetic events), fall back to a unique
+    // timestamp+seq key so nothing is ever swallowed by content similarity.
+    if (event && event.id) {
+      return `${event.type || 'unknown'}:${event.id}`;
+    }
     const type = event.type || 'unknown';
     const tool = event.tool || '';
     const paramsKey = event.params ? JSON.stringify(event.params).slice(0, 50) : '';
-    const text = event.text || event.content || event.fullResponse || '';
-    // v10.25-fix: include result.response so an empty 'done' and a contentful 'done'
-    // are not deduplicated (the latter must drive isStreaming=false).
+    const text = event.fullText || event.text || event.content || event.fullResponse || '';
     const resultText = event.result?.response || event.result?.content || '';
-    // v8.5-fix: include currentMessageId to prevent collision across different messages
-    const raw = `${currentMessageId || ''}:${type}:${tool}:${paramsKey}:${text.slice(0, 100)}:${resultText.slice(0, 100)}`;
-    let hash = 0;
-    for (let i = 0; i < raw.length; i++) {
-      const char = raw.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash;
-    }
-    return String(hash);
+    return `${currentMessageId || ''}:${type}:${tool}:${paramsKey}:${text.slice(0, 50)}:${resultText.slice(0, 50)}:${++eventHashSeq}`;
   }
 
   function handleEvent(event) {
@@ -418,15 +430,52 @@
         playSound('thinkingStart');
         mascotState.set('thinking');
         mascotMessage.set('Hmm... deixa eu pensar...');
-        // v8.5-fix: Unify INSTANT and THINKING modes — always use typing indicator, never thinking bubble
-        showTyping = true;
-        // Clean up any old thinking bubbles from previous messages
-        messages.update(msgs => removeAllThinking(msgs));
-        thinkingId = null;
+        // v11.8-fix: Each reasoning step gets its own persistent bubble. We do NOT
+        // remove previous thinking bubbles; they stay in the chat like tool cards.
+        // The user can collapse/expand them. Reset the active thinking id so deltas
+        // target the newest reasoning step.
+        thinkingId = 'thinking-' + Date.now();
+        messages.update(msgs => [...msgs, {
+          id: thinkingId,
+          type: 'thinking',
+          content: event.thinking || '',
+          messageId: currentMessageId,
+          timestamp: new Date().toISOString()
+        }]);
+        showTyping = false;
         break;
       }
       case 'thinking_delta': {
-        // v8.5-fix: Ignore thinking deltas in both instant and thinking modes
+        // v10.8-fix: Accumulate thinking text in its own bubble.
+        const delta = event.text || event.delta || '';
+        if (!delta || !thinkingId) break;
+        messages.update(msgs => msgs.map(m =>
+          m.id === thinkingId
+            ? { ...m, content: (m.content || '') + delta }
+            : m
+        ));
+        break;
+      }
+      case 'thinking_update': {
+        // v11.7-fix: Replace the whole thinking bubble with Kimi's current full
+        // reasoning. The Kimi page is the source of truth; deltas can drift/cut.
+        const fullText = event.fullText || '';
+        if (!fullText) break;
+        if (!thinkingId) {
+          thinkingId = 'thinking-' + Date.now();
+          messages.update(msgs => [...msgs, {
+            id: thinkingId,
+            type: 'thinking',
+            content: fullText,
+            timestamp: new Date().toISOString()
+          }]);
+        } else {
+          messages.update(msgs => msgs.map(m =>
+            m.id === thinkingId
+              ? { ...m, content: fullText }
+              : m
+          ));
+        }
         break;
       }
       case 'response_delta': {
@@ -441,18 +490,9 @@
         // This prevents raw JSON/tool blocks from appearing during streaming.
         responseBuffer += deltaText;
 
-        // Hide thinking/typing when response starts arriving
+        // v10.8-fix: Keep the thinking bubble while response tokens stream in;
+        // it is removed only when a complete response is detected or the stream ends.
         showTyping = false;
-        let thinkRemoved = false;
-        messages.update(msgs => {
-          const thinkMsg = msgs.find(m => m.type === 'thinking');
-          if (thinkMsg && Date.now() - new Date(thinkMsg.timestamp).getTime() < 2000) {
-            return msgs;
-          }
-          thinkRemoved = true;
-          return removeAllThinking(msgs);
-        });
-        if (thinkRemoved) thinkingId = null;
 
         // v9.2-fix: Only flush if there's no incomplete JSON block in the buffer.
         // Flushing incomplete JSON causes raw tool JSON to leak into the chat.
@@ -466,6 +506,8 @@
         // Add to buffer and flush immediately since this is a complete chunk.
         playSound('messageReceived');
         showTyping = false;
+        // v10.8-fix: A complete response has been extracted, but the thinking bubble
+        // is kept visible so the user can review the reasoning after the answer arrives.
 
         const newContent = event.text || event.response || '';
         if (!newContent || newContent.trim().length === 0) {
@@ -540,6 +582,9 @@
         // CRITICAL: Reset assistant tracking so the next response becomes a NEW message
         currentAssistantId = null;
         responseBuffer = '';
+        // v11.8-fix: Freeze the current thinking bubble when a tool starts, so the next
+        // reasoning step (if any) creates its own bubble instead of overwriting this one.
+        thinkingId = null;
 
         messages.update(msgs => [...msgs, {
           id: toolId,
@@ -584,6 +629,36 @@
             }
           },
         });
+        break;
+      }
+      case 'confirmation_required': {
+        mascotState.set('waiting');
+        mascotMessage.set('Aguardando confirmação...');
+        const targetToolId = event.toolInstanceId ? toolInstanceMap.get(event.toolInstanceId) : null;
+        if (targetToolId) {
+          toolTimers.stop(targetToolId); // pause watchdog — confirmation has its own 5-min timeout
+          messages.update(msgs => msgs.map(m =>
+            m.id === targetToolId
+              ? { ...m, status: 'awaiting_confirmation', confirmationId: event.confirmationId, confirmationMessage: event.message || '' }
+              : m
+          ));
+        } else {
+          // create a card for confirmations that arrive without a preceding action_start
+          const toolId = makeToolCardId(++toolCardSeq);
+          if (event.toolInstanceId) toolInstanceMap.set(event.toolInstanceId, toolId);
+          messages.update(msgs => [...msgs, {
+            id: toolId,
+            type: 'tool',
+            tool: event.tool,
+            params: event.params || {},
+            result: null,
+            duration: 0,
+            status: 'awaiting_confirmation',
+            confirmationId: event.confirmationId,
+            confirmationMessage: event.message || '',
+            timestamp: new Date().toISOString()
+          }]);
+        }
         break;
       }
       case 'action_progress': {
@@ -691,8 +766,8 @@
       // only re-emits system/compact_*/done events, never 'context_limit'.
       case 'done': {
         showTyping = false;
-        messages.update(msgs => removeAllThinking(msgs));
-        thinkingId = null;
+        // v10.8-fix: Keep the thinking bubble visible after the stream finishes.
+        // The user explicitly wants to see the reasoning alongside the final answer.
         // v10.28-fix: Ensure compaction UI is released even if compact_end was missed.
         compactState.set({ active: false, phase: 0, message: '', steps: [] });
         const finalResponse = event.result?.response || event.response || event.text;
@@ -1317,8 +1392,9 @@
     thinkingId = null;
     responseBuffer = '';
 
-    // v4.0-fix: Remove all previous thinking bubbles when sending a new message
-    messages.update(msgs => removeAllThinking(msgs));
+    // v11.8-fix: Do NOT remove previous thinking bubbles — the user wants to keep
+    // reasoning history visible, just like tool cards. Only reset the active
+    // thinking id so the next thinking_start creates a fresh bubble.
 
     // v8.5-fix: Unify feedback for all modes — always use typing indicator
     showTyping = true;
@@ -1775,6 +1851,8 @@
     onApprovePlan={handleApprovePlan}
     onRejectPlan={handleRejectPlan}
     onRevisePlan={handleRevisePlan}
+    onConfirmTool={handleConfirmTool}
+    onCancelTool={handleCancelTool}
   />
 
   <ChatInput

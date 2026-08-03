@@ -6,14 +6,13 @@
  * PM2 process if a service becomes unreachable. This is a safety net on
  * top of PM2's built-in autorestart.
  *
- * Monitored services:
+ * Monitored services (local stack):
  *   - luna-server      : 3458
- *   - luna-vite        : 5173 (https)
  *   - nexo-dashboard   : 3456
  *
- * (nexo-lp-server/nexo-lp-web removed 2026-07-14: those PM2 processes do not
- * exist on this machine — the watchdog was spawning two failing
- * `pm2 restart` attempts every 30s.)
+ * luna-vite and other dev/optional processes were removed because they were
+ * not started by the local stack and were causing the watchdog to spawn failing
+ * `pm2 restart` calls every 30s (flashing CMD windows on Windows).
  */
 
 const http = require('http');
@@ -21,7 +20,6 @@ const { execSync } = require('child_process');
 
 const SERVICES = [
   { name: 'luna-server', port: parseInt(process.env.LUNA_PORT, 10) || 3458, protocol: 'http' },
-  { name: 'luna-vite', port: parseInt(process.env.LUNA_VITE_PORT, 10) || 5173, protocol: 'https', rejectUnauthorized: false },
   { name: 'nexo-dashboard', port: parseInt(process.env.DASHBOARD_PORT, 10) || 3456, protocol: 'http' },
 ];
 
@@ -36,7 +34,7 @@ function checkService(service) {
       path: '/',
       method: 'GET',
       timeout: REQUEST_TIMEOUT_MS,
-      rejectUnauthorized: service.rejectUnauthorized === false ? false : true,
+      rejectUnauthorized: true,
     };
 
     const lib = service.protocol === 'https' ? require('https') : http;
@@ -67,7 +65,10 @@ async function runCheck() {
     } else {
       console.error(`[${now}] ❌ ${service.name}:${service.port} is NOT reachable — restarting via PM2`);
       try {
-        execSync(`pm2 restart ${service.name}`, { stdio: 'inherit' });
+        execSync(`pm2 restart ${service.name}`, {
+          stdio: 'pipe',
+          windowsHide: true,
+        });
       } catch (err) {
         console.error(`[${now}] ⚠️ Failed to restart ${service.name}: ${err.message}`);
       }

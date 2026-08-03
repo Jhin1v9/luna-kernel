@@ -30,13 +30,18 @@ User → Luna Web (Svelte) → luna-server (Node) → luna-soul.cjs → kimi-bri
 
 ```bash
 # Dev (hot reload)
-cd /home/jhin/.luna-kernel/luna-web && npm run dev
+cd packages/kernel/luna-web && npm run dev
 
 # Production build
-cd /home/jhin/.luna-kernel/luna-web && npm run build
+cd packages/kernel/luna-web && npm run build
 
-# Restart server after build
-pm2 restart luna-server
+# Start / restart the whole stack on Windows
+cmd:   luna
+bash:  luna
+
+# Or directly via PM2 from the monorepo root
+pm2 start pm2-ecosystem.config.js
+pm2 restart all
 
 # Check logs
 pm2 logs luna-server
@@ -48,7 +53,7 @@ pm2 logs luna-server --err
 ## Project Structure
 
 ```
-luna-web/
+packages/kernel/luna-web/
 ├── src/
 │   ├── components/          # Svelte components
 │   │   ├── ChatArea.svelte       # Main chat — SSE connection, event handlers
@@ -61,6 +66,8 @@ luna-web/
 │   │   ├── Sidebar.svelte        # Session list + search
 │   │   ├── TaskDashboardModal.svelte
 │   │   ├── LeadDashboardModal.svelte
+│   │   ├── FinanceDashboardModal.svelte
+│   │   ├── VotingDashboardModal.svelte
 │   │   └── ConfigDrawer.svelte
 │   ├── stores.js            # Svelte stores (messages, sessions, currentMode, etc.)
 │   ├── api.js               # HTTP API + SSEManager class
@@ -70,12 +77,14 @@ luna-web/
 ├── public/
 └── index.html
 
-Backend (sibling to luna-web/):
-├── luna-soul.cjs            # Main orchestrator — message loop, tool execution
-├── kimi-bridge.cjs          # Playwright bridge to Kimi Web
-├── luna-tools.cjs           # Tool implementations (file ops, dashboard APIs)
-├── luna-tool-guard.cjs      # Safety guard for destructive operations
-└── luna-chat-routes.js      # Express routes for chat API + SSE
+Backend (monorepo layout):
+├── apps/dashboard/luna-server.js      # Express server entrypoint (port 3458)
+├── apps/dashboard/luna-chat-routes.js  # Chat API + SSE routes
+├── packages/kernel/luna-soul.cjs      # Main orchestrator — message loop, tools
+├── packages/kernel/kimi-bridge.cjs    # Playwright/CDP bridge to Kimi/DeepSeek Web
+├── packages/kernel/luna-tools.cjs     # Tool implementations (file ops, dashboard APIs)
+├── packages/kernel/luna-tool-guard.cjs # Safety guard for destructive operations
+└── packages/kernel/config/luna-config.js # Centralized config
 ```
 
 ---
@@ -187,9 +196,9 @@ Multiple layers prevent duplicate tool execution:
 
 ## Testing Changes
 
-1. Make frontend changes in `luna-web/src/`
-2. Run `cd luna-web && npm run build`
-3. If build succeeds: `pm2 restart luna-server`
+1. Make frontend changes in `packages/kernel/luna-web/src/`
+2. Run `cd packages/kernel/luna-web && npm run build`
+3. If build succeeds: `pm2 restart luna-server` (or `luna` on Windows)
 4. Open browser at `http://localhost:3458`
 5. Test the specific feature
 6. If broken: check `pm2 logs luna-server` and browser console

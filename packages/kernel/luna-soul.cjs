@@ -18,6 +18,7 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 
 const { SessionManager } = require('./session-manager.cjs');
+console.log('[DEBUG-LUNA-RESOLVE] kimi-bridge resolved to:', require.resolve('./kimi-bridge.cjs'));
 const { KimiBridge } = require('./kimi-bridge.cjs');
 const { ComputerUseEngine } = require('./computer-use-engine.cjs');
 const lunaTools = require('./luna-tools.cjs');
@@ -1735,6 +1736,7 @@ class LunaSoul extends EventEmitter {
     this.defaultMode = options.defaultMode || process.env.LUNA_DEFAULT_MODE || 'thinking';
     this.autoSwitchEnabled = options.autoSwitch !== false; // default true
     this.autoConfirmDestructive = options.autoConfirmDestructive === true; // default false for safety
+    this.pendingConfirmations = new Map(); // sessionId -> Map(confirmationId -> { resolve, reject, tool, params, timeout })
     this.lunaGit = null;
     this.toolGuard = null; // lazy init quando workspace é setado
     this.projectValidator = new ProjectHealthValidator();
@@ -1745,6 +1747,15 @@ class LunaSoul extends EventEmitter {
     this._executedActionCache = new Map(); // sessionId -> Map<toolHash, {timestamp, result, fedBack}>
     // v10.3: TurnManager para arquitetura duplo-loop
     this.turnManager = new TurnManager();
+  }
+
+  // v11.8-fix: normalize session IDs so that 'web-xxx' and 'xxx' refer to the same
+  // session. This fixes destructive-operation confirmations arriving from the
+  // extension handler with the bare ID while the frontend sends the prefixed ID.
+  _normalizeSessionId(sessionId) {
+    if (!sessionId) return sessionId;
+    const s = String(sessionId);
+    return s.startsWith('web-') ? s.slice(4) : s;
   }
 
   // v9.5-fix: Check if an action was already executed recently.
@@ -1908,6 +1919,13 @@ class LunaSoul extends EventEmitter {
         throw new Error('Kimi bridge not available');
       }
 
+      // v10.40-fix: Manual compaction may be triggered before any message has
+      // connected the bridge. Ensure we are connected before trying newChat.
+      yield { type: 'compact_progress', message: '🔌 Conectando ao Kimi...', sessionId };
+      await this.kimiBridge.connect().catch(err => {
+        throw new Error(`Falha ao conectar ao Kimi: ${err.message}`);
+      });
+
       yield { type: 'compact_progress', message: '🔄 Criando nova thread...', sessionId };
 
       try {
@@ -1960,6 +1978,10 @@ class LunaSoul extends EventEmitter {
             setTimeout(() => reject(new Error('Timeout ao enviar checkpoint (120s)')), 120000)
           ),
         ]);
+
+        // v10.40-fix: Give the new chat page a moment to settle on its final URL
+        // before capturing it, otherwise we may persist the landing-page URL.
+        await new Promise(r => setTimeout(r, 2000));
 
         console.log(`[LUNA] Checkpoint submitted to new chat`);
         yield { type: 'compact_progress', message: `✅ Checkpoint enviado para nova thread`, sessionId };
@@ -2021,6 +2043,86 @@ class LunaSoul extends EventEmitter {
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
       return { success: false, error: err.message };
     }
+  }
+
+  /**
+   * Unified compaction flow — source of truth for both automatic (context_limit)
+   * and manual (button / /compactar) compaction. Yields compact_* events and
+   * optionally resends a message into the fresh thread.
+   *
+   * @param {string} sessionId
+   * @param {string} userId
+   * @param {string|null} messageInput — when provided, the message is resent after compaction
+   * @param {object} options — passed through to _buildContext on resend
+   * @returns {Promise<{success: boolean, action: 'resend'|'done'|'stop', loopInput?: string, loopContext?: object}>}
+   */
+  async *_runCompactFlow(sessionId, userId, messageInput = null, options = {}) {
+    const compactResult = yield* this._compactContext(sessionId, userId);
+    if (!compactResult?.success) {
+      return { success: false, action: 'stop', error: compactResult?.error || 'erro desconhecido' };
+    }
+
+    if (!messageInput) {
+      return { success: true, action: 'done', compactResult };
+    }
+
+    // Resend the provided message into the fresh thread, exactly like the
+    // automatic context_limit path.
+    try {
+      const loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage: false });
+      return { success: true, action: 'resend', loopInput: messageInput, loopContext };
+    } catch (ctxErr) {
+      console.error(`[LUNA-SOUL] _buildContext failed after compact: ${ctxErr.message}`);
+      return { success: false, action: 'stop', error: ctxErr.message };
+    }
+  }
+
+  /**
+   * Manual compaction entry point — mirrors the automatic context_limit flow.
+   * Compacts the session, opens a fresh Kimi thread, and continues processing
+   * by resending the last user message so the conversation keeps flowing on the
+   * new thread (same Luna session, new Kimi chat behind the scenes).
+   */
+  async *compactAndContinue(sessionId, userId = 'luna-default', options = {}) {
+    const recentEvents = this.sessionManager.readRecentEvents(sessionId, 50);
+    const lastUserMessage = recentEvents
+      .slice()
+      .reverse()
+      .find(ev => ev.type === 'user');
+    const messageInput = lastUserMessage?.content || null;
+
+    if (!messageInput) {
+      yield { type: 'compact_error', message: '❌ Nenhuma mensagem do usuário encontrada para reenviar após compactação.', sessionId };
+      return;
+    }
+
+    yield {
+      type: 'system',
+      message: '⚠️ Contexto cheio — compactando e continuando na nova thread…',
+      sessionId,
+    };
+
+    const flow = yield* this._runCompactFlow(sessionId, userId, messageInput, options);
+    if (!flow.success || flow.action === 'stop') {
+      yield {
+        type: 'error',
+        error: `❌ Falha na compactação manual: ${flow.error || 'erro desconhecido'}`,
+        sessionId,
+      };
+      yield { type: 'done', result: { success: false, mode: 'CHAT', response: '', sessionId }, sessionId };
+      return;
+    }
+
+    // Continue exactly like the automatic path: process the last user message
+    // in the fresh thread, yielding the full SSE stream to the frontend.
+    console.log('[LUNA-SOUL] Manual compact done — continuing conversation in new thread');
+    yield* this.processMessageStream(messageInput, {
+      sessionId,
+      userId,
+      isFirstMessage: false,
+      skipUserEventStorage: true,
+      ...options,
+    });
   }
 
   /**
@@ -2378,6 +2480,7 @@ class LunaSoul extends EventEmitter {
    * Pattern inspired by ShellAgent's queryLoop async generator.
    */
   async *processMessageStream(input, options = {}) {
+    console.log('[DEBUG-LUNA-SOUL] processMessageStream START', { input: input?.slice(0,30), options });
     const sessionId = options.sessionId || this.sessionManager.getOrCreateCurrentSession({
       title: options.sessionTitle || 'Sessão Luna',
       mode: options.mode || this.defaultMode,
@@ -2399,12 +2502,15 @@ class LunaSoul extends EventEmitter {
     if (mode === 'CHAT') mode = 'thinking';
     const userId = options.userId || 'luna-default';
 
-    // Store user message
-    this.sessionManager.appendEvent(sessionId, {
-      type: 'user',
-      content: input,
-      timestamp: new Date().toISOString(),
-    });
+    // Store user message unless this is a resend after compaction (the user event
+    // was already persisted on the original turn).
+    if (!options.skipUserEventStorage) {
+      this.sessionManager.appendEvent(sessionId, {
+        type: 'user',
+        content: input,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // ── SLASH COMMANDS — executados localmente, sem enviar à Kimi ──
     const trimmedInput = input.trim();
@@ -2572,8 +2678,11 @@ class LunaSoul extends EventEmitter {
           // v10.27-fix: Only force newChat for Kimi — other providers may lose login state on reload.
           // W10-T2: after an auto-compact the fresh thread already exists (with
           // checkpoint) — never force another newChat or the checkpoint is lost.
+          // v10.43-fix: Only open a new chat on the very first iteration of the
+          // auto-continue loop. Re-sending a tool result is a continuation of the
+          // same turn and MUST stay in the same Kimi thread.
           const provider = options.provider || 'kimi';
-          const forceNewChat = shouldForceNewChat({ provider, isFirstMessage, bridgeRetryCount, autoCompactAttempted });
+          const forceNewChat = safety === 1 && shouldForceNewChat({ provider, isFirstMessage, bridgeRetryCount, autoCompactAttempted });
           const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: forceNewChat, isAutoContinue: safety > 1 }, provider);
 
           for await (const event of stream) {
@@ -2584,6 +2693,18 @@ class LunaSoul extends EventEmitter {
             }
 
           switch (event.type) {
+            case 'thinking_update': {
+              // v11.8-fix: source-of-truth full thinking replacement from the
+              // Chrome extension/bridge. Replace the accumulated reasoning instead
+              // of appending deltas, so Luna always mirrors Kimi exactly.
+              const t = event.fullText || event.thinking || '';
+              if (t && t !== fullThinking) {
+                fullThinking = t;
+                yield { type: 'thinking_update', fullText: t, sessionId };
+              }
+              break;
+            }
+
             case 'thinking_delta':
               fullThinking += event.text;
               yield { type: 'thinking_delta', text: event.text, fullThinking, sessionId };
@@ -2705,45 +2826,26 @@ class LunaSoul extends EventEmitter {
                   sessionId,
                 };
 
-                let compactResult = null;
-                try {
-                  // _compactContext is an async generator: forward its progress
-                  // events to the frontend (same shapes as the manual flow —
-                  // compact_start/compact_progress/compact_end/compact_error)
-                  // and capture its return value.
-                  const compactGen = this._compactContext(sessionId, userId);
-                  for (;;) {
-                    const step = await compactGen.next();
-                    if (step.done) { compactResult = step.value; break; }
-                    yield step.value;
-                  }
-                } catch (compactErr) {
-                  compactResult = { success: false, error: compactErr.message };
-                }
-
-                if (!compactResult?.success) {
-                  console.error(`[LUNA-SOUL] Auto-compact failed: ${compactResult?.error || 'unknown'}`);
-                  yield { type: 'error', error: `❌ Falha na compactação automática: ${compactResult?.error || 'erro desconhecido'}. Tente o botão "Compactar".`, sessionId };
+                // v10.40: Unified compaction flow — same code path as manual compaction.
+                const flow = yield* this._runCompactFlow(sessionId, userId, messageInput, options);
+                if (!flow.success || flow.action === 'stop') {
+                  const err = flow.error || 'erro desconhecido';
+                  console.error(`[LUNA-SOUL] Auto-compact failed: ${err}`);
+                  yield { type: 'error', error: `❌ Falha na compactação automática: ${err}. Tente o botão "Compactar".`, sessionId };
                   yield { type: 'done', result: { success: false, mode: 'CHAT', response: fullResponse || '', sessionId }, sessionId };
                   return;
                 }
 
-                // Resend the ORIGINAL user message into the fresh thread.
-                // _compactContext already opened the new Kimi chat and seeded
-                // it with a checkpoint, and the session context now holds the
-                // checkpoint event — rebuild with isFirstMessage: false
-                // (mini-reminder) and let shouldForceNewChat stay false.
-                console.log('[LUNA-SOUL] Auto-compact done — resending original user message into new thread');
-                loopInput = messageInput;
-                try {
-                  loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage: false });
-                } catch (ctxErr) {
-                  console.error(`[LUNA-SOUL] _buildContext failed after auto-compact: ${ctxErr.message}`);
-                  yield { type: 'error', error: `❌ Falha ao reconstruir contexto após compactação: ${ctxErr.message}`, sessionId };
-                  yield { type: 'done', result: { success: false, error: ctxErr.message, sessionId }, sessionId };
-                  return;
+                if (flow.action === 'resend') {
+                  console.log('[LUNA-SOUL] Auto-compact done — resending original user message into new thread');
+                  loopInput = flow.loopInput;
+                  loopContext = flow.loopContext;
+                  continue autoCompactLoop;
                 }
-                continue autoCompactLoop;
+
+                // flow.action === 'done' should not happen in auto-compact (we always resend),
+                // but handle it gracefully.
+                continue;
               }
 
               // Second context_limit on the resent message — old behavior:
@@ -3141,6 +3243,18 @@ class LunaSoul extends EventEmitter {
           }
 
           switch (event.type) {
+            case 'thinking_update': {
+              // v11.8-fix: source-of-truth full thinking replacement from the
+              // Chrome extension/bridge. Replace the accumulated reasoning instead
+              // of appending deltas, so Luna always mirrors Kimi exactly.
+              const t = event.fullText || event.thinking || '';
+              if (t && t !== fullThinking) {
+                fullThinking = t;
+                yield { type: 'thinking_update', fullText: t, sessionId };
+              }
+              break;
+            }
+
             case 'thinking_delta':
               fullThinking += event.text;
               yield { type: 'thinking_delta', text: event.text, fullThinking, sessionId };
@@ -3698,15 +3812,16 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           events.push(chatResult);
           output = parsed.response;
         }
-        events.push({ type: 'action_start', tool: parsed.tool, params: parsed.params, sessionId });
+        const toolInstanceId = nextToolEventId();
+        events.push({ type: 'action_start', toolInstanceId, tool: parsed.tool, params: parsed.params, sessionId });
 
         // v10.13: Non-blocking action execution
         if (eventBus) {
-          const actionPromise = this._handleAction(parsed, sessionId, options).then(actionResult => {
+          const actionPromise = this._handleAction(parsed, sessionId, options, null, eventBus, toolInstanceId).then(actionResult => {
             if (actionResult?.success) {
               this._markActionExecuted(sessionId, _toolHash, actionResult);
             }
-            eventBus.push({ type: 'action_end', tool: parsed.tool, result: actionResult, sessionId });
+            eventBus.push({ type: 'action_end', toolInstanceId, tool: parsed.tool, result: actionResult, sessionId });
             let actionOutput;
             if (actionResult.result?.needsFix && actionResult.result?.message) {
               actionOutput = actionResult.result.message;
@@ -3717,7 +3832,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           }).catch(actionErr => {
             console.error(`[_processModeResult ACTION] Action error: ${actionErr.message}`);
             const errorResult = { success: false, error: actionErr.message, tool: parsed.tool };
-            eventBus.push({ type: 'action_end', tool: parsed.tool, result: errorResult, sessionId });
+            eventBus.push({ type: 'action_end', toolInstanceId, tool: parsed.tool, result: errorResult, sessionId });
             return `[Erro: ${actionErr.message}]`;
           });
           // W6-T2: annotate so _waitPromisesWithDrain can name the tool on drain timeout
@@ -3729,7 +3844,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           // Legacy blocking path (fallback)
           let actionResult;
           try {
-            actionResult = await this._handleAction(parsed, sessionId, options);
+            actionResult = await this._handleAction(parsed, sessionId, options, null, null, toolInstanceId);
           } catch (actionErr) {
             console.error(`[_processModeResult ACTION] Action error: ${actionErr.message}`);
             actionResult = { success: false, error: actionErr.message, tool: parsed.tool };
@@ -3737,7 +3852,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           if (actionResult?.success) {
             this._markActionExecuted(sessionId, _toolHash, actionResult);
           }
-          events.push({ type: 'action_end', tool: parsed.tool, result: actionResult, sessionId });
+          events.push({ type: 'action_end', toolInstanceId, tool: parsed.tool, result: actionResult, sessionId });
           let actionOutput;
           if (actionResult.result?.needsFix && actionResult.result?.message) {
             actionOutput = actionResult.result.message;
@@ -3883,7 +3998,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         events.push({ type: 'action_start', toolInstanceId, tool: 'executeScript', params: { code: script, language }, sessionId });
         let actionResult;
         try {
-          actionResult = await this._handleAction({ tool: 'executeScript', params: { code: script, language } }, sessionId, options);
+          actionResult = await this._handleAction({ tool: 'executeScript', params: { code: script, language } }, sessionId, options, null, eventBus, toolInstanceId);
         } catch (scriptErr) {
           console.error(`[_processModeResult SCRIPT] Script error: ${scriptErr.message}`);
           actionResult = { success: false, error: scriptErr.message, tool: 'executeScript' };
@@ -4050,6 +4165,12 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const workspaceContext = workspaceManager.getFormattedManifest(currentUserId);
       const activeFilesContext = workspaceManager.getActiveFilesContext(currentUserId);
 
+      // v11.2: inject OS + workspace path so the model knows whether to use
+      // Windows/Git Bash or Linux paths, and where the active workspace lives.
+      const platform = process.platform;
+      const shell = process.env.SHELL || (platform === 'win32' ? 'Git Bash / cmd' : '/bin/bash');
+      const systemContext = `--- CONTEXTO DO SISTEMA ---\nSO: ${platform === 'win32' ? 'Windows (paths use \\\\ , shell via Git Bash)' : 'Linux'}\nWorkspace ativo: ${userWorkspacePath}\nShell padrão: ${shell}`;
+
       // Pre-format optional sections so templates stay readable
       const desktopSection = `--- CONTEXTO DO DESKTOP ---\n${desktopState}`;
       const workspaceSection = workspaceContext ? `\n\n--- WORKSPACE ---\n${workspaceContext}` : '';
@@ -4057,10 +4178,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const history = historyLines.join('\n');
 
       // Build full prompt from configurable template (fallback to legacy format)
-      const defaultFirstTemplate = `{{systemPrompt}}\n\n{{desktopSection}}{{workspaceSection}}{{activeFilesSection}}\n\n--- HISTÓRICO ---\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
+      const defaultFirstTemplate = `{{systemPrompt}}\n\n{{systemContext}}\n\n{{desktopSection}}{{workspaceSection}}{{activeFilesSection}}\n\n--- HISTÓRICO ---\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
       const firstTemplate = (cfg && cfg.prompts && cfg.prompts.firstMessage) ? cfg.prompts.firstMessage : defaultFirstTemplate;
       const prompt = interpolateTemplate(firstTemplate, {
         systemPrompt,
+        systemContext,
         desktopSection,
         workspaceSection,
         activeFilesSection,
@@ -4096,6 +4218,12 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const workspaceSnippet = workspaceCtx ? `WORKSPACE: ${workspaceCtx.split('\n')[0]}${workspaceCtx.split('\n')[1] ? ' ' + workspaceCtx.split('\n')[1] : ''}` : '';
       const activeFilesSnippet = activeFilesCtx ? activeFilesCtx : '';
 
+      // v11.2: keep the model aware of OS + workspace on every turn, not just
+      // the first message, so paths and shell commands stay correct.
+      const platform = process.platform;
+      const shell = process.env.SHELL || (platform === 'win32' ? 'Git Bash / cmd' : '/bin/bash');
+      const systemContext = `--- CONTEXTO DO SISTEMA ---\nSO: ${platform === 'win32' ? 'Windows (paths use \\ , shell via Git Bash)' : 'Linux'}\nWorkspace ativo: ${followUpWorkspacePath}\nShell padrão: ${shell}`;
+
       // W8-T1c: miniReminder available to followUp/toolLoop templates as
       // {{miniReminder}} (config key miniReminder, default = shipped text).
       const miniReminder = buildMiniReminder({ USER_ID: followUpUserId, WORKSPACE: followUpWorkspacePath });
@@ -4105,26 +4233,28 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
       if (isToolResult) {
         // v10.21-fix: tool-loop prompt only contains history + tool result + short instruction
-        const defaultToolLoopTemplate = `🔄 RESULTADO DA FERRAMENTA\n\n{{history}}\n\n--- RESULTADO DA FERRAMENTA ---\n{{toolResult}}\n\nResponda usando APENAS code blocks JSON. NUNCA repita a mesma ferramenta com os mesmos parâmetros.`;
+        const defaultToolLoopTemplate = `{{systemContext}}\n\n🔄 RESULTADO DA FERRAMENTA\n\n{{history}}\n\n--- RESULTADO DA FERRAMENTA ---\n{{toolResult}}\n\nResponda usando APENAS code blocks JSON. NUNCA repita a mesma ferramenta com os mesmos parâmetros.`;
         const toolLoopTemplate = (cfg && cfg.prompts && cfg.prompts.toolLoop) ? cfg.prompts.toolLoop : defaultToolLoopTemplate;
         prompt = interpolateTemplate(toolLoopTemplate, {
           history,
           toolResult: userInput,
           workspaceSnippet,
           activeFilesSnippet,
-          miniReminder
+          miniReminder,
+          systemContext
         });
         systemPrompt = '[TOOL LOOP]';
       } else {
         // v10.21-fix: follow-up prompt contains only history + current user input
-        const defaultFollowUpTemplate = `{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
+        const defaultFollowUpTemplate = `{{systemContext}}\n\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
         const followUpTemplate = (cfg && cfg.prompts && cfg.prompts.followUp) ? cfg.prompts.followUp : defaultFollowUpTemplate;
         prompt = interpolateTemplate(followUpTemplate, {
           history,
           userInput,
           workspaceSnippet,
           activeFilesSnippet,
-          miniReminder
+          miniReminder,
+          systemContext
         });
         systemPrompt = '[FOLLOW UP]';
       }
@@ -4351,7 +4481,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     // spreading the string produced garbage keys and no chunk field.
     const emitProgress = (chunk, stream) => eventBus.push(makeProgressEvent({ toolInstanceId, tool: parsedAction.tool, chunk, stream, sessionId }));
     try {
-      let actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress);
+      let actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress, eventBus, toolInstanceId);
 
       // ── FALLBACK: if local execution failed AND Kimi has a sandbox result, use it ──
       const localFailed = !actionResult?.success || actionResult?.result?.stderr;
@@ -4392,7 +4522,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
   }
 
   /** ACTION mode — execute a tool */
-  async _handleAction(parsed, sessionId, options, emitProgress = null) {
+  async _handleAction(parsed, sessionId, options, emitProgress = null, eventBus = null, toolInstanceId = null) {
     const tool = parsed.tool || parsed.action?.type;
     const params = parsed.params || parsed.action?.params || {};
     const reasoning = parsed.reasoning || '';
@@ -4505,7 +4635,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     ]);
     if (PATH_GUARD_TOOLS.has(tool)) {
       const pathGuardConfig = lunaConfig.PATH_GUARD.load();
-      if (pathGuardConfig.enabled) {
+      const adminMode = pathGuardConfig.adminMode === true;
+      if (adminMode) {
+        console.log(`[LunaSoul] Admin mode ativo — path guard desabilitado para ${tool}`);
+      }
+      if (pathGuardConfig.enabled && !adminMode) {
         const guardUserId = options?.userId || 'luna-default';
         const ws = workspaceManager.getWorkspace(guardUserId) || workspaceManager.getWorkspace('luna-cli');
         const allowedRoots = [];
@@ -4597,6 +4731,16 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         const guard = this._ensureToolGuard(actionUserId);
         if (isFileTool && lunaTools[tool]) {
           const p = params || {};
+
+          // v3.3-frontend: destructive operation confirmation gate
+          if (this.isDestructive(tool, p)) {
+            const confirmation = await this._requestConfirmation(tool, p, sessionId, eventBus, toolInstanceId);
+            if (!confirmation.confirmed) {
+              result = { success: false, error: confirmation.error || 'Operação cancelada pelo usuário.' };
+            }
+          }
+
+          if (!result) {
           // Build tool executor lambda
           const toolFn = () => {
             switch (tool) {
@@ -4734,6 +4878,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           if (result && typeof result === 'object') {
             result._meta = { duration: execDuration, startedAt: execStartTime, finishedAt: Date.now() };
           }
+          } // close destructive-confirmation guard
 
           // ── IMMEDIATE FILE VALIDATION (fast feedback loop) ──
           // Detecta erros de sintaxe/truncamento IMEDIATAMENTE após writeFile
@@ -5383,21 +5528,165 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
   }
 
   // ── v3.3: Destructive operation confirmation gate ──
-  async _confirmDestructive(message, command) {
-    if (this.autoConfirmDestructive) {
-      console.log(`[LunaSoul] Auto-confirmando operação destrutiva: ${message} | ${command.slice(0, 200)}`);
-      return true;
+  // Returns true if the tool/action should require frontend confirmation before running.
+  isDestructive(tool, params = {}) {
+    if (this.autoConfirmDestructive) return false;
+
+    const destructiveTools = new Set([
+      'deleteFile',
+      'removeDirectory',
+      'dashboardDeleteTask',
+      'dashboardDeleteLead',
+      'dashboardDeletePayment',
+      'dashboardDeleteExpense',
+      'dashboardDeleteExpenseTemplate',
+    ]);
+    if (destructiveTools.has(tool)) return true;
+
+    // executeScript with bash/sh/shell/powershell/ps1 carrying destructive patterns
+    if (tool === 'executeScript') {
+      const lang = (params.language || params.lang || 'bash').toLowerCase();
+      if (['bash', 'sh', 'shell', 'powershell', 'ps1'].includes(lang)) {
+        const code = params.code || params.script || '';
+        if (this._isDestructiveShellCode(code)) return true;
+      }
+      return false;
     }
+
+    // executeShell with destructive command patterns
+    if (tool === 'executeShell') {
+      const cmd = params.command || '';
+      if (this._isDestructiveShellCode(cmd)) return true;
+    }
+
+    return false;
+  }
+
+  _isDestructiveShellCode(command) {
+    if (typeof command !== 'string') return false;
+    const destructivePatterns = [
+      // Linux / macOS / Windows Git Bash
+      /\brm\s+-[a-zA-Z]*r/,
+      /\brm\s+.*\*+/,
+      /\brmdir\s+\/[a-z]/,
+      /\brmdir\s+.*\/[a-z]/,
+      /\brm\s+\//,
+      /\bdd\s+if=/,
+      /\bmkfs\.?/,
+      /\bformat\s+/i,
+      /\bdiskpart\b/i,
+      /\bclean\s+all\b/i,
+      /\bdel\s+\//i,
+      /\berase\s+/i,
+      /\bRemove-Item\s+.*-Recurse/i,
+      /\bri\s+/i,
+      // git destructive
+      /\bgit\s+reset\s+--hard/,
+      /\bgit\s+clean\s+-fd/,
+    ];
+    return destructivePatterns.some(p => p.test(command));
+  }
+
+  async _requestConfirmation(tool, params, sessionId, eventBus = null, toolInstanceId = null) {
+    const normalizedSessionId = this._normalizeSessionId(sessionId);
+    const confirmationId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const message = this._confirmationMessage(tool, params);
+
     return new Promise((resolve) => {
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      rl.question(
-        `\n⚠️  OPERAÇÃO DESTRUTIVA DETECTADA: ${message}\n   Comando: ${command.slice(0, 200)}\n   Confirmar execução? [s/N]: `,
-        (answer) => {
-          rl.close();
-          resolve(answer.trim().toLowerCase() === 's' || answer.trim().toLowerCase() === 'sim');
-        }
-      );
+      let sessionMap = this.pendingConfirmations.get(normalizedSessionId);
+      if (!sessionMap) {
+        sessionMap = new Map();
+        this.pendingConfirmations.set(normalizedSessionId, sessionMap);
+      }
+
+      // v11.8-fix: confirmations wait indefinitely for the user to click
+      // Confirm or Cancel. No timeout — the user explicitly controls when to proceed.
+      sessionMap.set(confirmationId, {
+        resolve,
+        tool,
+        params,
+        timeout: null,
+      });
+
+      const event = { type: 'confirmation_required', sessionId, confirmationId, tool, params, message, toolInstanceId };
+      // Push into the turn EventBus so the SSE stream can forward it in real time.
+      if (eventBus) {
+        eventBus.push(event);
+      }
+      // Emit via EventEmitter for any direct listeners (e.g. extension/tool executor)
+      this.emit('confirmation_required', event);
+      // Also emit as progress so _runWithProgress can forward it through the stream.
+      this.emit('progress', event);
     });
+  }
+
+  // Helper used by generators (processMessageStream, _compactContext) to await an
+  // async action handler while forwarding progress / confirmation_required events
+  // as yielded stream events.
+  async *_runWithProgress(handler) {
+    const events = [];
+    const onEvent = (ev) => events.push(ev);
+    this.on('progress', onEvent);
+    this.on('confirmation_required', onEvent);
+
+    const resultPromise = handler();
+    try {
+      while (true) {
+        while (events.length > 0) yield events.shift();
+        const ready = await Promise.race([
+          resultPromise.then(() => true).catch(() => true),
+          new Promise(r => setTimeout(() => r(false), 50))
+        ]);
+        if (ready) break;
+      }
+      const result = await resultPromise;
+      while (events.length > 0) yield events.shift();
+      return result;
+    } finally {
+      this.off('progress', onEvent);
+      this.off('confirmation_required', onEvent);
+    }
+  }
+
+  _confirmationMessage(tool, params) {
+    switch (tool) {
+      case 'deleteFile': return `Excluir arquivo: ${params.path || params.file || params.filePath || '(desconhecido)'}`;
+      case 'removeDirectory': return `Excluir pasta: ${params.path || params.dirPath || '(desconhecido)'}`;
+      case 'executeShell': return `Executar comando destrutivo: ${params.command?.slice(0, 200) || '(vazio)'}`;
+      case 'executeScript': return `Executar script destrutivo (${params.language || params.lang || 'bash'})`;
+      default:
+        if (tool.startsWith('dashboardDelete')) return `Excluir registro do dashboard via ${tool}`;
+        return `Operação destrutiva: ${tool}`;
+    }
+  }
+
+  // Public API called by the web route when the user clicks Confirm/Cancel in the UI.
+  confirmAction(sessionId, confirmationId, action) {
+    const normalizedSessionId = this._normalizeSessionId(sessionId);
+    console.log('[LunaSoul] confirmAction called:', { sessionId, normalizedSessionId, confirmationId, action, pendingSessions: Array.from(this.pendingConfirmations.keys()) });
+    const sessionMap = this.pendingConfirmations.get(normalizedSessionId);
+    if (!sessionMap) {
+      console.log('[LunaSoul] confirmAction: no sessionMap for', sessionId, '(normalized:', normalizedSessionId + ')');
+      return { ok: false, error: 'Nenhuma confirmação pendente para esta sessão.' };
+    }
+    const pending = sessionMap.get(confirmationId);
+    if (!pending) {
+      console.log('[LunaSoul] confirmAction: confirmation not found', confirmationId, 'available:', Array.from(sessionMap.keys()));
+      return { ok: false, error: 'Confirmação não encontrada ou já resolvida.' };
+    }
+
+    if (pending.timeout) clearTimeout(pending.timeout);
+    sessionMap.delete(confirmationId);
+
+    if (action === 'confirm' || action === true) {
+      console.log(`[LunaSoul] Confirmação aceita: ${confirmationId} (${pending.tool})`);
+      pending.resolve({ confirmed: true });
+      return { ok: true, confirmed: true };
+    }
+
+    console.log(`[LunaSoul] Confirmação negada: ${confirmationId} (${pending.tool})`);
+    pending.resolve({ confirmed: false, error: 'Operação cancelada pelo usuário.' });
+    return { ok: true, confirmed: false };
   }
 
   _escapePromptString(str) {

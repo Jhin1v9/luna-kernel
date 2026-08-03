@@ -4,6 +4,33 @@
  */
 
 // ═══════════════════════════════════════════════════════════
+//  Seeded Random (deterministic wallpaper)
+// ═══════════════════════════════════════════════════════════
+
+// v2.6.2-fix: the starfield must look identical after every hard refresh.
+// Math.random() would reshuffle stars/lines on each mount. We use a fixed-seed
+// PRNG so initStars() always produces the same layout, phases and dynamic lines.
+function mulberry32(seed) {
+  return function () {
+    let t = (seed += 0x6D2B79F5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const WALLPAPER_SEED = 0x4C554E41; // "LUNA" as hex seed
+let _wallpaperRngInstance = mulberry32(WALLPAPER_SEED);
+
+export function wallpaperRng() {
+  return _wallpaperRngInstance();
+}
+
+export function resetWallpaperRng() {
+  _wallpaperRngInstance = mulberry32(WALLPAPER_SEED);
+}
+
+// ═══════════════════════════════════════════════════════════
 //  Color Utilities
 // ═══════════════════════════════════════════════════════════
 
@@ -132,9 +159,9 @@ export function createStarState(starData, canvasW, canvasH) {
     baseColor: [...rgb],
     currentColor: [...rgb],
     targetColor: [...rgb],
-    phase: Math.random() * Math.PI * 2,
-    twinkleSpeed: Math.random() * 0.4 + 0.4,
-    twinkleDepth: Math.random() * 0.3 + 0.5,
+    phase: wallpaperRng() * Math.PI * 2,
+    twinkleSpeed: wallpaperRng() * 0.4 + 0.4,
+    twinkleDepth: wallpaperRng() * 0.3 + 0.5,
     baseRadius: Math.max(0.5, (6.2 - mag) * 0.62),
     baseOpacity: Math.max(0.25, Math.min(0.9, (6.5 - mag) * 0.16)),
 
@@ -150,7 +177,7 @@ export function createStarState(starData, canvasW, canvasH) {
  * Cria uma estrela de fundo aleatória.
  */
 export function createBgStarState(layer, canvasW, canvasH) {
-  const mag = Math.random() * 2.8 + 3.8;
+  const mag = wallpaperRng() * 2.8 + 3.8;
   const layerFactors = {
     far:  { opacity: [0.3, 0.5], size: [0.5, 1.0], drift: 0.02 },
     mid:  { opacity: [0.5, 0.7], size: [1.0, 1.5], drift: 0.08 },
@@ -159,18 +186,18 @@ export function createBgStarState(layer, canvasW, canvasH) {
   const f = layerFactors[layer] || layerFactors.mid;
 
   return {
-    nx: Math.random(),
-    ny: Math.random(),
+    nx: wallpaperRng(),
+    ny: wallpaperRng(),
     x: 0,
     y: 0,
     layer,
-    phase: Math.random() * Math.PI * 2,
-    twinkleSpeed: Math.random() * 0.25 + 0.15,
-    baseRadius: Math.max(0.25, (6.8 - mag) * 0.32) * (f.size[0] + Math.random() * (f.size[1] - f.size[0])),
-    baseOpacity: f.opacity[0] + Math.random() * (f.opacity[1] - f.opacity[0]),
-    rgb: [210 + Math.random() * 40, 220 + Math.random() * 30, 255],
-    driftVx: (Math.random() - 0.5) * f.drift,
-    driftVy: (Math.random() - 0.5) * f.drift * 0.3,
+    phase: wallpaperRng() * Math.PI * 2,
+    twinkleSpeed: wallpaperRng() * 0.25 + 0.15,
+    baseRadius: Math.max(0.25, (6.8 - mag) * 0.32) * (f.size[0] + wallpaperRng() * (f.size[1] - f.size[0])),
+    baseOpacity: f.opacity[0] + wallpaperRng() * (f.opacity[1] - f.opacity[0]),
+    rgb: [210 + wallpaperRng() * 40, 220 + wallpaperRng() * 30, 255],
+    driftVx: (wallpaperRng() - 0.5) * f.drift,
+    driftVy: (wallpaperRng() - 0.5) * f.drift * 0.3,
     currentX: 0,
     currentY: 0,
   };
@@ -206,7 +233,7 @@ export function assignOrbits(stars, centerX, centerY, maxRadiusFactor = 0.35) {
     const dist = Math.sqrt(dx * dx + dy * dy);
 
     // Raio proporcional à distância original, com variação
-    s.orbitRadius = Math.min(dist, maxRadius) * (0.6 + Math.random() * 0.4);
+    s.orbitRadius = Math.min(dist, maxRadius) * (0.6 + wallpaperRng() * 0.4);
     s.orbitRadius = Math.max(s.orbitRadius, 25); // mínimo 25px
 
     // Ângulo inicial baseado na posição original
@@ -377,8 +404,8 @@ export function buildDynamicLines(allStars, maxDist = 100, maxPerStar = 3) {
           i,
           j,
           dist: Math.sqrt(distSq),
-          phase: Math.random() * Math.PI * 2,
-          speed: Math.random() * 0.3 + 0.2,
+          phase: wallpaperRng() * Math.PI * 2,
+          speed: wallpaperRng() * 0.3 + 0.2,
         });
         count++;
       }

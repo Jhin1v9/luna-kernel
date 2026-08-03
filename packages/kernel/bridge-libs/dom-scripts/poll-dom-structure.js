@@ -23,7 +23,9 @@
  * NOTE: keep the regex in sync with KimiBridge._isContextLimitResponse().
  */
 function scanPageContextLimit() {
-  const contextLimitRegex = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i;
+  // v11.8-fix: keep in sync with KimiBridge._isContextLimitResponse().
+  // Broadened to catch Portuguese/Spanish/English/Chinese variants and newer Kimi UI wording.
+  const contextLimitRegex = /getting too long|conversation.*too long|reached.*(?:context|token|memory|input) limit|memory limit|input limit|try starting a new session|聊得太长|发起一个新会话|会话太长|对话太长|上下文太长|convers[ao].*(?:muito longa|bastante|demais|muitas mensagens)|conversaram bastante|conversamos bastante|muita conversa|muitas mensagens|chegou ao limite|atingiu o limite|atingimos o limite|limite de (?:contexto|tokens|mem[óo]ria).{0,25}(?:atingido|chegado|excedido|atingiu|atingimos|chegou|chegamos|excedeu|excedemos)|iniciar um novo chat|começar um novo chat|inicie um novo chat|tente iniciar um novo chat|start a new chat|new chat|create a new chat|refresh this chat|nuevo chat|nueva sesi[óo]n|sesi[óo]n.*(?:muy larga|muy longa|demasiado larga|demasiado longa|lleg[óo] al l[íi]mite|llegamos al l[íi]mite|llegou ao limite)/i;
   const allTextElements = document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5, h6, li');
   for (const el of allTextElements) {
     if (el.closest && el.closest('.segment-user, .segment-assistant')) continue;
@@ -87,7 +89,7 @@ function pollDomStructure() {
     }
   }
 
-  const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
+  const thinkStarters = /^(O usu[áa]rio|Vou |Agora |Preciso |Primeiro |Vamos |Ent[aã]o |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay |Pensando|Analisando|Raciocinando|Reasoning|Thinking|Processando|Searching|Buscando|Concluindo|Conclu[íi]do)/i;
 
   const contentBox = lastAssistant.querySelector('.segment-content-box');
   if (!contentBox) return null;

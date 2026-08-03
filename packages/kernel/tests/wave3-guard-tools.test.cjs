@@ -216,6 +216,7 @@ test('B3: luna-soul.cjs auto-fix rewrite is atomic', () => {
 // (tmp+rename replaces the inode; without chmod the mode would reset to
 // 0o666 & ~umask and Luna's self-edited .sh files would lose +x).
 test('B4: atomicWriteFileSync preserves the target file mode on overwrite', () => {
+  if (process.platform === 'win32') return; // Windows has no Unix file modes
   const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
   withTmpDir(dir => {
     const target = path.join(dir, 'script.sh');
@@ -1258,6 +1259,7 @@ test('W6e-b: fallback results carry a visible warning', () => {
 // `!detectHeadless()` was true, so every tool opened an uninvited window.
 
 test('W7-T3a: resolver maps a gnome-terminal.wrapper realpath to xterm style', () => {
+  if (process.platform === 'win32') return; // Windows requires admin rights for symlinks
   withTmpDir((dir) => {
     // Debian-style layout: a PATH-visible name whose REALPATH basename is
     // gnome-terminal.wrapper (the perl wrapper that drops `-- bash script`).
@@ -1366,4 +1368,86 @@ test('W8-T4c: no isBuildCommand=isVisibleCommand; dead bridge-libs and getModeUr
   const bridgeSrc = fs.readFileSync(path.join(kernelDir, 'kimi-bridge.cjs'), 'utf8');
   assert.ok(!bridgeSrc.includes('function getModeUrls('), 'orphan getModeUrls must be removed');
   assert.ok(bridgeSrc.includes("treating as 'instant'"), 'setMode must warn + normalize invalid modes to instant');
+});
+
+
+// ── Fix J: destructive-operation confirmation gate (luna-soul.cjs) ──────────
+
+const { LunaSoul } = require('../luna-soul.cjs');
+
+test('J1: isDestructive flags explicit destructive tools', () => {
+  const soul = new LunaSoul({});
+  assert.strictEqual(soul.isDestructive('deleteFile', { path: 'x.txt' }), true);
+  assert.strictEqual(soul.isDestructive('removeDirectory', { path: 'foo' }), true);
+  assert.strictEqual(soul.isDestructive('dashboardDeleteTask', { id: 1 }), true);
+  assert.strictEqual(soul.isDestructive('readFile', { path: 'x.txt' }), false);
+  assert.strictEqual(soul.isDestructive('writeFile', { path: 'x.txt', content: 'a' }), false);
+});
+
+test('J2: isDestructive flags destructive shell patterns', () => {
+  const soul = new LunaSoul({});
+  const destructive = [
+    'rm -rf /',
+    'rm -r /tmp',
+    'rm *.log',
+    'dd if=/dev/zero of=/dev/sda',
+    'mkfs.ext4 /dev/sdb1',
+    'git reset --hard',
+    'git clean -fd',
+  ];
+  for (const cmd of destructive) {
+    assert.strictEqual(soul.isDestructive('executeShell', { command: cmd }), true, `expected ${cmd} to be destructive`);
+  }
+  const safe = ['ls -la', 'git status', 'echo hello', 'cat file.txt'];
+  for (const cmd of safe) {
+    assert.strictEqual(soul.isDestructive('executeShell', { command: cmd }), false, `expected ${cmd} to be safe`);
+  }
+});
+
+test('J3: isDestructive respects autoConfirmDestructive', () => {
+  const soul = new LunaSoul({ autoConfirmDestructive: true });
+  assert.strictEqual(soul.isDestructive('deleteFile', { path: 'x.txt' }), false);
+  assert.strictEqual(soul.isDestructive('executeShell', { command: 'rm -rf /' }), false);
+});
+
+test('J4: _requestConfirmation emits a confirmation_required event and resolves on confirm', async () => {
+  const soul = new LunaSoul({});
+  const sessionId = 'test-session-confirm';
+  let captured = null;
+  soul.on('confirmation_required', (ev) => { captured = ev; });
+
+  const promise = soul._requestConfirmation('deleteFile', { path: 'x.txt' }, sessionId);
+  assert.ok(captured, 'confirmation_required should be emitted synchronously');
+  assert.strictEqual(captured.tool, 'deleteFile');
+  assert.strictEqual(captured.sessionId, sessionId);
+  assert.ok(captured.confirmationId, 'confirmationId must be present');
+
+  const confirmResult = soul.confirmAction(sessionId, captured.confirmationId, 'confirm');
+  assert.strictEqual(confirmResult.ok, true);
+  assert.strictEqual(confirmResult.confirmed, true);
+
+  const resolved = await promise;
+  assert.strictEqual(resolved.confirmed, true);
+});
+
+test('J5: canceling a confirmation returns a user-canceled result', async () => {
+  const soul = new LunaSoul({});
+  const sessionId = 'test-session-cancel';
+  let captured = null;
+  soul.on('confirmation_required', (ev) => { captured = ev; });
+
+  const promise = soul._requestConfirmation('deleteFile', { path: 'x.txt' }, sessionId);
+  const cancelResult = soul.confirmAction(sessionId, captured.confirmationId, 'cancel');
+  assert.strictEqual(cancelResult.ok, true);
+  assert.strictEqual(cancelResult.confirmed, false);
+
+  const resolved = await promise;
+  assert.strictEqual(resolved.confirmed, false);
+  assert.ok(/cancel/i.test(resolved.error), `error should mention cancel, got ${resolved.error}`);
+});
+
+test('J6: confirmAction returns error for unknown/expired confirmation', () => {
+  const soul = new LunaSoul({});
+  const res = soul.confirmAction('no-such-session', 'no-such-id', 'confirm');
+  assert.strictEqual(res.ok, false);
 });

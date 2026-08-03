@@ -19,6 +19,7 @@ const selfheal = require('./lib/selfheal.cjs');
 
 // v11.0: Centralized kernel resolution via shared resolver
 const { LUNA_KERNEL_DIR } = require('./lib/resolve-luna.cjs');
+console.log('[DEBUG-LUNA-RESOLVE-2] LUNA_KERNEL_DIR:', LUNA_KERNEL_DIR, 'SOUL_PATH:', path.join(LUNA_KERNEL_DIR, 'luna-soul.cjs'));
 const config = require(path.join(LUNA_KERNEL_DIR, 'config', 'luna-config'));
 const providerLoader = require(path.join(LUNA_KERNEL_DIR, 'provider-loader.cjs'));
 
@@ -480,7 +481,9 @@ router.post('/api/chat', async (req, res) => {
 
   // Process in background
   try {
+    console.log('[DEBUG-LUNA-ROUTES] getting luna soul for session', session.id);
     const luna = await getLunaSoul();
+    console.log('[DEBUG-LUNA-ROUTES] luna soul ready', !!luna, !!luna?.processMessageStream);
     const stream = luna.processMessageStream(finalMessage, {
       sessionId: session.id,
       userId: 'web-' + session.id,
@@ -488,10 +491,12 @@ router.post('/api/chat', async (req, res) => {
       persona: session.persona || 'default',
       provider: session.provider || 'kimi',
       files: finalFiles,
+      messageId,
     });
 
-    // v5.4-fix: Deduplicate events before adding to session history
-    const emittedEventHashes = new Set();
+    // Wave 11: dedup by event id only. Content-based dedup was swallowing
+    // thinking updates and repeated response/tool events.
+    const emittedEventIds = new Set();
 
     for await (const ev of stream) {
       // v10.16-fix: Check OUR captured meta, not activeStreams.get() which may return
@@ -510,26 +515,30 @@ router.post('/api/chat', async (req, res) => {
         continue;
       }
 
-      if (['response_delta', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta', 'login_required', 'system', 'context_limit', 'compact_start', 'compact_progress', 'compact_end', 'compact_error', 'assistant', 'plan_start', 'plan_step', 'plan_complete', 'plan_error', 'mode_detected', 'action_progress'].includes(ev.type)) {
+      // Wave 11: attach the turn messageId to every streamed event so the
+      // frontend can reject stale events from previous turns.
+      if (messageId && ev.messageId === undefined) {
+        ev.messageId = messageId;
+      }
+
+      if (['response_delta', 'action_start', 'action_end', 'error', 'done', 'thinking_start', 'thinking_delta', 'thinking_update', 'login_required', 'system', 'context_limit', 'compact_start', 'compact_progress', 'compact_end', 'compact_error', 'assistant', 'plan_start', 'plan_step', 'plan_complete', 'plan_error', 'mode_detected', 'action_progress', 'confirmation_required'].includes(ev.type)) {
         // v4.0-fix: For 'done' events, capture the final response from ev.result.response or ev.response
         // Wave 1 Fix B5: 'error'/'system' events carry text in ev.error/ev.message, not ev.text
         const content = ev.type === 'done'
           ? (ev.result?.response || ev.response || ev.text || ev.fullResponse || '')
           : ev.type === 'assistant'
             ? (ev.response || ev.text || ev.fullResponse || '')
-            : (ev.type === 'error' || ev.type === 'system')
-              ? (ev.error || ev.message || ev.text || ev.fullResponse || '')
-              : (ev.text || ev.fullResponse || '');
+            : (ev.type === 'error' || ev.type === 'system' || ev.type === 'confirmation_required')
+              ? (ev.message || ev.error || ev.text || ev.fullResponse || '')
+              : (ev.fullText || ev.text || ev.fullResponse || '');
 
-        // v5.4-fix: Skip duplicate events (same type + content within a turn).
-        // W6-T8: 'done' is deduped too — two identical dones collapse to one.
-        // Wave 1 Fix B1: action_* events dedup by toolInstanceId, not (empty) content
-        const dedupKey = makeEventDedupKey(ev, content);
-        // Wave 4 bug 6: action_progress chunks are an ordered stream — never dedup them
-        if (ev.type !== 'action_progress' && emittedEventHashes.has(dedupKey)) {
+        // Wave 11: skip only if the SAME event id was already emitted.
+        // action_progress chunks are an ordered stream and must never be dropped.
+        const dedupKey = ev.id || `${ev.type}:${Date.now()}:${++eventSeq}`;
+        if (ev.type !== 'action_progress' && emittedEventIds.has(dedupKey)) {
           continue;
         }
-        emittedEventHashes.add(dedupKey);
+        emittedEventIds.add(dedupKey);
 
         // v6.1-fix: Attach messageId so frontend can validate against stale events
         addMessageToSession(session.id, {
@@ -540,6 +549,7 @@ router.post('/api/chat', async (req, res) => {
           fullThinking: ev.fullThinking || undefined,
           tool: ev.tool,
           toolInstanceId: ev.toolInstanceId || undefined, // Wave 1 Fix B2
+          confirmationId: ev.confirmationId || undefined, // v3.3: destructive op confirmation gate
           chunk: ev.chunk || undefined, // Wave 4 Fix: live tool output
           params: ev.params,
           result: ev.result,
@@ -658,6 +668,9 @@ router.get('/api/chat/stream', async (req, res) => {
         if (msg.content) eventData.text = msg.content;
         if (msg.content) eventData.fullResponse = msg.content;
         if (msg.content) eventData.response = msg.content;
+        // v11.8-fix: thinking_update carries the full reasoning text in fullText
+        // so the frontend replaces the bubble content instead of treating it as a delta.
+        if (msg.type === 'thinking_update') eventData.fullText = msg.content;
         if (msg.fullThinking) eventData.fullThinking = msg.fullThinking;
         if (msg.tool) eventData.tool = msg.tool;
         if (msg.params) eventData.params = msg.params;
@@ -707,6 +720,9 @@ router.get('/api/chat/stream', async (req, res) => {
       if (msg.content) eventData.text = msg.content;
       if (msg.content) eventData.fullResponse = msg.content;
       if (msg.content) eventData.response = msg.content;
+      // v11.8-fix: thinking_update carries the full reasoning text in fullText
+      // so the frontend replaces the bubble content instead of treating it as a delta.
+      if (msg.type === 'thinking_update') eventData.fullText = msg.content;
       if (msg.fullThinking) eventData.fullThinking = msg.fullThinking;
       if (msg.tool) eventData.tool = msg.tool;
       if (msg.params) eventData.params = msg.params;
@@ -1775,6 +1791,27 @@ router.post('/api/luna/execute', async (req, res) => {
   }
 });
 
+// POST /api/luna/confirm — resolve a pending destructive-operation confirmation
+router.post('/api/luna/confirm', async (req, res) => {
+  const { sessionId, confirmationId, action } = req.body;
+  console.log('[LUNA CONFIRM] request:', { sessionId, confirmationId, action });
+  if (!sessionId) return res.status(400).json({ ok: false, error: 'sessionId obrigatorio' });
+  if (!confirmationId) return res.status(400).json({ ok: false, error: 'confirmationId obrigatorio' });
+
+  try {
+    const luna = await getLunaSoul();
+    if (!luna || typeof luna.confirmAction !== 'function') {
+      return res.status(501).json({ ok: false, error: 'LunaSoul não suporta confirmação' });
+    }
+    const result = luna.confirmAction(sessionId, confirmationId, action);
+    console.log('[LUNA CONFIRM] result:', result);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[LUNA CONFIRM] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/selfhost/download — generate self-host package
 router.post('/api/selfhost/download', async (req, res) => {
   try {
@@ -2061,7 +2098,9 @@ router.post('/api/system/turnoff', async (req, res) => {
 });
 
 // ── POST /api/luna/compact — Manual context compaction ──
-// v10.16: Allows user to force compaction on-demand via button/command
+// v10.40: Now uses the SAME code path as the automatic context_limit flow.
+// It compacts, opens a fresh Kimi thread, and CONTINUES the conversation by
+// resending the last user message — no stale chat behind the scenes.
 router.post('/api/luna/compact', async (req, res) => {
   try {
     const { sessionId, userId } = req.body;
@@ -2081,19 +2120,12 @@ router.post('/api/luna/compact', async (req, res) => {
     res.setHeader('X-Accel-Buffering', 'no');
 
     const uid = userId || 'web-default';
-    const stream = luna._compactContext(sessionId, uid);
+    const stream = luna.compactAndContinue(sessionId, uid);
 
-    let lastUrl = null;
     for await (const ev of stream) {
-      if (ev?.type === 'compact_end' && ev?.chatUrl) {
-        lastUrl = ev.chatUrl;
-      }
       res.write(`data: ${JSON.stringify(ev)}\n\n`);
     }
 
-    const doneEvent = { type: 'done' };
-    if (lastUrl) doneEvent.chatUrl = lastUrl;
-    res.write(`data: ${JSON.stringify(doneEvent)}\n\n`);
     res.end();
   } catch (e) {
     console.error('[LunaCompact] Erro:', e.message);
@@ -2106,4 +2138,4 @@ router.post('/api/luna/compact', async (req, res) => {
   }
 });
 
-module.exports = { router, setupAuth, getLunaSoul };
+module.exports = { router, setupAuth, getLunaSoul, getWebSession, addMessageToSession };

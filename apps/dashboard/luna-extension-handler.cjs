@@ -144,7 +144,10 @@ class LunaExtensionHandler extends EventEmitter {
     }
 
     // v8.6: Buffer DOM events for bridge Layer 0 consumption
-    const bufferableTypes = ['stream_state', 'stream_end', 'tool_call_detected', 'tool_response_detected', 'segment_complete', 'json_block_added', 'button_state'];
+    // v11.6: added thinking_start so the bridge can create the bubble immediately.
+    // v11.8-fix: added thinking_update so the bridge can forward Kimi's full reasoning
+    // text to the frontend as a source-of-truth replacement.
+    const bufferableTypes = ['stream_state', 'thinking_start', 'thinking_update', 'stream_end', 'tool_call_detected', 'tool_response_detected', 'segment_complete', 'json_block_added', 'button_state'];
     if (bufferableTypes.includes(eventType)) {
       this._bufferEvent(sessionId, { eventType, data, timestamp, url, tabId, tabUrl });
     }

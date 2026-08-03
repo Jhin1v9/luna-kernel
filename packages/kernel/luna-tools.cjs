@@ -39,11 +39,11 @@ const IS_WINDOWS = process.platform === 'win32';
 function findGitBash() {
   if (!IS_WINDOWS) return '/bin/bash';
   const candidates = [
-    'C:\Program Files\Git\bin\bash.exe',
-    'C:\Program Files (x86)\Git\bin\bash.exe',
-    'C:\Git\bin\bash.exe',
-    path.join(process.env.LOCALAPPDATA || '', 'Programs\Git\bin\bash.exe'),
-    path.join(process.env.USERPROFILE || '', 'scoop\apps\git\current\bin\bash.exe'),
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    'C:\\Git\\bin\\bash.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs/Git/bin/bash.exe'),
+    path.join(process.env.USERPROFILE || '', 'scoop/apps/git/current/bin/bash.exe'),
     'bash.exe',
   ];
   for (const candidate of candidates) {
@@ -380,6 +380,14 @@ function replaceInFile(filePath, oldStr, newStr, opts = {}) {
   }
 }
 
+function toMsysPath(winPath) {
+  if (!IS_WINDOWS || !winPath) return winPath;
+  const normalized = winPath.replace(/\\/g, '/');
+  const m = normalized.match(/^([A-Za-z]):\/(.+)$/);
+  if (m) return `/${m[1].toLowerCase()}/${m[2]}`;
+  return normalized;
+}
+
 function executeScript(code, opts = {}) {
   if (!code || typeof code !== 'string') return err('Código do script é obrigatório');
 
@@ -387,12 +395,13 @@ function executeScript(code, opts = {}) {
   // v10.36-fix: Default to the user's workspace, not the luna-server directory.
   const cwd = opts.cwd ? resolvePath(opts.cwd) : (lunaConfig.PATHS.workspaceBase || process.cwd());
   const timeout = opts.timeout || 120000;
+  const isBashLike = ['bash', 'sh', 'shell'].includes(language.toLowerCase());
 
   // Mapeia linguagem para extensão e executor
   const langMap = {
-    bash: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? GIT_BASH_PATH : 'bash', shell: true },
-    sh: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? GIT_BASH_PATH : 'bash', shell: true },
-    shell: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? GIT_BASH_PATH : 'bash', shell: true },
+    bash: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? toMsysPath(GIT_BASH_PATH) : 'bash', shell: true },
+    sh: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? toMsysPath(GIT_BASH_PATH) : 'bash', shell: true },
+    shell: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? toMsysPath(GIT_BASH_PATH) : 'bash', shell: true },
     powershell: { ext: 'ps1', executor: 'pwsh', shell: true },
     ps1: { ext: 'ps1', executor: 'pwsh', shell: true },
     python: { ext: 'py', executor: 'python3', shell: true },
@@ -411,8 +420,11 @@ function executeScript(code, opts = {}) {
     fs.writeFileSync(scriptPath, code, 'utf8');
     fs.chmodSync(scriptPath, 0o755);
 
+    // Windows + Git Bash: pass MSYS-style paths so bash can resolve the script.
+    const scriptArg = (IS_WINDOWS && HAS_GIT_BASH && isBashLike) ? toMsysPath(scriptPath) : scriptPath;
+
     // Executa o script
-    const result = safeExec(`${config.executor} "${scriptPath}"`, { cwd, timeout: timeout / 1000 });
+    const result = safeExec(`${shellQuote(config.executor)} ${shellQuote(scriptArg)}`, { cwd, timeout: timeout / 1000 });
 
     // Limpa arquivo temporário (não bloqueante)
     try { fs.unlinkSync(scriptPath); } catch {}

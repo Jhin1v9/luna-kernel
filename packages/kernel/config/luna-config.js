@@ -137,11 +137,18 @@ const PATH_GUARD_CONFIG_FILE = path.join(LUNA_HOME, 'path-guard.json');
 function loadPathGuardConfig() {
   try {
     if (fs.existsSync(PATH_GUARD_CONFIG_FILE)) {
-      return JSON.parse(fs.readFileSync(PATH_GUARD_CONFIG_FILE, 'utf-8'));
+      const cfg = JSON.parse(fs.readFileSync(PATH_GUARD_CONFIG_FILE, 'utf-8'));
+      // v10.43: env var LUNA_ADMIN_MODE overrides adminMode flag
+      if (process.env.LUNA_ADMIN_MODE === 'true' || process.env.LUNA_ADMIN_MODE === '1') {
+        cfg.adminMode = true;
+      }
+      return cfg;
     }
   } catch {}
+  const adminMode = process.env.LUNA_ADMIN_MODE === 'true' || process.env.LUNA_ADMIN_MODE === '1';
   return {
-    enabled: true,
+    enabled: !adminMode,
+    adminMode,
     allowHomeDir: true,
     customPaths: []
   };

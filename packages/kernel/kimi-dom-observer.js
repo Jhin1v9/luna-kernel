@@ -133,6 +133,10 @@
     const containers = [];
     try {
       for (const node of safeQuery(SELECTORS.toolContainer, root)) {
+        const className = (node.className || '').toLowerCase();
+        // v10.42-fix: Kimi renders the thinking step as a .toolcall-container.thinking-container.
+        // It is NOT a real tool call and must not be executed.
+        if (className.includes('thinking') || className.includes('reasoning')) continue;
         const type = (node.className || '').match(/toolcall-(\w+)/)?.[1] || 'unknown';
         const isNew = !node.__lunaObserved;
         if (isNew) node.__lunaObserved = true;

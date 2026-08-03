@@ -101,6 +101,29 @@ switch happens. Mode URLs come from `provider-configs/*.json`
 (e.g. kimi instant/thinking: `https://www.kimi.com/en?chat_enter_method=new_chat`),
 with fallbacks in `packages/kernel/config/luna-config.js` (`KIMI.modeUrls`) and `kimi-bridge.cjs:69`.
 
+## Destructive-operation confirmation gate
+
+Only explicitly destructive tools require frontend confirmation; everything else runs
+with full permissions (owner decision). Triggers: `deleteFile`, `removeDirectory`,
+`dashboardDelete*`, `executeShell`/`executeScript` commands matching destructive patterns
+(`rm -rf`, `git reset --hard`, `mkfs`, etc.).
+
+Flow:
+
+```
+_handleAction detects destructive tool
+  → _requestConfirmation() emits confirmation_required via EventBus + EventEmitter
+  → SSE stream forwards confirmation_required to the UI
+  → ToolCard renders Confirm/Cancel buttons
+  → user clicks → POST /api/luna/confirm → LunaSoul.confirmAction()
+  → pending Promise resolves; tool executes (or returns user-canceled error)
+```
+
+- Timeout: 5 minutes; unresolved confirmations auto-cancel.
+- `autoConfirmDestructive: true` disables the gate entirely.
+- The `action_start` event carries `toolInstanceId`; `confirmation_required` uses the same
+  id so the frontend maps the confirmation to the correct card.
+
 ## Compaction
 
 **100% manual** (all automatic triggers removed 2026-07-04, commit 18a569a):

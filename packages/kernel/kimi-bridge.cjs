@@ -140,7 +140,10 @@ function isSameLandingPage(currentUrl, expectedUrl) {
 
 function looksLikeJsonStart(text) {
   if (!text || typeof text !== 'string') return false;
-  const t = text.trimStart();
+  let t = text.trimStart();
+  // v10.8-fix: Strip Kimi DOM code-block header (e.g. "JSON\nCopy\n") so JSON
+  // wrappers rendered inside .segment-code blocks are still detected.
+  t = t.replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '').trimStart();
   // v10.24-fix: Also detect malformed Kimi wrappers like {"success":true,"mode":"RESPONSE","message":"..."}
   return t.startsWith('{') && (
     t.includes('"response"') ||
@@ -322,6 +325,55 @@ function extractWriteFileFromText(text) {
     if (newStr !== null) params.newString = newStr;
   }
   return { type: 'tool', tool, params };
+}
+
+// v11.8-fix: defensive sanity check for state_change events. If a producer
+// (extension/poller) accidentally delivers thinking text inside the response
+// field, split it out before the cursor sees it. This is a last-line guard;
+// the source of truth is still the extension selectors.
+const THINK_PREFIX_REGEX = /^(O usu[áa]rio|Vou |Agora |Preciso |Primeiro |Vamos |Ent[aã]o |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Pensando|Analisando|Raciocinando|Reasoning|Thinking|Processando|Buscando|Searching|Concluindo|Conclu[íi]do)/i;
+function sanitizeStateChange(ev) {
+  let t = ev.thinking || '';
+  let r = ev.response || '';
+
+  // If response contains a thinking prefix and we have no explicit thinking, split.
+  if (r && !t) {
+    const codeIdx = r.indexOf('```');
+    const jsonIdx = r.search(/\{\s*"/);
+    const firstRealIdx = codeIdx >= 0 && jsonIdx >= 0 ? Math.min(codeIdx, jsonIdx)
+      : codeIdx >= 0 ? codeIdx
+      : jsonIdx >= 0 ? jsonIdx
+      : -1;
+    if (firstRealIdx > 10) {
+      const before = r.slice(0, firstRealIdx).trim();
+      const after = r.slice(firstRealIdx).trim();
+      if (THINK_PREFIX_REGEX.test(before) || before.length < 500) {
+        t = before;
+        r = after;
+      }
+    }
+    // Entire response is reasoning and no JSON/code block.
+    if (!r.includes('```') && !r.includes('{') && (THINK_PREFIX_REGEX.test(r) || r.length < 300)) {
+      t = r;
+      r = '';
+    }
+  }
+
+  // If thinking somehow contains a real response, keep only the reasoning prefix.
+  if (t && !r) {
+    const codeIdx = t.indexOf('```');
+    const jsonIdx = t.search(/\{\s*"/);
+    const firstRealIdx = codeIdx >= 0 && jsonIdx >= 0 ? Math.min(codeIdx, jsonIdx)
+      : codeIdx >= 0 ? codeIdx
+      : jsonIdx >= 0 ? jsonIdx
+      : -1;
+    if (firstRealIdx > 10) {
+      r = t.slice(firstRealIdx);
+      t = t.slice(0, firstRealIdx).trim();
+    }
+  }
+
+  return { thinking: t, response: r };
 }
 
 // W6-T9: Node-side character walker — escapes RAW newline/CR/tab characters
@@ -1050,6 +1102,27 @@ class KimiBridge {
   }
 
   /**
+   * Resolve robust selector chains for the provider so the evaluate snippets
+   * can iterate through fallbacks instead of relying on a single hardcoded class.
+   */
+  _resolveDomSelectorChains(provider) {
+    const cfg = this._loadProviderConfig(provider);
+    return {
+      assistant: resolveChain(cfg, 'assistantMessage', '.chat-content-item.chat-content-item-assistant', '.segment.segment-assistant'),
+      contentBox: resolveChain(cfg, 'responseContainer', '.segment-content-box', '.markdown-container', '.segment-assistant'),
+      thinking: resolveChain(cfg, 'thinking', '.toolcall-container.thinking-container', '.thinking-container', '.toolcall-container[class*="thinking"]', '[class*="thinking"]', '[class*="reasoning"]'),
+      thinkingText: resolveChain(cfg, 'thinkingText', '.toolcall-container.thinking-container .markdown-container', '.toolcall-container.thinking-container .markdown', '.thinking-container .markdown-container', '.thinking-container .markdown'),
+      markdown: resolveChain(cfg, 'responseContainer', '.markdown-container', '.markdown'),
+      paragraph: ['.paragraph', 'p', '[class*="text"]'],
+      codeBlock: ['.segment-code', 'pre code', '[class*="code-block"]'],
+      actionButtons: resolveChain(cfg, 'actionButtons', '.segment-assistant-actions .icon-button', '.segment-assistant-actions button', '.chat-content-item-assistant .icon-button', '.segment-assistant .icon-button'),
+      messageList: resolveChain(cfg, 'messageList', '.message-list-container', '.message-list', '.chat-content-list', '.chat-list'),
+      mode: resolveChain(cfg, 'mode', '.current-model .name', '.current-model', '.chat-editor-action .current-model', '.model-name .name'),
+      modeEffort: resolveChain(cfg, 'modeEffort', '.current-model .current-effort', '.model-name .current-effort', '.current-effort'),
+    };
+  }
+
+  /**
    * Resolve the provider to use for a user.
    * Priority: explicit provider > session.provider > stored provider > default.
    */
@@ -1080,8 +1153,10 @@ class KimiBridge {
    * so callers can start a new chat only when actually needed.
    */
   _isContextLimitResponse(response) {
+    // v11.8-fix: broaden detection for Portuguese/Spanish/English context-limit banners
+    // and Kimi UI variants (e.g. "Você e o Kimi conversaram bastante. Tente iniciar um novo chat.")
+    const contextLimitRegex = /getting too long|conversation.*too long|reached.*(?:context|token|memory|input) limit|memory limit|input limit|try starting a new session|聊得太长|发起一个新会话|会话太长|对话太长|上下文太长|convers[ao].*(?:muito longa|bastante|demais|muitas mensagens)|conversaram bastante|conversamos bastante|muita conversa|muitas mensagens|chegou ao limite|atingiu o limite|atingimos o limite|limite de (?:contexto|tokens|mem[óo]ria).{0,25}(?:atingido|chegado|excedido|atingiu|atingimos|chegou|chegamos|excedeu|excedemos)|iniciar um novo chat|começar um novo chat|inicie um novo chat|tente iniciar um novo chat|start a new chat|new chat|create a new chat|refresh this chat|nuevo chat|nueva sesi[óo]n|sesi[óo]n.*(?:muy larga|muy longa|demasiado larga|demasiado longa|lleg[óo] al l[íi]mite|llegamos al l[íi]mite|llegou ao limite)/i;
     if (!response) return false;
-    const contextLimitRegex = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i;
     return contextLimitRegex.test(response);
   }
 
@@ -2149,9 +2224,9 @@ class KimiBridge {
    * - DOM structure changes
    * - Index shifting
    */
-  async _extractResponseDiff(page, preSendSnapshot = []) {
-    const provider = page._lunaProvider || this.defaultProvider || 'kimi';
-    if (provider !== 'kimi') {
+  async _extractResponseDiff(page, preSendSnapshot = [], provider = null) {
+    const resolvedProvider = provider || page._lunaProvider || this.defaultProvider || 'kimi';
+    if (resolvedProvider !== 'kimi') {
       // v10.27-fix: snapshot diff relies on Kimi-specific .segment-assistant.
       // For non-Kimi providers, use the generic extraction path directly.
       return this._extractResponse(page, {});
@@ -2163,20 +2238,42 @@ class KimiBridge {
     }
 
     try {
-      const postSnapshot = await page.evaluate(() => {
-        const assistants = document.querySelectorAll('.segment-assistant');
-        return Array.from(assistants).map((el, i) => {
+      const chains = this._resolveDomSelectorChains(resolvedProvider);
+      const postSnapshot = await page.evaluate((selectors) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+        const assistants = allMatches(document, selectors.assistant);
+        return assistants.map((el, i) => {
           // Extract all meaningful text from this assistant
           let text = '';
-          const contentBox = el.querySelector('.segment-content-box');
+          const contentBox = firstMatch(el, selectors.contentBox);
           if (contentBox) {
-            const codeBlocks = contentBox.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
-            for (const cb of codeBlocks) {
+            for (const cb of allMatches(contentBox, selectors.codeBlock)) {
               const t = (cb.innerText || cb.textContent || '').trim();
               if (t) text += t + '\n\n';
             }
-            const paragraphs = contentBox.querySelectorAll('.paragraph, p, [class*="text"]');
-            for (const p of paragraphs) {
+            for (const md of allMatches(contentBox, selectors.markdown)) {
+              // v10.42-fix: skip markdown nodes that live inside the thinking container
+              if (selectors.thinking?.length && md.closest && md.closest(selectors.thinking[0])) continue;
+              const t = (md.innerText || md.textContent || '').trim();
+              if (t) text += t + '\n\n';
+            }
+            for (const p of allMatches(contentBox, selectors.paragraph)) {
               const t = (p.innerText || p.textContent || '').trim();
               if (t) text += t + '\n\n';
             }
@@ -2187,7 +2284,7 @@ class KimiBridge {
             textLength: text.trim().length,
           };
         });
-      });
+      }, chains);
 
       let newContent = '';
       let sources = [];
@@ -2239,28 +2336,50 @@ class KimiBridge {
    * v7.7: Capture a snapshot of all assistant texts before sending.
    * This snapshot is used by _extractResponseDiff to compute the difference.
    */
-  async _capturePreSendSnapshot(page) {
+  async _capturePreSendSnapshot(page, provider = 'kimi') {
     try {
-      const snapshot = await page.evaluate(() => {
-        const assistants = document.querySelectorAll('.segment-assistant');
-        return Array.from(assistants).map((el) => {
+      const chains = this._resolveDomSelectorChains(provider);
+      const snapshot = await page.evaluate((selectors) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+        const assistants = allMatches(document, selectors.assistant);
+        return assistants.map((el) => {
           let text = '';
-          const contentBox = el.querySelector('.segment-content-box');
+          const contentBox = firstMatch(el, selectors.contentBox);
           if (contentBox) {
-            const codeBlocks = contentBox.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
-            for (const cb of codeBlocks) {
+            for (const cb of allMatches(contentBox, selectors.codeBlock)) {
               const t = (cb.innerText || cb.textContent || '').trim();
               if (t) text += t + '\n\n';
             }
-            const paragraphs = contentBox.querySelectorAll('.paragraph, p, [class*="text"]');
-            for (const p of paragraphs) {
+            for (const md of allMatches(contentBox, selectors.markdown)) {
+              // v10.42-fix: skip pre-send thinking markdown so the diff only sees new response text
+              if (selectors.thinking?.length && md.closest && md.closest(selectors.thinking[0])) continue;
+              const t = (md.innerText || md.textContent || '').trim();
+              if (t) text += t + '\n\n';
+            }
+            for (const p of allMatches(contentBox, selectors.paragraph)) {
               const t = (p.innerText || p.textContent || '').trim();
               if (t) text += t + '\n\n';
             }
           }
           return text.trim();
         });
-      });
+      }, chains);
       log.info(`[v7.7] Captured pre-send snapshot: ${snapshot.length} assistants`);
       return snapshot;
     } catch (e) {
@@ -2310,13 +2429,32 @@ class KimiBridge {
     }
 
     // v7.5: Strategy 1 — Unified DOM extraction (same as _pollThinkingAndResponse Layer 2.5)
+    // v10.8-fix: Uses provider selector chains so the new Kimi frontend keeps working
+    // when classes change again.
     try {
-      const domResult = await page.evaluate((prefIdx) => {
-        const assistants = document.querySelectorAll('.segment-assistant');
+      const chains = this._resolveDomSelectorChains(provider);
+      const domResult = await page.evaluate(({ selectors, prefIdx }) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+
+        const assistants = allMatches(document, selectors.assistant);
         if (!assistants.length) return null;
 
-        // v7.5-fix: If preferAssistantIndex is provided, use it. Otherwise use last.
-        // This allows the caller to specify which assistant to extract from.
         let assistant = assistants[assistants.length - 1];
         if (prefIdx !== undefined && prefIdx >= 0 && prefIdx < assistants.length) {
           assistant = assistants[prefIdx];
@@ -2325,37 +2463,65 @@ class KimiBridge {
         let thinking = '';
         let response = '';
 
-        const thinkContainer = assistant.querySelector('.toolcall-container.thinking-container');
+        const thinkContainer = firstMatch(assistant, selectors.thinking);
         if (thinkContainer) {
-          const thinkMd = thinkContainer.querySelector('.markdown-container.toolcall-content-text');
+          const thinkMd = firstMatch(thinkContainer, selectors.thinkingText);
           if (thinkMd) thinking = (thinkMd.innerText || '').trim();
         }
 
         const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
-        const contentBox = assistant.querySelector('.segment-content-box');
+        const contentBox = firstMatch(assistant, selectors.contentBox);
         if (!contentBox) return null;
 
-        // Extract from markdown containers
-        const markdownContainers = contentBox.querySelectorAll('.markdown-container');
+        const markdownContainers = allMatches(contentBox, selectors.markdown);
         let rawResponse = '';
+        const seenResponseTexts = new Set();
+        // v10.43-fix: helper reused from poll path
+        function tryParseResponseJson(text) {
+          if (!text || text.length < 10) return null;
+          const cleaned = text
+            .replace(/^\s*```(?:json)?\s*/i, '')
+            .replace(/\s*```\s*$/i, '')
+            .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+            .trim();
+          if (!cleaned.startsWith('{')) return null;
+          try {
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed.response === 'string') return parsed.response;
+          } catch {}
+          return null;
+        }
         for (const md of markdownContainers) {
-          if (thinkContainer && md.closest('.toolcall-container.thinking-container')) continue;
-          const codeBlocks = md.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
-          for (const cb of codeBlocks) {
+          if (thinkContainer && md.closest && md.closest(selectors.thinking[0])) continue;
+          let mdHasResponseJson = false;
+          for (const cb of allMatches(md, selectors.codeBlock)) {
             const text = (cb.innerText || cb.textContent || '').trim();
-            if (text) {
-              // v8.5-fix: skip tool call JSON blocks from being exposed as response text
-              if (text.startsWith('{') && text.includes('"tool"')) {
-                // This is a tool call block, not user-facing text
-              } else {
-                rawResponse += text + '\n\n';
+            if (!text) continue;
+            if (text.startsWith('{') && text.includes('"tool"')) {
+              // tool JSON block, not user-facing text
+              continue;
+            }
+            const responseText = tryParseResponseJson(text);
+            if (responseText !== null) {
+              if (!seenResponseTexts.has(responseText)) {
+                seenResponseTexts.add(responseText);
+                rawResponse += responseText + '\n\n';
               }
+              mdHasResponseJson = true;
+              continue;
+            }
+            if (!seenResponseTexts.has(text)) {
+              seenResponseTexts.add(text);
+              rawResponse += text + '\n\n';
             }
           }
-          const paragraphs = md.querySelectorAll('.paragraph, p, [class*="text"]');
-          for (const p of paragraphs) {
+          if (mdHasResponseJson) continue;
+          for (const p of allMatches(md, selectors.paragraph)) {
             const text = (p.innerText || p.textContent || '').trim();
-            if (text) rawResponse += text + '\n\n';
+            if (text && !seenResponseTexts.has(text)) {
+              seenResponseTexts.add(text);
+              rawResponse += text + '\n\n';
+            }
           }
         }
 
@@ -2366,15 +2532,12 @@ class KimiBridge {
             ? containerBlock.querySelectorAll('.block-item')
             : contentBox.querySelectorAll('.block-item');
           for (const item of blockItems) {
-            if (item.querySelector('.toolcall-container.thinking-container')) continue;
-            const codeBlocks = item.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
-            for (const cb of codeBlocks) {
-              // v9.5-fix: Use textContent FIRST for code blocks — innerText can be truncated
+            if (firstMatch(item, selectors.thinking)) continue;
+            for (const cb of item.querySelectorAll('.segment-code, pre code, [class*="code-block"]')) {
               const text = (cb.textContent || cb.innerText || '').trim();
               if (text) rawResponse += text + '\n\n';
             }
-            const paragraphs = item.querySelectorAll('.paragraph, p, [class*="text"]');
-            for (const p of paragraphs) {
+            for (const p of item.querySelectorAll('.paragraph, p, [class*="text"]')) {
               const text = (p.innerText || p.textContent || '').trim();
               if (text) rawResponse += text + '\n\n';
             }
@@ -2383,7 +2546,6 @@ class KimiBridge {
 
         rawResponse = rawResponse.trim();
 
-        // v7.5: Apply same thinking/response separation logic
         if (thinkContainer && rawResponse) {
           const codeBlockIdx = rawResponse.indexOf('```');
           const jsonStartIdx = rawResponse.search(/\{\s*"/);
@@ -2422,7 +2584,7 @@ class KimiBridge {
         }
 
         return { thinking: thinking || '', response: response || '', source: 'dom-unified', assistantIndex: prefIdx };
-      }, preferAssistantIndex);
+      }, { selectors: chains, prefIdx: preferAssistantIndex });
 
       if (domResult && domResult.response) {
         log.success(`Extracted via dom-unified (assistant ${domResult.assistantIndex ?? 'last'}): ${domResult.response.slice(0, 80)}...`);
@@ -2433,25 +2595,41 @@ class KimiBridge {
     }
 
     // v7.5: Strategy 2 — Try previous assistant if last one looks like a confirmation
-    // This handles the case where Kimi adds a new "confirmation" assistant after the tool call
     try {
-      const prevResult = await page.evaluate(() => {
-        const assistants = document.querySelectorAll('.segment-assistant');
+      const chains = this._resolveDomSelectorChains(provider);
+      const prevResult = await page.evaluate((selectors) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+        const assistants = allMatches(document, selectors.assistant);
         if (assistants.length < 2) return null;
         const prevAssistant = assistants[assistants.length - 2];
         if (!prevAssistant) return null;
 
         let response = '';
-        const contentBox = prevAssistant.querySelector('.segment-content-box');
+        const contentBox = firstMatch(prevAssistant, selectors.contentBox);
         if (contentBox) {
-          const codeBlocks = contentBox.querySelectorAll('.segment-code, pre code');
-          for (const cb of codeBlocks) {
+          for (const cb of allMatches(contentBox, selectors.codeBlock)) {
             const text = (cb.innerText || cb.textContent || '').trim();
             if (text) response += text + '\n\n';
           }
         }
         return response.trim() || null;
-      });
+      }, chains);
       if (prevResult && prevResult.includes('{') && prevResult.includes('"tool"')) {
         log.success(`Extracted via previous-assistant: ${prevResult.slice(0, 80)}...`);
         return prevResult;
@@ -2712,23 +2890,41 @@ class KimiBridge {
   /**
    * Detect the actual mode currently selected in the Kimi UI or page URL
    */
-  async _detectActualMode(page) {
-    const modeSelectors = [
-      '.chat-editor-action .model-name',
-      '.model-selector',
-      '[class*="model"] [class*="name"]',
-      '[class*="mode-switcher"]',
-      '[class*="model-switcher"]',
-    ];
-    for (const sel of modeSelectors) {
-      try {
-        const label = await page.locator(sel).textContent({ timeout: 3000 });
-        const lower = label.toLowerCase();
-        if (lower.includes('instant') || lower.includes('fast') || lower.includes('rapid')) return 'instant';
-        if (lower.includes('thinking') || lower.includes('deep') || lower.includes('reason')) return 'thinking';
-      } catch {}
+  async _detectActualMode(page, provider = 'kimi') {
+    const chains = this._resolveDomSelectorChains(provider);
+    // Primary: read the provider-specific mode selector chain.
+    const modeText = await page.evaluate((selectors) => {
+      function allMatches(root, sels) {
+        const seen = new Set();
+        const out = [];
+        for (const sel of sels) {
+          for (const el of root.querySelectorAll(sel)) {
+            if (!seen.has(el)) { seen.add(el); out.push(el); }
+          }
+        }
+        return out;
+      }
+      const els = allMatches(document, selectors.mode);
+      if (!els.length && selectors.modeEffort) els.push(...allMatches(document, selectors.modeEffort));
+      return els.map(el => (el.innerText || el.textContent || '').trim()).join(' ');
+    }, chains).catch(() => '');
+
+    if (modeText) {
+      const lower = modeText.toLowerCase();
+      if (lower.includes('instant') || lower.includes('fast') || lower.includes('rapid')) return 'instant';
+      if (lower.includes('thinking') || lower.includes('deep') || lower.includes('reason')) return 'thinking';
     }
-    // Try URL-based detection as fallback
+
+    // Fallback: scan the whole body text for mode labels.
+    try {
+      const bodyText = await page.evaluate(() => (document.body?.innerText || '').toLowerCase());
+      const hasInstant = /\binstant\b/i.test(bodyText);
+      const hasThinking = /\bthinking\b/i.test(bodyText) || /\bdeep\b/i.test(bodyText);
+      if (hasInstant && !hasThinking) return 'instant';
+      if (hasThinking && !hasInstant) return 'thinking';
+    } catch {}
+
+    // URL-based fallback
     try {
       const url = page.url().toLowerCase();
       if (url.includes('instant')) return 'instant';
@@ -2748,24 +2944,59 @@ class KimiBridge {
    *
    * Throws on timeout.
    */
-  async _waitForResponse(page, mode = 'instant', onPartial = null, initialText = '', targetAssistantIndex = -1) {
+  async _waitForResponse(page, mode = 'instant', onPartial = null, initialText = '', targetAssistantIndex = -1, provider = 'kimi') {
     log.info('[DEBUG-LUNA] _waitForResponse started');
     // NO TIMEOUT — Kimi may execute Python for 10+ minutes. That's valid activity.
     // We wait until buttons appear + text is stable, forever.
 
-    // v7.6-fix: Helper to get text from target assistant or last markdown
+    const chains = provider === 'kimi' ? this._resolveDomSelectorChains(provider) : null;
+
+    // v7.6-fix + v10.8-fix: Helper to get text from target assistant or last markdown.
+    // Uses provider selector chains so the new Kimi frontend keeps working.
     const getCurrentText = async () => {
       if (targetAssistantIndex >= 0) {
-        return await page.evaluate((idx) => {
-          const assistants = document.querySelectorAll('.segment-assistant');
+        return await page.evaluate(({ idx, selectors }) => {
+          function allMatches(root, sels) {
+            const seen = new Set();
+            const out = [];
+            for (const sel of sels) {
+              for (const el of root.querySelectorAll(sel)) {
+                if (!seen.has(el)) { seen.add(el); out.push(el); }
+              }
+            }
+            return out;
+          }
+          function firstMatch(root, sels) {
+            for (const sel of sels) {
+              const el = root.querySelector(sel);
+              if (el) return el;
+            }
+            return null;
+          }
+          const assistants = allMatches(document, selectors.assistant);
           if (idx >= assistants.length) return '';
           const assistant = assistants[idx];
-          const markdown = assistant.querySelector('.markdown-container .markdown');
+          const markdown = firstMatch(assistant, selectors.markdown);
           return markdown ? (markdown.innerText || '').trim() : '';
-        }, targetAssistantIndex).catch(() => '');
+        }, { idx: targetAssistantIndex, selectors: chains }).catch(() => '');
       }
       // v10.18-fix: Use finite timeout — landing page has no markdown yet.
-      return await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+      if (!chains) return await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+      return await page.evaluate((selectors) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        const mds = allMatches(document, selectors.markdown);
+        const last = mds[mds.length - 1];
+        return last ? (last.innerText || '').trim() : '';
+      }, chains).catch(() => '');
     };
 
     // Phase 0: Wait for text to CHANGE from initialText — this ensures we don't
@@ -2794,33 +3025,37 @@ class KimiBridge {
     log.info('Waiting for assistant action buttons...');
     let buttonsVisible = false;
     try {
-      await page.waitForSelector('.segment-assistant-actions .icon-button', {
-        state: 'visible',
-        timeout: 0, // NO TIMEOUT — wait forever for buttons
-      });
-      buttonsVisible = true;
-      log.success('Action buttons detected — response likely complete');
+      if (chains) {
+        buttonsVisible = await page.evaluate((sels) => {
+          for (const sel of sels) {
+            const el = document.querySelector(sel);
+            if (el && el.offsetParent !== null) return true;
+          }
+          return false;
+        }, chains.actionButtons);
+      }
+      if (!buttonsVisible) {
+        await page.waitForSelector('.segment-assistant-actions .icon-button', {
+          state: 'visible',
+          timeout: 0,
+        });
+        buttonsVisible = true;
+      }
+      if (buttonsVisible) log.success('Action buttons detected — response likely complete');
     } catch (e) {
-      log.warn(`Buttons not detected within 30s: ${e.message}`);
+      log.warn(`Buttons not detected: ${e.message}`);
     }
 
     // Phase 2: Poll text with streaming callbacks
     log.info('Polling text with streaming...');
     const stabilityWindow = 2000;
-    const thinkingWindow = 5000; // if stable >5s and buttons not visible = thinking
-    const pollInterval = 1500;   // poll every 1.5s for partial updates
+    const thinkingWindow = 5000;
+    const pollInterval = 1500;
     let lastText = '';
     let stableSince = null;
     let thinkingNotified = false;
-    const pollStartTime = Date.now();
-    const MAX_POLL_TIME = 999999999; // [DONO ABSOLUTO] sem limite de poll
 
     while (true) {
-      // Safety: don't poll forever
-      if (Date.now() - pollStartTime > MAX_POLL_TIME) {
-        log.warn(`_waitForResponse: absolute timeout reached (${MAX_POLL_TIME}ms), returning lastText`);
-        return lastText;
-      }
       try {
         const currentText = await getCurrentText();
 
@@ -2832,7 +3067,7 @@ class KimiBridge {
           if (onPartial) {
             try { onPartial(currentText, 'writing'); } catch {}
           }
-          continue; // skip stability check this iteration
+          continue;
         }
 
         // Text is stable
@@ -2868,12 +3103,6 @@ class KimiBridge {
 
       await new Promise(r => setTimeout(r, pollInterval));
     }
-
-    // Loop should never reach here — it returns when buttons+stable text detected.
-    // Safety fallback: return last known text.
-    log.warn(`_waitForResponse loop exited unexpectedly, returning lastText (${lastText.length} chars)`);
-    log.info('[DEBUG-LUNA] _waitForResponse finished (fallback)');
-    return lastText;
   }
 
   /**
@@ -3194,7 +3423,7 @@ class KimiBridge {
         await this.setMode(userId, options.mode, resolvedProvider);
       }
 
-      const actualMode = await this._detectActualMode(page) || session?.mode || 'instant';
+      const actualMode = await this._detectActualMode(page, resolvedProvider) || session?.mode || 'instant';
       log.info(`User ${hashUserId(userId)} sending image (text=${text ? 'yes' : 'no'}, mode=${actualMode})`);
 
       await page.bringToFront();
@@ -3251,7 +3480,7 @@ class KimiBridge {
       log.info(`Image (+text) sent for user ${hashUserId(userId)}`);
 
       // Step 6: Wait for response
-      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null);
+      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null, '', -1, resolvedProvider);
       let response = await this._extractResponse(page, { userId });
 
       // CRITICAL: _extractResponse can return incomplete text. If it's much shorter
@@ -3364,7 +3593,7 @@ class KimiBridge {
         await this.setMode(userId, options.mode, resolvedProvider);
       }
 
-      const actualMode = await this._detectActualMode(page) || session?.mode || 'instant';
+      const actualMode = await this._detectActualMode(page, resolvedProvider) || session?.mode || 'instant';
       log.info(`User ${hashUserId(userId)} sending file ${fileName} (text=${text ? 'yes' : 'no'}, mode=${actualMode})`);
 
       await page.bringToFront();
@@ -3519,7 +3748,7 @@ class KimiBridge {
       }
 
       // Step 6: Wait for response
-      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null);
+      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null, '', -1, resolvedProvider);
       let response = await this._extractResponse(page, { userId });
 
       if (lastText && lastText.length > 0) {
@@ -4149,7 +4378,7 @@ class KimiBridge {
       }
 
       // Detect actual mode from UI for correct timeout
-      const actualMode = await this._detectActualMode(page) || session.mode || 'instant';
+      const actualMode = await this._detectActualMode(page, resolvedProvider) || session.mode || 'instant';
       log.info(`User ${hashUserId(userId)} sending message (len=${text.length}, mode=${actualMode}, url=${page.url()})`);
 
       // Provider-configured input chain (PDS Fase 0). The hardcoded
@@ -4170,14 +4399,35 @@ class KimiBridge {
       // If captured after Enter, fast responses will be mistaken for old text.
       // v10.18-fix: Use a finite timeout. On Kimi's landing page there is no
       // .markdown-container yet; timeout: 0 hangs forever waiting for one.
-      const initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+      // v10.8-fix: use provider selector chains for the new Kimi DOM.
+      let initialText = '';
+      if (resolvedProvider === 'kimi') {
+        const chains = this._resolveDomSelectorChains(resolvedProvider);
+        initialText = await page.evaluate((selectors) => {
+          function allMatches(root, sels) {
+            const seen = new Set();
+            const out = [];
+            for (const sel of sels) {
+              for (const el of root.querySelectorAll(sel)) {
+                if (!seen.has(el)) { seen.add(el); out.push(el); }
+              }
+            }
+            return out;
+          }
+          const mds = allMatches(document, selectors.markdown);
+          const last = mds[mds.length - 1];
+          return last ? (last.innerText || '').trim() : '';
+        }, chains).catch(() => '');
+      } else {
+        initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+      }
 
       // v10.35-fix: Use Lexical-safe fill helper for Kimi contenteditable editor.
       await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(500 + Math.floor(Math.random() * 1000));
 
       // v7.7-INFALÍVEL: Capture full snapshot before sending
-      const preSendSnapshot = await this._capturePreSendSnapshot(page);
+      const preSendSnapshot = await this._capturePreSendSnapshot(page, resolvedProvider);
       const preSendAssistantCount = preSendSnapshot.length;
 
       // W7-T4: Press Enter to send with verify-and-retry (typed text must
@@ -4192,15 +4442,33 @@ class KimiBridge {
         let newAssistantWaitCount = 0;
         // Poll at 2Hz instead of 10Hz to stop hammering Chrome with
         // page.evaluate during the assistant-detection window (~10s max).
+        const assistChains = this._resolveDomSelectorChains(resolvedProvider);
         while (targetAssistantIndex < 0 && newAssistantWaitCount < 20) { // 20 * 500ms = 10s
-          const assistants = await page.evaluate(() => {
-            const nodes = document.querySelectorAll('.segment-assistant');
-            return Array.from(nodes).map((el, i) => ({
+          const assistants = await page.evaluate((selectors) => {
+            function allMatches(root, sels) {
+              const seen = new Set();
+              const out = [];
+              for (const sel of sels) {
+                for (const el of root.querySelectorAll(sel)) {
+                  if (!seen.has(el)) { seen.add(el); out.push(el); }
+                }
+              }
+              return out;
+            }
+            function firstMatch(root, sels) {
+              for (const sel of sels) {
+                const el = root.querySelector(sel);
+                if (el) return el;
+              }
+              return null;
+            }
+            const nodes = allMatches(document, selectors.assistant);
+            return nodes.map((el, i) => ({
               index: i,
               textLength: el.innerText?.length || 0,
-              hasMarkdown: !!el.querySelector('.markdown-container, .markdown'),
+              hasMarkdown: !!firstMatch(el, selectors.markdown),
             }));
-          });
+          }, assistChains);
           const currentCount = assistants.length;
           if (currentCount > preSendAssistantCount) {
             const newAssistant = assistants[preSendAssistantCount];
@@ -4217,12 +4485,12 @@ class KimiBridge {
       }
 
       // Wait for response with combined signal + streaming
-      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null, initialText, targetAssistantIndex);
+      const lastText = await this._waitForResponse(page, actualMode, options.onPartialResponse || null, initialText, targetAssistantIndex, resolvedProvider);
 
       // v7.7-INFALÍVEL: Extract using snapshot diff (PRIMARY)
       let response = '';
       try {
-        const extracted = await this._extractResponseDiff(page, preSendSnapshot);
+        const extracted = await this._extractResponseDiff(page, preSendSnapshot, resolvedProvider);
         if (extracted && extracted.trim().length > 0) {
           response = extracted.trim();
           log.info(`[sendMessage] _extractResponseDiff success: ${response.length} chars`);
@@ -4339,7 +4607,20 @@ class KimiBridge {
       // W7-T4: verify-and-retry submit (Enter → trusted Enter → send-button
       // click). The 30s delivery poll below is belt-and-suspenders and
       // confirms immediately once the submit transition is visible.
-      const preSubmitAssistants = await page.evaluate(() => document.querySelectorAll('.segment-assistant').length).catch(() => 0);
+      const noWaitChains = this._resolveDomSelectorChains(resolvedProvider);
+      const preSubmitAssistants = await page.evaluate((selectors) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        return allMatches(document, selectors.assistant).length;
+      }, noWaitChains).catch(() => 0);
       await this._submitWithVerification(page, inputLocator, text);
       log.info(`[sendMessageNoWait] Submitted message for user ${hashUserId(userId)}`);
 
@@ -4359,10 +4640,29 @@ class KimiBridge {
         } catch (e) {
           // ignore transient read errors
         }
-        const state = await page.evaluate((base) => ({
-          assistantsGrew: document.querySelectorAll('.segment-assistant').length > base,
-          generating: !!document.querySelector('.stop-button-container'),
-        }), preSubmitAssistants).catch(() => null);
+        const state = await page.evaluate(({ selectors, base }) => {
+          function allMatches(root, sels) {
+            const seen = new Set();
+            const out = [];
+            for (const sel of sels) {
+              for (const el of root.querySelectorAll(sel)) {
+                if (!seen.has(el)) { seen.add(el); out.push(el); }
+              }
+            }
+            return out;
+          }
+          function firstMatch(root, sels) {
+            for (const sel of sels) {
+              const el = root.querySelector(sel);
+              if (el) return el;
+            }
+            return null;
+          }
+          return {
+            assistantsGrew: allMatches(document, selectors.assistant).length > base,
+            generating: !!firstMatch(document, selectors.stopButton),
+          };
+        }, { selectors: noWaitChains, base: preSubmitAssistants }).catch(() => null);
         if (inputCleared || (state && (state.assistantsGrew || state.generating))) {
           confirmed = true;
           log.info(`[sendMessageNoWait] Delivery confirmed for user ${hashUserId(userId)}`);
@@ -4702,29 +5002,49 @@ class KimiBridge {
 
     // Phase 3: Start visible Chrome/Chromium with the Luna profile (synced from user)
     const chromeCmds = [
-      '/opt/google/chrome/google-chrome',
-      '/opt/google/chrome/chrome',
-      '/usr/local/bin/google-chrome-stable',
-      '/usr/local/bin/google-chrome',
-      '/usr/local/bin/chromium',
-      '/usr/local/bin/chromium-browser',
-      path.join(os.homedir(), '.local', 'bin', 'google-chrome'),
-      'google-chrome-stable',
-      'google-chrome',
-      '/usr/bin/google-chrome-stable',
-      '/usr/bin/google-chrome',
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-      'chromium',
-      'chromium-browser',
-    ];
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      process.env.CHROME_EXECUTABLE_PATH,
+      process.env.LUNA_CHROME_PATH,
+    ].filter(Boolean);
+    if (process.platform === 'win32') {
+      chromeCmds.push(
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+      );
+    } else {
+      chromeCmds.push(
+        '/opt/google/chrome/google-chrome',
+        '/opt/google/chrome/chrome',
+        '/usr/local/bin/google-chrome-stable',
+        '/usr/local/bin/google-chrome',
+        '/usr/local/bin/chromium',
+        '/usr/local/bin/chromium-browser',
+        path.join(os.homedir(), '.local', 'bin', 'google-chrome'),
+        'google-chrome-stable',
+        'google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        'chromium',
+        'chromium-browser'
+      );
+    }
     let chromePath = null;
     for (const cmd of chromeCmds) {
-      if (cmd.startsWith('/')) {
-        if (fs.existsSync(cmd)) { chromePath = cmd; break; }
-      } else {
-        try { chromePath = execSync(`which ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim(); break; } catch {}
-      }
+      try {
+        if (path.isAbsolute(cmd)) {
+          if (fs.existsSync(cmd) && !fs.statSync(cmd).isDirectory()) { chromePath = cmd; break; }
+        } else if (process.platform === 'win32') {
+          chromePath = execSync(`where ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim().split(/\r?\n/)[0];
+          if (chromePath) break;
+        } else {
+          chromePath = execSync(`which ${cmd}`, { stdio: 'ignore', encoding: 'utf8' }).trim();
+          if (chromePath) break;
+        }
+      } catch {}
     }
     if (!chromePath) {
       return { running: false, started: false, error: 'Chrome/Chromium não encontrado. Instale google-chrome-stable ou chromium.' };
@@ -4740,6 +5060,7 @@ class KimiBridge {
       }
 
       const isRoot = process.getuid && process.getuid() === 0;
+      const spawnEnv = process.platform === 'win32' ? process.env : { ...process.env, DISPLAY: process.env.DISPLAY || ':0' };
       const proc = spawn(chromePath, [
         `--remote-debugging-port=${startPort}`,
         '--no-first-run',
@@ -4751,7 +5072,7 @@ class KimiBridge {
         ...(isRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
         ...extensionArgs,
         this._modeUrl(this.defaultProvider || 'kimi', 'instant'),
-      ], { detached: true, stdio: 'ignore', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
+      ], { detached: true, stdio: 'ignore', env: spawnEnv });
       proc.unref();
 
       proc.on('error', (err) => log.warn(`[checkChrome] Chrome process error: ${err.message}`));
@@ -5383,12 +5704,25 @@ class KimiBridge {
    */
   async _injectEventQueueObserver(page) {
     try {
-      // v7.0-ext: Check if Chrome extension already injected the observer
+      // v11.6-fix: Detect the Luna Chrome extension by its MAIN-world observer.
+      // The extension uses window.__lunaDomObserver + window.__lunaObserverVersion;
+      // __lunaEventQueue is the legacy Playwright fallback and must NOT be required.
       const hasExtension = await page.evaluate(() => {
-        return typeof window.__lunaEventQueue !== 'undefined' && window.__lunaObserverVersion;
+        return !!(window.__lunaDomObserver && window.__lunaObserverVersion);
       });
       if (hasExtension) {
-        log.info(`[v7.0] Chrome extension observer active (v${await page.evaluate(() => window.__lunaObserverVersion)})`);
+        const extVersion = await page.evaluate(() => window.__lunaObserverVersion);
+        log.info(`[v7.0] Chrome extension observer active (v${extVersion})`);
+        // Make sure no legacy fallback observer is competing with the extension.
+        await page.evaluate(() => {
+          try {
+            if (window.__lunaUltraLightObserver && window.__lunaUltraLightObserver.docObserver) {
+              window.__lunaUltraLightObserver.docObserver.disconnect();
+              window.__lunaUltraLightObserver = undefined;
+            }
+            if (window.__lunaEventQueue) window.__lunaEventQueue = undefined;
+          } catch (e) {}
+        }).catch(() => {});
         return true;
       }
 
@@ -5494,6 +5828,14 @@ class KimiBridge {
           }
           // Translate extension event format to bridge internal format
           switch (raw.eventType) {
+            case 'thinking_start': {
+              allEvents.push({
+                type: 'thinking_start',
+                source: 'chrome_extension',
+                timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
+              });
+              break;
+            }
             case 'stream_state': {
               if (raw.data) {
                 allEvents.push({
@@ -5502,6 +5844,17 @@ class KimiBridge {
                   response: raw.data.response || '',
                   isStreaming: raw.data.isStreaming ?? true,
                   isComplete: raw.data.isComplete ?? false,
+                  timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
+                });
+              }
+              break;
+            }
+            case 'thinking_update': {
+              if (raw.data && raw.data.fullThinking) {
+                allEvents.push({
+                  type: 'thinking_update',
+                  fullText: raw.data.fullThinking,
+                  source: 'chrome_extension',
                   timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
                 });
               }
@@ -5629,6 +5982,14 @@ class KimiBridge {
                 continue;
               }
               switch (ev.type) {
+                case 'thinking_start': {
+                  this._enqueueDomEvent(userId, {
+                    type: 'thinking_start',
+                    source: 'chrome_extension',
+                    timestamp: ev.timestamp || Date.now(),
+                  });
+                  break;
+                }
                 case 'state_change': {
                   this._enqueueDomEvent(userId, {
                     type: 'state_change',
@@ -5639,6 +6000,18 @@ class KimiBridge {
                     source: 'chrome_extension',
                     timestamp: ev.timestamp || Date.now(),
                   });
+                  break;
+                }
+                case 'thinking_update': {
+                  // v11.8-fix: source-of-truth full thinking replacement from extension.
+                  if (ev.fullText) {
+                    this._enqueueDomEvent(userId, {
+                      type: 'thinking_update',
+                      fullText: ev.fullText,
+                      source: 'chrome_extension',
+                      timestamp: ev.timestamp || Date.now(),
+                    });
+                  }
                   break;
                 }
                 case 'thinking_delta': {
@@ -5860,13 +6233,19 @@ class KimiBridge {
                 }
                 case 'tool_container': {
                   if (ev.data && ev.data.preview) {
-                    this._enqueueDomEvent(userId, {
-                      type: 'action_detected',
-                      action: { tool: 'executeShell', params: { command: ev.data.preview } },
-                      code: ev.data.preview,
-                      source: 'dom_mirror',
-                      timestamp: ev.ts || Date.now(),
-                    });
+                    const preview = ev.data.preview;
+                    // v10.42-fix: ignore tool_container previews that are actually the
+                    // Kimi thinking block rendered inside a .toolcall-container.
+                    const looksLikeThinking = /^(Think|Thinking|Pensando|Analisando|Analisar|Reasoning|Processando|Searching|Buscando)\b/i.test(preview.trim());
+                    if (!looksLikeThinking) {
+                      this._enqueueDomEvent(userId, {
+                        type: 'action_detected',
+                        action: { tool: 'executeShell', params: { command: preview } },
+                        code: preview,
+                        source: 'dom_mirror',
+                        timestamp: ev.ts || Date.now(),
+                      });
+                    }
                   }
                   break;
                 }
@@ -5878,7 +6257,7 @@ class KimiBridge {
             // code blocks are still mutating while streaming and produce partial tools.
             if (provider !== 'deepseek') {
               try {
-                const jsonBlocks = await this._extractJsonBlocksFromDOM(session.page, session?._turnAssistantMarker);
+                const jsonBlocks = await this._extractJsonBlocksFromDOM(session.page, session?._turnAssistantMarker, provider);
                 for (const action of jsonBlocks.actions) {
                   this._enqueueDomEvent(userId, { type: 'action_detected', action, source: 'json_block', timestamp: Date.now() });
                 }
@@ -5898,9 +6277,11 @@ class KimiBridge {
           log.warn(`[DomPoller] Error for user ${hashUserId(userId)}: ${e.message}`);
         }
 
-        // Poll interval: relaxed when processing to avoid freezing Kimi page
-        // v8.5-fix: 400ms → 1500ms during processing — DOM evaluate was competing with React main thread
-        const interval = session.processing ? 1500 : 3000;
+        // Poll interval: balance responsiveness vs Kimi page load.
+        // v11.2-fix: 1500ms was too slow for the user — thinking/tools felt delayed.
+        // Chrome Extension (Layer 0) is the fast path; DOM poll is the fallback.
+        // 400ms keeps the fallback responsive without hammering the renderer.
+        const interval = session.processing ? 400 : 3000;
         await new Promise(r => setTimeout(r, interval));
       }
 
@@ -6117,6 +6498,7 @@ class KimiBridge {
    * Returns { thinking, response, canSteer, isGenerating, source }
    */
   async _pollThinkingAndResponse(page, userId = null) {
+    log.info('[TESTE_DEBUG_MARCADOR] _pollThinkingAndResponse called');
     // v3.6-fix: NO TIMEOUT — if page.evaluate() hangs, we wait. The user explicitly
     // requested no timeouts anywhere in the agent. Kimi may take 10+ minutes for
     // sandbox tools (python, web_search, browser). We wait patiently.
@@ -6215,9 +6597,28 @@ class KimiBridge {
       // is still in the DOM and must not be re-detected. null marker => scan
       // everything, exactly as before (non-Kimi providers, no active send).
       const turnAssistantMarker = (session && typeof session._turnAssistantMarker === 'number') ? session._turnAssistantMarker : null;
-      const structureBased = await page.evaluate((assistantMarker) => {
-        const assistants = document.querySelectorAll('.segment-assistant');
-        const scoped = typeof assistantMarker === 'number' ? Array.from(assistants).slice(assistantMarker) : Array.from(assistants);
+      const chains = provider === 'kimi' ? this._resolveDomSelectorChains(provider) : null;
+      const structureBased = await page.evaluate(({ selectors, assistantMarker }) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+
+        const assistants = allMatches(document, selectors.assistant);
+        const scoped = typeof assistantMarker === 'number' ? assistants.slice(assistantMarker) : assistants;
         const lastAssistant = scoped[scoped.length - 1];
         if (!lastAssistant) return null;
 
@@ -6225,87 +6626,131 @@ class KimiBridge {
         let response = '';
         const detectedTools = [];
 
-        // Helper: try to parse a code block as a tool JSON
         function tryParseToolJson(text) {
           if (!text || text.length < 10) return null;
-          // Quick reject: must contain "tool" key
           if (!text.includes('"tool"')) return null;
           try {
             const parsed = JSON.parse(text);
             if (parsed && typeof parsed.tool === 'string' && parsed.params && typeof parsed.params === 'object') {
               return { tool: parsed.tool, params: parsed.params };
             }
-            // Also accept flat structure {tool, path, content}
             if (parsed && typeof parsed.tool === 'string' && (parsed.path || parsed.command || parsed.script || parsed.query)) {
               return { tool: parsed.tool, params: parsed };
             }
-          } catch (e) {
-            // Not valid JSON — not a tool
-          }
+          } catch (e) {}
           return null;
         }
 
-        // ── Extract thinking (anywhere inside assistant) ──
-        const thinkContainer = lastAssistant.querySelector('.toolcall-container.thinking-container');
-        if (thinkContainer) {
-          const thinkMd = thinkContainer.querySelector('.markdown-container.toolcall-content-text');
-          if (thinkMd) {
-            thinking = (thinkMd.innerText || '').trim();
-          }
+        // v10.8-fix: Extract {"response":"..."} wrappers rendered by Kimi inside
+        // .segment-code blocks so the stream consumer gets clean text immediately.
+        function tryParseResponseJson(text) {
+          if (!text || text.length < 10) return null;
+          const cleaned = text
+            .replace(/^\s*```(?:json)?\s*/i, '')
+            .replace(/\s*```\s*$/i, '')
+            .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+            .trim();
+          if (!cleaned.startsWith('{')) return null;
+          try {
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed.response === 'string') return parsed.response;
+          } catch {}
+          return null;
         }
 
-        // v7.4-fix: Thinking starters heuristic — used to detect leaked thinking text
+        // v10.8-fix: robust thinking extraction via selector chain
+        const thinkContainer = firstMatch(lastAssistant, selectors.thinking);
+        if (thinkContainer) {
+          const thinkMd = firstMatch(thinkContainer, selectors.thinkingText);
+          if (thinkMd) thinking = (thinkMd.innerText || '').trim();
+        }
+
         const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
 
-        // ── Extract response from content box ──
-        const contentBox = lastAssistant.querySelector('.segment-content-box');
-        if (!contentBox) return null;
+        const contentBox = firstMatch(lastAssistant, selectors.contentBox);
+        // v10.8-fix: Collect detailed diagnostics when extraction returns empty
+        // so we can see exactly what the DOM looks like at that moment.
+        const debugInfo = {
+          assistantCount: assistants.length,
+          scopedCount: scoped.length,
+          hasContentBox: !!contentBox,
+          lastAssistantClass: lastAssistant.className,
+          lastAssistantTag: lastAssistant.tagName,
+          lastAssistantTextLength: (lastAssistant.innerText || '').length,
+          thinkingFound: !!thinkContainer,
+        };
 
-        // Strategy A: NEW structure — .markdown-container > .markdown > .segment-code
-        const markdownContainers = contentBox.querySelectorAll('.markdown-container');
+        // v10.8-fix: If contentBox is missing, scan the whole lastAssistant for
+        // markdown/code blocks. The new Kimi frontend sometimes re-renders the
+        // assistant segment without a distinct .segment-content-box wrapper.
+        const scanRoot = contentBox || lastAssistant;
+
+        // Strategy A: NEW structure — markdown containers
+        const markdownContainers = allMatches(scanRoot, selectors.markdown);
+        debugInfo.markdownCount = markdownContainers.length;
+        debugInfo.codeBlocks = [];
         let rawResponse = '';
+        const seenMarkdownTexts = new Set();
+        const seenResponseTexts = new Set();
         for (const md of markdownContainers) {
-          // Skip if this markdown is inside the thinking container
-          if (thinkContainer && md.closest('.toolcall-container.thinking-container')) continue;
+          // v10.8-fix: skip markdowns that live inside the thinking container
+          if (thinkContainer && md.closest && md.closest(selectors.thinking[0])) continue;
 
-          const codeBlocks = md.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
-          for (const cb of codeBlocks) {
-            // v9.5-fix: Use textContent FIRST for code blocks — innerText can be truncated
-            // when the code block has scroll or lazy rendering. textContent returns all DOM text.
+          // v10.42-fix: avoid duplicate text when .markdown-container and .markdown
+          // are nested and both selected.
+          const mdText = (md.innerText || md.textContent || '').trim();
+          if (mdText && seenMarkdownTexts.has(mdText)) continue;
+          if (mdText) seenMarkdownTexts.add(mdText);
+
+          // v10.43-fix: if a markdown container contains a JSON response wrapper,
+          // ignore sibling paragraphs to avoid duplicating the same text twice
+          // (Kimi renders the JSON code block and also mirrors its content as prose).
+          let mdHasResponseJson = false;
+          for (const cb of allMatches(md, selectors.codeBlock)) {
             const text = (cb.textContent || cb.innerText || '').trim();
+            debugInfo.codeBlocks.push({ tag: cb.tagName, class: cb.className, textLen: text.length, textStart: text.slice(0, 80) });
             if (!text) continue;
-            // v10.0-fix: Check if this code block is a tool JSON. If so, extract it
-            // separately and do NOT include it in the response text.
             const toolAction = tryParseToolJson(text);
             if (toolAction) {
               detectedTools.push(toolAction);
-              continue; // skip adding to rawResponse
+              continue;
             }
-            rawResponse += text + '\n\n';
+            const responseText = tryParseResponseJson(text);
+            if (responseText !== null) {
+              if (!seenResponseTexts.has(responseText)) {
+                seenResponseTexts.add(responseText);
+                rawResponse += responseText + '\n\n';
+              }
+              mdHasResponseJson = true;
+              continue;
+            }
+            if (!seenResponseTexts.has(text)) {
+              seenResponseTexts.add(text);
+              rawResponse += text + '\n\n';
+            }
           }
-          const paragraphs = md.querySelectorAll('.paragraph, p, [class*="text"]');
-          for (const p of paragraphs) {
+          if (mdHasResponseJson) continue;
+          for (const p of allMatches(md, selectors.paragraph)) {
             const text = (p.innerText || p.textContent || '').trim();
-            if (text) rawResponse += text + '\n\n';
+            if (text && !seenResponseTexts.has(text)) {
+              seenResponseTexts.add(text);
+              rawResponse += text + '\n\n';
+            }
           }
         }
+        debugInfo.rawResponsePreview = rawResponse.slice(0, 200);
 
-        // Strategy B: OLD structure — .container-block > .block-item
+        // Strategy B: OLD structure — container-block > block-item
         if (!rawResponse) {
-          const containerBlock = contentBox.querySelector('.container-block');
+          const containerBlock = scanRoot.querySelector('.container-block');
           const blockItems = containerBlock
             ? containerBlock.querySelectorAll('.block-item')
-            : contentBox.querySelectorAll('.block-item');
+            : scanRoot.querySelectorAll('.block-item');
           for (const item of blockItems) {
-            const itemThink = item.querySelector('.toolcall-container.thinking-container');
-            if (itemThink) continue; // skip thinking block
-
-            const codeBlocks = item.querySelectorAll('.segment-code, pre code, [class*="code-block"]');
-            for (const cb of codeBlocks) {
-              // v9.5-fix: Use textContent FIRST for code blocks — innerText can be truncated
+            if (firstMatch(item, selectors.thinking)) continue;
+            for (const cb of item.querySelectorAll('.segment-code, pre code, [class*="code-block"]')) {
               const text = (cb.textContent || cb.innerText || '').trim();
               if (!text) continue;
-              // v10.0-fix: Check if this code block is a tool JSON
               const toolAction = tryParseToolJson(text);
               if (toolAction) {
                 detectedTools.push(toolAction);
@@ -6313,8 +6758,7 @@ class KimiBridge {
               }
               rawResponse += text + '\n\n';
             }
-            const paragraphs = item.querySelectorAll('.paragraph, p, [class*="text"]');
-            for (const p of paragraphs) {
+            for (const p of item.querySelectorAll('.paragraph, p, [class*="text"]')) {
               const text = (p.innerText || p.textContent || '').trim();
               if (text) rawResponse += text + '\n\n';
             }
@@ -6323,11 +6767,10 @@ class KimiBridge {
 
         rawResponse = rawResponse.trim();
 
-        // v7.4-fix: If we detected thinking (thinkContainer exists), any free-text
-        // at the START of rawResponse that looks like thinking should be MOVED to thinking.
-        // In thinking mode, the assistant ALWAYS thinks first, then responds with code/JSON.
+        // v10.8-fix: thinking container lasts only while no real response is written
+        // outside it. Once we have response text in a sibling markdown, we drop
+        // any leaked thinking prefix from rawResponse.
         if (thinkContainer && rawResponse) {
-          // Find first code block or JSON block — everything before is thinking
           const codeBlockIdx = rawResponse.indexOf('```');
           const jsonStartIdx = rawResponse.search(/\{\s*"/);
           const firstRealIdx = codeBlockIdx >= 0 && jsonStartIdx >= 0
@@ -6337,7 +6780,6 @@ class KimiBridge {
           if (firstRealIdx > 10) {
             const beforeReal = rawResponse.slice(0, firstRealIdx).trim();
             const afterReal = rawResponse.slice(firstRealIdx).trim();
-            // If the text before the real response looks like thinking, move it
             if (thinkStarters.test(beforeReal) || beforeReal.length < 400) {
               thinking = thinking ? thinking + '\n\n' + beforeReal : beforeReal;
               response = afterReal;
@@ -6345,12 +6787,21 @@ class KimiBridge {
               response = rawResponse;
             }
           } else if (firstRealIdx === 0) {
-            // Response starts directly with code/JSON — no leaked thinking
             response = rawResponse;
           } else if (!rawResponse.includes('```') && !rawResponse.includes('{')) {
-            // No code/JSON at all — entire rawResponse is likely thinking
-            thinking = thinking ? thinking + '\n\n' + rawResponse : rawResponse;
-            response = '';
+            // v10.42-fix: rawResponse already excludes the dedicated thinking
+            // container. If the remaining text does not read like a thinking
+            // monologue, it IS the real response.
+            const looksLikeThinking = thinkStarters.test(rawResponse) ||
+              /^Think\b/i.test(rawResponse) ||
+              /^Pensando\b/i.test(rawResponse) ||
+              /^Analisando\b/i.test(rawResponse);
+            if (looksLikeThinking) {
+              thinking = thinking ? thinking + '\n\n' + rawResponse : rawResponse;
+              response = '';
+            } else {
+              response = rawResponse;
+            }
           } else {
             response = rawResponse;
           }
@@ -6358,7 +6809,6 @@ class KimiBridge {
           response = rawResponse;
         }
 
-        // v7.4-fix: Final safety net — if response is still thinking-like and short, swap
         if (!thinkContainer && response && !thinking) {
           const isThink = thinkStarters.test(response) && response.length < 500 &&
                           !response.includes('"response"') && !response.includes('"tool"');
@@ -6369,12 +6819,13 @@ class KimiBridge {
         }
 
         if (thinking || response || detectedTools.length > 0) {
-          return { thinking, response: response.trim(), detectedTools, source: 'dom-structure' };
+          return { thinking, response: response.trim(), detectedTools, source: 'dom-structure', _debug: debugInfo };
         }
-        return null;
-      }, turnAssistantMarker);
+        debugInfo.lastAssistantHtml = lastAssistant.outerHTML.slice(0, 4000);
+        return { _empty: true, _debug: debugInfo };
+      }, { selectors: chains, assistantMarker: turnAssistantMarker });
 
-      if (structureBased) {
+      if (structureBased && !structureBased._empty) {
         const { canSteer, isGenerating } = await this._detectUiState(page, provider);
         // v10.0-fix: Enqueue detected tools as action_detected events so they are
         // processed separately from the response text.
@@ -6390,10 +6841,12 @@ class KimiBridge {
             });
           }
         }
-        log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}, tools=${(structureBased.detectedTools || []).length}`);
-        return { ...structureBased, canSteer, isGenerating };
+        log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}, tools=${(structureBased.detectedTools || []).length}, debug=${JSON.stringify(structureBased._debug || {})}`);
+        const { _debug, ...rest } = structureBased;
+        return { ...rest, canSteer, isGenerating };
       }
-      log.info(`[_poll] dom-structure: NOT FOUND`);
+      const debugStr = structureBased?._debug ? JSON.stringify(structureBased._debug) : 'no-debug';
+      log.info(`[_poll] dom-structure: NOT FOUND debug=` + debugStr);
 
       // v8.5-fix: REMOVED Layer 2-4 (React fiber + TreeWalker + getComputedStyle)
       // The heavy DOM traversal every 400ms was freezing the Kimi page by competing
@@ -6492,6 +6945,7 @@ class KimiBridge {
       const uiState = await this._detectUiState(page, provider);
       return { thinking: '', response: '', canSteer: uiState.canSteer, isGenerating: uiState.isGenerating, source: 'empty-wait' };
     } catch (e) {
+      log.warn(`[_pollThinkingAndResponse] evaluate error: ${e.message}`);
       return { thinking: '', response: '', canSteer: false, isGenerating: false, source: 'error' };
     }
     }; // end pollWithTimeout
@@ -6513,37 +6967,42 @@ class KimiBridge {
     try {
       const providerCfg = provider ? this._loadProviderConfig(provider) : null;
       const uiSelectors = providerCfg ? getProviderUiSelectors(providerCfg) : {};
+      const normalize = (v) => {
+        if (!v) return [];
+        if (Array.isArray(v)) return v.map(s => s.trim()).filter(Boolean);
+        return String(v).split(',').map(s => s.trim()).filter(Boolean);
+      };
       const result = await page.evaluate(({ sendBtnSel, stopBtnSel, generatingSel }) => {
+        function isVisible(el) { return el && el.offsetParent !== null; }
         // Can we steer? Prefer provider-specific send button, fall back to generics.
-        const sendBtnSelectors = sendBtnSel
-          ? sendBtnSel.split(',').map(s => s.trim())
+        const sendBtnSelectors = sendBtnSel.length
+          ? sendBtnSel
           : ['.send-button-container', '[class*="send"]', 'button[type="submit"]', '[aria-label*="send" i]'];
         let canSteer = false;
         for (const sel of sendBtnSelectors) {
           const btn = document.querySelector(sel);
-          if (btn) {
-            canSteer = !btn.disabled && !btn.className.includes('disabled') && btn.offsetParent !== null;
+          if (btn && isVisible(btn)) {
+            canSteer = !btn.disabled && !(typeof btn.className === 'string' && btn.className.includes('disabled'));
             if (canSteer) break;
           }
         }
 
         // Is still generating? Prefer provider-specific stop/generating selectors.
-        const stopBtnSelectors = stopBtnSel
-          ? stopBtnSel.split(',').map(s => s.trim())
+        const stopBtnSelectors = stopBtnSel.length
+          ? stopBtnSel
           : ['.stop-button-container', '[class*="stop"]', '[class*="cancel"]', '[aria-label*="stop" i]'];
         let isGenerating = false;
         for (const sel of stopBtnSelectors) {
           const btn = document.querySelector(sel);
-          if (btn && btn.offsetParent !== null) {
+          if (btn && isVisible(btn)) {
             isGenerating = true;
             break;
           }
         }
-        if (!isGenerating && generatingSel) {
-          const indicators = generatingSel.split(',').map(s => s.trim());
-          for (const sel of indicators) {
+        if (!isGenerating && generatingSel.length) {
+          for (const sel of generatingSel) {
             const el = document.querySelector(sel);
-            if (el && el.offsetParent !== null) {
+            if (el && isVisible(el)) {
               isGenerating = true;
               break;
             }
@@ -6551,10 +7010,14 @@ class KimiBridge {
         }
         if (!isGenerating && !canSteer) {
           const anySend = document.querySelector('.send-button-container, [class*="send"]');
-          if (!anySend || anySend.offsetParent === null) isGenerating = true;
+          if (!anySend || !isVisible(anySend)) isGenerating = true;
         }
         return { canSteer, isGenerating };
-      }, { sendBtnSel: uiSelectors.sendButton || '', stopBtnSel: uiSelectors.stopButton || '', generatingSel: uiSelectors.generatingIndicator || '' });
+      }, {
+        sendBtnSel: normalize(uiSelectors.sendButton),
+        stopBtnSel: normalize(uiSelectors.stopButton),
+        generatingSel: normalize(uiSelectors.generatingIndicator)
+      });
       return result;
     } catch (e) {
       return { canSteer: false, isGenerating: false };
@@ -6666,9 +7129,28 @@ class KimiBridge {
    *   result → stdout text from Kimi's sandbox execution
    *   images → array of { src, alt } for generated plots/diagrams
    */
-  async _extractToolMirrorFromDOM(page) {
+  async _extractToolMirrorFromDOM(page, provider = 'kimi') {
     try {
-      return await page.evaluate(() => {
+      const chains = provider === 'kimi' ? this._resolveDomSelectorChains(provider) : null;
+      return await page.evaluate((selectors) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+
         // v3.3-fix: ensure seq counter exists for fallback assignment
         if (typeof window.__lunaToolCallSeq === 'undefined') window.__lunaToolCallSeq = 0;
 
@@ -6676,20 +7158,20 @@ class KimiBridge {
         const seen = new Set();
         let extractionSeq = 0;
 
-        // Find the LAST assistant segment (most recent response)
-        const assistantSelectors = [
-          '.segment-assistant',
-          '.message-assistant',
-          '[data-testid="assistant-message"]',
-          '[data-testid="message-assistant"]',
-          '.chat-message--assistant',
-          '[class*="assistant"][class*="segment"]',
-          '[class*="assistant"][class*="message"]',
-        ];
-        let lastAssistant = null;
-        for (const sel of assistantSelectors) {
-          const els = document.querySelectorAll(sel);
-          if (els.length) { lastAssistant = els[els.length - 1]; break; }
+        // v10.8-fix: Find the LAST assistant segment via provider selector chain.
+        let assistants = selectors ? allMatches(document, selectors.assistant) : [];
+        let lastAssistant = assistants.length ? assistants[assistants.length - 1] : null;
+        if (!lastAssistant) {
+          const fallbackSelectors = [
+            '.segment-assistant', '.message-assistant',
+            '[data-testid="assistant-message"]', '[data-testid="message-assistant"]',
+            '.chat-message--assistant', '[class*="assistant"][class*="segment"]',
+            '[class*="assistant"][class*="message"]',
+          ];
+          for (const sel of fallbackSelectors) {
+            const els = document.querySelectorAll(sel);
+            if (els.length) { lastAssistant = els[els.length - 1]; break; }
+          }
         }
         if (!lastAssistant) return results;
 
@@ -6747,6 +7229,9 @@ class KimiBridge {
 
             // Detect tool type from className
             const className = (container.className || '').toLowerCase();
+            // v10.42-fix: the new Kimi frontend renders the thinking block as a
+            // .toolcall-container.thinking-container; it is NOT a real tool call.
+            if (className.includes('thinking') || className.includes('reasoning')) continue;
             let toolName = 'ipython';
             if (className.includes('web_search')) toolName = 'web_search';
             else if (className.includes('browser')) toolName = 'browser';
@@ -6817,6 +7302,10 @@ class KimiBridge {
           // Security: verify node is inside assistant container
           if (!isInsideAssistant(block)) return;
 
+          // v10.42-fix: the new Kimi frontend sometimes renders the thinking step as a
+          // plain code block while streaming. It is NOT a tool call.
+          if (block.closest && block.closest('.toolcall-container.thinking-container, .thinking-container, [class*="thinking"]')) return;
+
           const langEl = block.querySelector('.segment-code-lang');
           const lang = langEl ? langEl.innerText.toLowerCase() : '';
 
@@ -6847,6 +7336,9 @@ class KimiBridge {
           }
           if (!text || text.length < 5 || seen.has(text)) return;
           seen.add(text);
+
+          // v10.42-fix: ignore thinking content that leaked into a code block
+          if (/^(Think|Thinking|Pensando|Analisando|Analisar|Reasoning|Processando|Searching|Buscando)\b/i.test(text)) return;
 
           // Skip plain-text results — they're outputs, not code
           if (lang.includes('plain')) return;
@@ -6887,7 +7379,7 @@ class KimiBridge {
         results.sort((a, b) => a.seq - b.seq || a.detectedAt - b.detectedAt);
 
         return results;
-      });
+      }, chains);
     } catch (e) {
       log.warn(`_extractToolMirrorFromDOM failed: ${e.message}`);
       return [];
@@ -6902,9 +7394,28 @@ class KimiBridge {
    * scopes the scan to segments created by the current turn; when null/undefined
    * the behavior is exactly as before (scan the last assistant match).
    */
-  async _extractJsonBlocksFromDOM(page, assistantMarker = null) {
+  async _extractJsonBlocksFromDOM(page, assistantMarker = null, provider = 'kimi') {
     try {
-      return await page.evaluate((marker) => {
+      const chains = provider === 'kimi' ? this._resolveDomSelectorChains(provider) : null;
+      return await page.evaluate(({ selectors, marker }) => {
+        function allMatches(root, sels) {
+          const seen = new Set();
+          const out = [];
+          for (const sel of sels) {
+            for (const el of root.querySelectorAll(sel)) {
+              if (!seen.has(el)) { seen.add(el); out.push(el); }
+            }
+          }
+          return out;
+        }
+        function firstMatch(root, sels) {
+          for (const sel of sels) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+          }
+          return null;
+        }
+
         const responses = [];
         const actions = [];
         const seen = new Set();
@@ -6939,52 +7450,46 @@ class KimiBridge {
           return null;
         }
 
-        // Find the LAST assistant segment
-        const assistantSelectors = [
-          '.segment-assistant', '.message-assistant',
-          '[data-testid="assistant-message"]', '[data-testid="message-assistant"]',
-          '.chat-message--assistant', '[class*="assistant"][class*="segment"]',
-          '[class*="assistant"][class*="message"]',
-        ];
-        let lastAssistant = null;
-        for (const sel of assistantSelectors) {
-          const els = document.querySelectorAll(sel);
-          if (!els.length) continue;
-          // W6-T6: the marker counts .segment-assistant nodes present before the
-          // current send. When set, only segments beyond it belong to this turn;
-          // if none exist yet, there is nothing new to extract — do NOT fall
-          // through to broader selectors (they would re-match the same stale
-          // nodes, e.g. [class*="assistant"][class*="segment"] also matches
-          // .segment-assistant elements). null marker => today's behavior.
-          if (sel === '.segment-assistant' && typeof marker === 'number') {
-            if (els.length > marker) lastAssistant = els[els.length - 1];
-            break;
+        // v10.8-fix: Find the LAST assistant segment via selector chain.
+        const assistants = selectors ? allMatches(document, selectors.assistant) : [];
+        let lastAssistant = assistants.length
+          ? assistants[assistants.length - 1]
+          : null;
+        if (!lastAssistant && typeof marker === 'number') {
+          // Fallback: old hardcoded selector with marker semantics preserved.
+          const els = document.querySelectorAll('.segment-assistant');
+          if (els.length > marker) lastAssistant = els[els.length - 1];
+        }
+        if (!lastAssistant) {
+          const fallbackSelectors = [
+            '.segment-assistant', '.message-assistant',
+            '[data-testid="assistant-message"]', '[data-testid="message-assistant"]',
+            '.chat-message--assistant', '[class*="assistant"][class*="segment"]',
+            '[class*="assistant"][class*="message"]',
+          ];
+          for (const sel of fallbackSelectors) {
+            const els = document.querySelectorAll(sel);
+            if (els.length) { lastAssistant = els[els.length - 1]; break; }
           }
-          lastAssistant = els[els.length - 1];
-          break;
         }
         if (!lastAssistant) return { responses, actions };
 
-        // Find ALL code blocks in the assistant message
-        const codeSelectors = [
-          '.segment-code', '.message-code', '[class*="code"][class*="segment"]',
-          '.toolcall-content pre', '.toolcall-content code',
-          '.markdown pre code', '.markdown-container pre code',
-        ];
-        const allCodeEls = [];
-        for (const sel of codeSelectors) {
-          lastAssistant.querySelectorAll(sel).forEach(el => {
-            if (!allCodeEls.includes(el)) allCodeEls.push(el);
-          });
-        }
+        // v10.8-fix: Find ALL code blocks via selector chain + fallbacks.
+        const codeSelectors = selectors
+          ? [...selectors.codeBlock, '.segment-code', '.message-code', '[class*="code"][class*="segment"]',
+             '.toolcall-content pre', '.toolcall-content code', '.markdown pre code', '.markdown-container pre code']
+          : ['.segment-code', '.message-code', '[class*="code"][class*="segment"]',
+             '.toolcall-content pre', '.toolcall-content code',
+             '.markdown pre code', '.markdown-container pre code'];
+        const allCodeEls = allMatches(lastAssistant, codeSelectors);
 
         // v5.3-fix: Exclude code blocks inside the thinking container.
-        // The thinking text may contain examples that look like JSON —
-        // we must NOT emit them as responses/actions.
-        // v8.5-fix: BUT in THINKING mode, Kimi may place REAL tool calls inside
+        // v8.5-fix: In THINKING mode, Kimi may place REAL tool calls inside
         // the thinking container. We scan them too, but only accept if they look
         // like actual tool calls (have 'tool'/'script'/'action' keys).
-        const thinkContainer = lastAssistant.querySelector('.toolcall-container.thinking-container, .thinking-container, [class*="thinking-container"]');
+        const thinkContainer = selectors
+          ? firstMatch(lastAssistant, selectors.thinking)
+          : lastAssistant.querySelector('.toolcall-container.thinking-container, .thinking-container, [class*="thinking-container"]');
         const isInsideThinking = (el) => {
           if (!thinkContainer) return false;
           let parent = el.parentElement;
@@ -7241,7 +7746,7 @@ class KimiBridge {
         }
 
         return { responses, actions };
-      }, assistantMarker);
+      }, { selectors: chains, marker: assistantMarker });
     } catch (e) {
       log.warn(`_extractJsonBlocksFromDOM failed: ${e.message}`);
       return { responses: [], actions: [] };
@@ -7740,7 +8245,7 @@ class KimiBridge {
       }
 
       log.info(`[DEBUG-LUNA] Step 3: detectActualMode`);
-      const actualMode = await this._detectActualMode(page) || session?.mode || 'instant';
+      const actualMode = await this._detectActualMode(page, resolvedProvider) || session?.mode || 'instant';
       log.info(`[v7.0] User ${hashUserId(userId)} streaming message (mode=${actualMode})`);
 
       // v6.1-fix: Inject text file contents directly into the prompt
@@ -7791,7 +8296,28 @@ class KimiBridge {
       // v9.6-fix: Use a real timeout (not 0) so innerText throws when no markdown
       // exists on Kimi's home screen, allowing .catch to return '' instead of
       // hanging forever waiting for an element that never appears.
-      let initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+      // v10.8-fix: use provider selector chains for the new Kimi DOM.
+      let initialText = '';
+      if (resolvedProvider === 'kimi') {
+        const chains = this._resolveDomSelectorChains(resolvedProvider);
+        initialText = await page.evaluate((selectors) => {
+          function allMatches(root, sels) {
+            const seen = new Set();
+            const out = [];
+            for (const sel of sels) {
+              for (const el of root.querySelectorAll(sel)) {
+                if (!seen.has(el)) { seen.add(el); out.push(el); }
+              }
+            }
+            return out;
+          }
+          const mds = allMatches(document, selectors.markdown);
+          const last = mds[mds.length - 1];
+          return last ? (last.innerText || '').trim() : '';
+        }, chains).catch(() => '');
+      } else {
+        initialText = await page.locator('.markdown-container .markdown').last().innerText({ timeout: 2000 }).catch(() => '');
+      }
 
       // v10.35-fix: For non-Kimi providers, the generic DOM extraction reads the LAST
       // assistant bubble. Capture the current response text via the same polling path
@@ -7812,7 +8338,7 @@ class KimiBridge {
 
       // v7.7-INFALÍVEL: Capture FULL snapshot before sending (all assistant texts)
       // This replaces fragile assistant counting with snapshot diffing.
-      const preSendSnapshot = await this._capturePreSendSnapshot(page);
+      const preSendSnapshot = await this._capturePreSendSnapshot(page, resolvedProvider);
       const preSendAssistantCount = preSendSnapshot.length;
       log.info(`[sendMessageStream] Pre-send snapshot: ${preSendAssistantCount} assistants captured`);
 
@@ -7885,6 +8411,7 @@ class KimiBridge {
       // brick every future message from this user).
       const NEW_ASSISTANT_TIMEOUT_MS = 120_000;
       const newAssistantDeadline = Date.now() + NEW_ASSISTANT_TIMEOUT_MS;
+      const assistChains = this._resolveDomSelectorChains(resolvedProvider);
       if (resolvedProvider === 'kimi') {
         while (true) {
           // W6-T1: cancel + deadline checks (this loop was previously
@@ -7893,14 +8420,31 @@ class KimiBridge {
           if (Date.now() > newAssistantDeadline) {
             throw new Error('NO_ASSISTANT_DETECTED: selector broke or send failed (no .segment-assistant within 120s)');
           }
-          const assistants = await page.evaluate(() => {
-            const nodes = document.querySelectorAll('.segment-assistant');
-            return Array.from(nodes).map((el, i) => ({
+          const assistants = await page.evaluate((selectors) => {
+            function allMatches(root, sels) {
+              const seen = new Set();
+              const out = [];
+              for (const sel of sels) {
+                for (const el of root.querySelectorAll(sel)) {
+                  if (!seen.has(el)) { seen.add(el); out.push(el); }
+                }
+              }
+              return out;
+            }
+            function firstMatch(root, sels) {
+              for (const sel of sels) {
+                const el = root.querySelector(sel);
+                if (el) return el;
+              }
+              return null;
+            }
+            const nodes = allMatches(document, selectors.assistant);
+            return nodes.map((el, i) => ({
               index: i,
               textLength: el.innerText?.length || 0,
-              hasMarkdown: !!el.querySelector('.markdown-container, .markdown'),
+              hasMarkdown: !!firstMatch(el, selectors.markdown),
             }));
-          });
+          }, assistChains);
           const currentCount = assistants.length;
           if (currentCount > preSendAssistantCount) {
             const newAssistant = assistants[preSendAssistantCount];
@@ -7936,6 +8480,10 @@ class KimiBridge {
       // cross-source divergent chunks instead of emitting garbage.
       // lastResponse is kept for completion/final-extraction fallbacks.
       const responseCursor = createResponseCursor();
+      // v11.8-fix: same per-source cursor for thinking, so deltas are as clean
+      // as response deltas and the first thinking chunk is not swallowed by
+      // Phase 0 seeding.
+      const thinkingCursor = createResponseCursor();
       const divergedSourcesLogged = new Set(); // log.warn once per diverging source
       let lastCanSteer = false;
       let isComplete = false;
@@ -7971,18 +8519,11 @@ class KimiBridge {
       };
 
       // Phase 0: Wait for first text change via queue events.
-      // W6-T3: bounded — chrome lag with huge prompts is expected and gets the
-      // full 5 minutes, but a SILENT send failure (Enter never landed, tab dead)
-      // must surface as a visible error instead of hanging forever. The throw
-      // propagates through the catch below (only STREAM_CANCELLED is swallowed)
-      // up to the soul's error handling.
-      const GENERATION_START_TIMEOUT_MS = 5 * 60_000;
-      const generationStartDeadline = Date.now() + GENERATION_START_TIMEOUT_MS;
+      // Wave 11-fix: NO timeout waiting for Kimi. The user explicitly wants Luna
+      // to wait indefinitely for the provider to respond. A silent send failure is
+      // still surfaced by the heartbeat 'waiting' events.
       log.info(`[DEBUG-LUNA] Phase 0: waiting for first text change. initialText='${initialText}' queueLen=${queue.events.length}`);
       while (!textHasChanged && !stopConsuming) {
-        if (Date.now() > generationStartDeadline) {
-          throw new Error('GENERATION_NEVER_STARTED: Kimi did not start generating within 5 minutes');
-        }
         while (queue.lastReadIndex < queue.events.length) {
           const ev = queue.events[queue.lastReadIndex++];
           // W10-T2: context limit detected by the page-level scanner before
@@ -8004,6 +8545,9 @@ class KimiBridge {
               // discarded) so the first Phase 1 delta from the same source
               // doesn't re-emit the seed text.
               responseCursor.next(ev.source || 'phase0', lastResponse);
+              // v11.8-fix: seed the thinking cursor too, so the first thinking
+              // delta in Phase 1 is a clean diff instead of being swallowed.
+              thinkingCursor.next(ev.source || 'phase0', lastThinking);
               log.info(`[DEBUG-LUNA] Phase 0 textHasChanged=true`);
               break;
             }
@@ -8021,15 +8565,12 @@ class KimiBridge {
           log.info(`[DEBUG-LUNA] Phase 0 still waiting (pollCount=${pollCount})`);
           yield { type: 'waiting', message: 'Aguardando resposta do Kimi...' };
         }
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 200));
       }
 
       // Phase 1: Consume events from queue until completion or cancel.
-      // W6-T3: safety net re-enabled at 60min — large-file generations survive,
-      // but a truly dead stream can no longer hang forever. User can still
-      // hard-cancel at any time by sending a new message.
-      const MESSAGE_SAFETY_TIMEOUT_MS = 60 * 60 * 1000;
-      const messageStartTime = Date.now();
+      // Wave 11-fix: NO safety timeout. Luna waits for Kimi as long as needed.
+      // The user can hard-cancel at any time by sending a new message.
 
       // W10-T2: a page-level context_limit already received in Phase 0
       // short-circuits the whole consumer — the final-extraction tail below
@@ -8084,16 +8625,7 @@ class KimiBridge {
           }
         }
 
-        // W6-T3: safety-net deadline. On expiry we BREAK (not throw): the
-        // final-extraction tail below still runs and yields whatever text
-        // exists, so the user sees the partial response plus a visible
-        // warning — never silent truncation.
-        if (Date.now() - messageStartTime > MESSAGE_SAFETY_TIMEOUT_MS) {
-          log.warn(`[sendMessageStream] SAFETY TIMEOUT (${MESSAGE_SAFETY_TIMEOUT_MS}ms) reached for user ${hashUserId(userId)} — breaking wait loop, running final extraction with partial content`);
-          yield { type: 'waiting', message: '⏱️ Limite de segurança (60min) atingido — finalizando com o conteúdo parcial...' };
-          isComplete = true;
-          break;
-        }
+        // Wave 11-fix: no safety-net deadline. Luna waits for Kimi indefinitely.
 
         // Process all new events in queue
         while (queue.lastReadIndex < queue.events.length && !stopConsuming) {
@@ -8101,18 +8633,26 @@ class KimiBridge {
 
           switch (ev.type) {
             case 'state_change': {
-              const t = ev.thinking || '';
-              const r = ev.response || '';
+              const sanitized = sanitizeStateChange(ev);
+              let t = sanitized.thinking || '';
+              let r = sanitized.response || '';
 
-              // Yield thinking deltas
-              if (t && t !== lastThinking) {
-                const delta = t.slice(lastThinking.length);
-                if (delta) {
-                  yield { type: 'thinking_delta', text: delta, fullThinking: t };
-                } else if (t.length < lastThinking.length) {
-                  log.info(`[stream] thinking DOM shrank ${lastThinking.length} -> ${t.length}, skipping repeat`);
+              // v11.8-fix: diff thinking exactly like we diff response.
+              // The Kimi page is the source of truth; the cursor emits only the
+              // new suffix so the frontend accumulates a perfect mirror.
+              if (t) {
+                const { emit, diverged } = thinkingCursor.next(ev.source, t);
+                if (diverged) {
+                  const srcKey = ev.source || 'unknown';
+                  if (!divergedSourcesLogged.has(srcKey)) {
+                    divergedSourcesLogged.add(srcKey);
+                    log.warn(`[sendMessageStream] Thinking source '${srcKey}' diverged from committed text — swallowing chunk to avoid duplicated stream`);
+                  }
                 }
-                lastThinking = t;
+                if (emit) {
+                  yield { type: 'thinking_delta', text: emit, fullThinking: t };
+                  lastThinking = t;
+                }
               }
 
               // Yield response deltas
@@ -8258,6 +8798,28 @@ class KimiBridge {
               break;
             }
 
+            // v11.2-fix: chrome_extension can emit an explicit thinking_start —
+            // forward it so the frontend creates the bubble immediately.
+            case 'thinking_start': {
+              yield { type: 'thinking_start', source: ev.source || 'chrome_extension' };
+              break;
+            }
+
+            // v11.8-fix: source-of-truth full thinking replacement from the
+            // Chrome extension. Pass through as-is so the frontend replaces the
+            // entire bubble content with Kimi's current reasoning. We do NOT
+            // deduplicate here — the frontend handles replacement, and trying to
+            // dedup against lastThinking would swallow the first event when it
+            // matches the Phase 0 seed.
+            case 'thinking_update': {
+              const fullText = ev.fullText || '';
+              if (fullText) {
+                lastThinking = fullText;
+                yield { type: 'thinking_update', fullText, source: ev.source || 'chrome_extension' };
+              }
+              break;
+            }
+
             // v8.5-fix: Direct thinking/response deltas from ultra-light observer
             case 'thinking_delta': {
               const t = ev.fullThinking || ev.text || '';
@@ -8347,7 +8909,7 @@ class KimiBridge {
       let extractionSource = 'none';
 
       try {
-        const extracted = await this._extractResponseDiff(page, preSendSnapshot);
+        const extracted = await this._extractResponseDiff(page, preSendSnapshot, resolvedProvider);
         if (extracted && extracted.trim().length > 0) {
           finalResponse = extracted.trim();
           extractionSource = 'snapshot-diff';
@@ -8665,8 +9227,8 @@ class KimiBridge {
     }).catch(() => false);
 
     const session = this.userSessions.get(userId);
-    const actualMode = await this._detectActualMode(page) || session.mode || 'instant';
-    await this._waitForResponse(page, actualMode);
+    const actualMode = await this._detectActualMode(page, resolvedProvider) || session.mode || 'instant';
+    await this._waitForResponse(page, actualMode, null, '', -1, resolvedProvider);
     return this._extractResponse(page, { userId });
   }
 

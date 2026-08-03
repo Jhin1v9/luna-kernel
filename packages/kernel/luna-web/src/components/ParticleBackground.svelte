@@ -26,6 +26,7 @@
     MODE_COLORS,
     MODE_SHIFT_INTENSITY,
     MODE_BEHAVIOR,
+    resetWallpaperRng,
   } from '../lib/starAnimations.js';
   import {
     shouldAnimateBackground,
@@ -96,6 +97,10 @@
   // ═══════════════════════════════════════════════════════════
 
   function initStars() {
+    // v2.6.2-fix: reset the deterministic RNG so every hard refresh produces
+    // the exact same starfield layout, phases and dynamic lines.
+    resetWallpaperRng();
+
     starIndex = buildStarIndex(BRIGHT_STARS);
     const validLines = getValidLines(BRIGHT_STARS, CONSTELLATION_LINES);
     lines = validLines.map(([a, b]) => [starIndex[a], starIndex[b]]);

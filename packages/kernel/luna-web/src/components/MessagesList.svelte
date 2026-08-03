@@ -15,6 +15,8 @@
   export let onApprovePlan = () => {};
   export let onRejectPlan = () => {};
   export let onRevisePlan = () => {};
+  export let onConfirmTool = () => {};
+  export let onCancelTool = () => {};
 
   let listEl;
   let userScrolledUp = false;
@@ -101,6 +103,10 @@
               duration={message.duration}
               status={message.status || 'running'}
               liveOutput={message.liveOutput || ''}
+              confirmationId={message.confirmationId}
+              confirmationMessage={message.confirmationMessage}
+              onConfirm={onConfirmTool}
+              onCancel={onCancelTool}
             />
           {:else if message.type === 'plan'}
             <PlanCard

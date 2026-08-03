@@ -27,6 +27,7 @@ const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const fs = require('fs');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 
 // v5.2: Centralized config
@@ -235,16 +236,78 @@ if (extHandler) {
   if (lunaChatModule.getLunaSoul) {
     lunaChatModule.getLunaSoul().then(lunaSoul => {
       extHandler.setToolExecutor(async (tool, params, sessionId) => {
-        const result = await lunaSoul._handleAction(
-          { tool, params, mode: 'ACTION' },
-          sessionId?.replace('web-', '') || sessionId,
-          { userId: sessionId }
-        );
-        return result;
+        // v11.8-fix: Extension tools can trigger destructive-operation confirmations.
+        // We must forward confirmation/progress events to the web session so the
+        // frontend can render the confirmation gate and stop the tool watchdog.
+        const normalizedSessionId = sessionId?.replace('web-', '') || sessionId;
+        const toolInstanceId = `ext-tool-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+        const eventBus = { queue: [] };
+
+        const onEvent = (ev) => {
+          if (!ev || ev.sessionId !== normalizedSessionId) return;
+          if (ev.type === 'confirmation_required' || ev.type === 'action_progress') {
+            lunaChatModule.addMessageToSession(normalizedSessionId, {
+              id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              role: 'assistant',
+              type: ev.type,
+              content: ev.message || ev.chunk || '',
+              tool: ev.tool,
+              toolInstanceId: ev.toolInstanceId || toolInstanceId,
+              confirmationId: ev.confirmationId || undefined,
+              confirmationMessage: ev.message || '',
+              params: ev.params || params,
+              chunk: ev.chunk || undefined,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        };
+        lunaSoul.on('confirmation_required', onEvent);
+        lunaSoul.on('progress', onEvent);
+
+        try {
+          // v11.8-fix: The extension runs tools outside the normal stream, so the
+          // frontend never sees action_start/action_end. Emit them here so the tool
+          // card lifecycle (including confirmation gate) works correctly.
+          lunaChatModule.addMessageToSession(normalizedSessionId, {
+            id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'assistant',
+            type: 'action_start',
+            content: '',
+            tool,
+            toolInstanceId,
+            params,
+            timestamp: new Date().toISOString(),
+          });
+
+          const result = await lunaSoul._handleAction(
+            { tool, params, mode: 'ACTION' },
+            normalizedSessionId,
+            { userId: sessionId },
+            null,
+            eventBus,
+            toolInstanceId
+          );
+
+          lunaChatModule.addMessageToSession(normalizedSessionId, {
+            id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'assistant',
+            type: 'action_end',
+            content: '',
+            tool,
+            toolInstanceId,
+            result,
+            timestamp: new Date().toISOString(),
+          });
+
+          return result;
+        } finally {
+          lunaSoul.off('confirmation_required', onEvent);
+          lunaSoul.off('progress', onEvent);
+        }
       });
-      console.log('[LunaExt] Tool executor auto-wired from luna-server');
+      console.log('[Luna Server] Extension tool executor wired with confirmation forwarding');
     }).catch(e => {
-      console.warn('[LunaExt] Auto-wire failed (will retry on first chat request):', e.message);
+      console.warn('[Luna Server] Auto-wire failed (will retry on first chat request):', e.message);
     });
   }
 }

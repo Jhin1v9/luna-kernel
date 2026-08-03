@@ -140,7 +140,7 @@ async function pollServer() {
 
 // ── Message Routing ──
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Handle messages from content scripts
+  // Handle messages from content scripts (single events or batches)
   if (message.type?.startsWith('luna_')) {
     const tab = sender.tab || { id: sender.tab?.id, url: sender.url };
     handleContentMessage(message, tab)
@@ -153,18 +153,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleContentMessage(message, tab) {
-  const payload = {
-    ...message,
-    tabId: tab.id,
-    tabUrl: tab.url
-  };
+  // v11.6-fix: explode batches into individual server events while preserving tab context.
+  const events = (message.type === 'luna_event_batch' && Array.isArray(message.events))
+    ? message.events
+    : [message];
 
-  if (!sessionId) {
-    await registerSession();
-  }
+  for (const ev of events) {
+    const payload = {
+      type: ev.type || ev.eventType,
+      eventType: ev.eventType || ev.type,
+      data: ev.data,
+      timestamp: ev.timestamp,
+      url: ev.url || message.url,
+      tabId: tab.id,
+      tabUrl: tab.url,
+      version: message.version || ev.version
+    };
 
-  if (sessionId) {
-    await sendEventToServer(payload);
+    if (!sessionId) {
+      await registerSession();
+    }
+
+    if (sessionId) {
+      await sendEventToServer(payload);
+    }
   }
 }
 
@@ -219,4 +231,4 @@ registerSession();
 // This handles the case where the extension was loaded after the tab was already open.
 reinjectAllProviderTabs();
 
-console.log('[Luna BG] Service Worker loaded v8.1');
+console.log('[Luna BG] Service Worker loaded v11.6');
