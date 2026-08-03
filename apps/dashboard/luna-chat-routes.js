@@ -1932,50 +1932,6 @@ node luna-server.js
 });
 
 // ============================================================
-// Auto-Health Monitor
-// ============================================================
-const AUTO_HEALTH_INTERVAL_MS = 30000; // 30s
-const HEALTH_CHECK_TIMEOUT_MS = 15000; // 15s
-let lastHealthCheckOk = true;
-let healthCheckConsecutiveFailures = 0;
-
-setInterval(async () => {
-  try {
-    // Check if Luna Soul is responsive
-    if (!lunaReady || !lunaSoul) {
-      healthCheckConsecutiveFailures++;
-      console.warn(`[AUTO-HEALTH] Luna Soul não inicializado. Falha #${healthCheckConsecutiveFailures}`);
-    } else {
-      // Quick health ping: try to access session manager
-      const hasSessions = lunaSoul.sessionManager !== undefined;
-      if (hasSessions) {
-        healthCheckConsecutiveFailures = 0;
-        lastHealthCheckOk = true;
-      } else {
-        healthCheckConsecutiveFailures++;
-        console.warn(`[AUTO-HEALTH] Luna Soul sem session manager. Falha #${healthCheckConsecutiveFailures}`);
-      }
-    }
-
-    // Also check if port 3458 is listening
-    const portOpen = await isPortListening(3458);
-    if (!portOpen) {
-      healthCheckConsecutiveFailures++;
-      console.error(`[AUTO-HEALTH] Porta 3458 fechada! Falha #${healthCheckConsecutiveFailures}`);
-    }
-
-    // Restart if 3 consecutive failures
-    if (healthCheckConsecutiveFailures >= 3) {
-      console.error('[AUTO-HEALTH] ⚠️ 3 falhas consecutivas. Reiniciando serviços...');
-      healthCheckConsecutiveFailures = 0;
-      runScript('restart', 60000);
-    }
-  } catch (e) {
-    console.error('[AUTO-HEALTH] Erro no health check:', e.message);
-  }
-}, AUTO_HEALTH_INTERVAL_MS);
-
-// ============================================================
 // Auth Routes (new)
 // ============================================================
 // NOTE: validateCredentials, generateToken, requireAuth are injected

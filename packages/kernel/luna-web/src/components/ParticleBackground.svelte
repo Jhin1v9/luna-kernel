@@ -392,7 +392,7 @@
       if (!a || !b) continue;
 
       const pulse = Math.sin(t * dl.speed * twinkleMult + dl.phase) * 0.5 + 0.5;
-      const alpha = (1 - dl.dist / DYN_CONNECT_DIST) * 0.05 * pulse * brightnessMult;
+      const alpha = (1 - dl.dist / DYN_CONNECT_DIST) * 0.09 * pulse * brightnessMult;
       if (alpha < 0.003) continue;
 
       ctx.beginPath();
@@ -405,7 +405,7 @@
     }
 
     // ── Constellation lines (fixed, more visible in idle/thinking) ──
-    const constLineOpacity = targetMode === 'thinking-loading' ? 0.06 : 0.12;
+    const constLineOpacity = targetMode === 'thinking-loading' ? 0.14 : 0.22;
     ctx.lineWidth = 1.0;
     ctx.lineCap = 'round';
     ctx.shadowColor = accent;

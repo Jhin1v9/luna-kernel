@@ -210,11 +210,18 @@ export function createBgStarState(layer, canvasW, canvasH) {
 export function projectStar(s, w, h) {
   s.homeX = (s.ra / 24) * w;
   s.homeY = ((90 - s.dec) / 180) * h;
+  // Ensure current position starts exactly at home so dynamic lines are
+  // deterministic on the very first frame (before the animation loop runs).
+  s.currentX = s.homeX;
+  s.currentY = s.homeY;
 }
 
 export function projectBgStar(s, w, h) {
   s.x = s.nx * w;
   s.y = s.ny * h;
+  // Same determinism fix for background stars used in dynamic lines.
+  s.currentX = s.x;
+  s.currentY = s.y;
 }
 
 // ═══════════════════════════════════════════════════════════
