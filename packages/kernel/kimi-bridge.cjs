@@ -1609,79 +1609,69 @@ class KimiBridge {
       }
     }
 
-    // v10.36-fix: ALWAYS try to reuse an existing logged-in provider page first.
-    // Each Luna Web session gets a different userId ('web-<sessionId>'), but the
-    // user expects every Kimi/DeepSeek session to share the same Chrome tab that
-    // is already logged in. We pick the best candidate (real /chat/ thread beats
-    // landing page) and reassign it to the current userId.
-    const candidatePages = [];
+    // v2.6.8-fix: Each Luna Web session is a distinct user ('web-<sessionId>') and
+    // must talk in its own provider chat thread. Sharing a single Chrome tab across
+    // sessions caused messages from different users/chats to land in the same Kimi
+    // thread. We now reuse a page ONLY when it already belongs to the same userId
+    // AND is on the persisted chat URL; otherwise we create a dedicated page.
+    const stored = this.store.getUser(userId);
+    const storedChatUrl = stored?.chatUrl || null;
+    const targetChatId = storedChatUrl?.includes('/chat/')
+      ? storedChatUrl.split('/chat/')[1].split('?')[0]
+      : null;
+
     const existingPages = this.defaultContext?.pages() || [];
+    const ownPages = [];
+    const otherUserActivePages = [];
     for (const p of existingPages) {
       if (p.isClosed()) continue;
       try {
         const url = p.url();
-        if (url && url.includes(providerDomain)) {
-          const isChatThread = url.includes('/chat/');
-          candidatePages.push({ p, url, isChatThread, score: isChatThread ? 2 : 1 });
+        if (!url || !url.includes(providerDomain)) continue;
+        const pageUserId = p._lunaUserId;
+        if (pageUserId && pageUserId !== userId) {
+          // Mark pages owned by another user so we never steal them.
+          const otherSession = this.userSessions.get(pageUserId);
+          const isActive = otherSession && (otherSession.processing || (Date.now() - otherSession.lastActivity) < 30 * 60 * 1000);
+          otherUserActivePages.push({ p, url, userId: pageUserId, active: isActive });
+          continue;
         }
+        // Same userId or unassigned page.
+        const isChatThread = url.includes('/chat/');
+        const matchesTarget = targetChatId ? url.includes(`/chat/${targetChatId}`) : false;
+        ownPages.push({ p, url, isChatThread, matchesTarget, score: (matchesTarget ? 4 : 0) + (isChatThread ? 2 : 1) });
       } catch (e) {
         // Page may be closing, skip
       }
     }
 
-    const stored = this.store.getUser(userId);
-    const storedChatUrl = stored?.chatUrl || null;
-
-    if (candidatePages.length > 0) {
-      // v10.39-fix: Honor the persisted chat URL for this Luna session.
-      // Each Luna Web session is linked to a specific Kimi chat URL; if the user
-      // (or browser) closed the tab, we must return to that exact conversation,
-      // not reuse whatever other Kimi tab happens to be open.
-      const targetChatId = storedChatUrl?.includes('/chat/')
-        ? storedChatUrl.split('/chat/')[1].split('?')[0]
-        : null;
-
-      let best = null;
-      if (targetChatId) {
-        best = candidatePages.find((c) => c.url.includes(`/chat/${targetChatId}`)) || null;
+    // Reuse only if we own the page and it matches the saved chat URL.
+    if (ownPages.length > 0 && storedChatUrl) {
+      ownPages.sort((a, b) => b.score - a.score);
+      const best = ownPages[0];
+      if (best.matchesTarget) {
+        const p = best.p;
+        p._lunaUserId = userId;
+        p._lunaProvider = provider;
+        const session = {
+          page: p,
+          context: this.defaultContext,
+          chatUrl: storedChatUrl,
+          provider,
+          lastActivity: Date.now(),
+          processing: false,
+          mode: stored?.mode || 'instant',
+          sessionSaved: false,
+        };
+        this.userSessions.set(userId, session);
+        log.info(`Reusing own ${providerDomain} page for user ${hashUserId(userId)}: ${best.url}`);
+        this._saveChatUrl(userId, session.chatUrl, { mode: session.mode, provider });
+        return p;
       }
-      if (!best) {
-        candidatePages.sort((a, b) => b.score - a.score);
-        best = candidatePages[0];
-      }
+    }
 
-      const p = best.p;
-      const url = best.url;
-      p._lunaUserId = userId;
-      p._lunaProvider = provider;
-
-      const session = {
-        page: p,
-        context: this.defaultContext,
-        chatUrl: storedChatUrl || url,
-        provider,
-        lastActivity: Date.now(),
-        processing: false,
-        mode: stored?.mode || 'instant',
-      sessionSaved: false,
-      };
-      this.userSessions.set(userId, session);
-
-      // If we reused a page that is not on the saved thread, navigate to it.
-      if (storedChatUrl && !url.includes(storedChatUrl.split('?')[0].split('/').pop())) {
-        log.info(`Session ${hashUserId(userId)} has saved chat ${storedChatUrl}; current tab is ${url} — navigating to saved chat`);
-        await p.goto(storedChatUrl, { waitUntil: 'domcontentloaded', timeout: 0 });
-        await p.waitForTimeout(1500);
-        session.chatUrl = p.url();
-      } else {
-        log.info(`Reusing existing ${providerDomain} page for user ${hashUserId(userId)}: ${url}`);
-      }
-
-      this._saveChatUrl(userId, session.chatUrl, { mode: session.mode, provider });
-      // v10.27-fix: Do NOT inject master localStorage into an already-open,
-      // already-logged-in page — it can overwrite valid tokens and log the user out.
-      // Only inject when we create a fresh page/context.
-      return p;
+    if (otherUserActivePages.length > 0) {
+      log.info(`Not reusing ${otherUserActivePages.length} provider page(s) owned by other users for ${hashUserId(userId)}`);
     }
 
     // Acquire semaphore slot (now effectively unlimited)
@@ -1691,8 +1681,14 @@ class KimiBridge {
     // Get or create isolated context for this user
     const userCtx = await this._getOrCreateUserContext(userId);
 
-    // Restore previous chat URL from store if available
-    const chatUrl = storedChatUrl || this._modeUrl(provider, 'instant');
+    // If we have a persisted chat URL, go directly to it. Otherwise open a fresh
+    // chat so this session never lands in another user's thread.
+    let chatUrl = storedChatUrl;
+    let needsNewChat = false;
+    if (!chatUrl) {
+      chatUrl = this._modeUrl(provider, 'instant');
+      needsNewChat = true;
+    }
 
     let page = null;
     try {
@@ -1769,12 +1765,22 @@ class KimiBridge {
         }
       }
     } catch (e) {
-      log.warn(`Navigation failed for ${hashUserId(userId)}: ${e.message}`);
-      if (page && !page.isClosed()) {
+      log.warn(`Navigation failed for ${hashUserId(userId)}: ${e.message}`);      if (page && !page.isClosed()) {
         try { await page.close(); } catch {}
       }
       this.semaphore.release();
       throw e;
+    }
+
+    // v2.6.8-fix: A brand-new Luna session with no saved chat must start in a
+    // fresh provider thread, not in whatever tab happened to be open.
+    if (needsNewChat) {
+      try {
+        const freshChatUrl = await this._openNewChat(page, provider);
+        log.info(`[_getOrCreateUserPage] Opened fresh chat for ${hashUserId(userId)}: ${freshChatUrl}`);
+      } catch (openErr) {
+        log.warn(`[_getOrCreateUserPage] _openNewChat failed: ${openErr.message}`);
+      }
     }
 
     const session = {
@@ -4180,23 +4186,46 @@ class KimiBridge {
     if (!cleared) {
       log.warn('[_fillContentEditable] input was not fully cleared before typing');
     }
-    const inserted = await inputLocator.evaluate((el, txt) => {
-      const tag = (el.tagName || '').toLowerCase();
-      if (tag === 'textarea' || tag === 'input') {
-        el.value = txt;
-        el.selectionStart = el.selectionEnd = txt.length;
-      } else {
-        document.execCommand('insertText', false, txt);
+
+    // v2.6.6-fix: retry insertion with multiple strategies until the text is
+    // actually observable in the input. Some Kimi renders swallow execCommand.
+    const strategies = ['exec-insert', 'innerText-set', 'html-span'];
+    for (let attempt = 0; attempt < strategies.length; attempt++) {
+      const inserted = await inputLocator.evaluate((el, txt, strategy) => {
+        const tag = (el.tagName || '').toLowerCase();
+        const isEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+        if (tag === 'textarea' || tag === 'input') {
+          el.value = txt;
+          el.selectionStart = el.selectionEnd = txt.length;
+        } else if (strategy === 'innerText-set') {
+          el.innerText = txt;
+        } else if (strategy === 'html-span') {
+          el.innerHTML = '<span>' + txt.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          range.collapse(false);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } else {
+          document.execCommand('insertText', false, txt);
+        }
+        // Dispatch input events so React/Lexical state updates and send button enables
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        const current = (el.value || el.textContent || el.innerText || '').trim();
+        return current.includes(txt.trim());
+      }, text, strategies[attempt]);
+      if (inserted) {
+        if (attempt > 0) {
+          log.info(`[_fillContentEditable] text inserted on attempt ${attempt + 1} via '${strategies[attempt]}'`);
+        }
+        return;
       }
-      // Dispatch input events so React/Lexical state updates and send button enables
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      const current = (el.value || el.textContent || el.innerText || '').trim();
-      return current.includes(txt.trim());
-    }, text);
-    if (!inserted) {
-      log.warn('[_fillContentEditable] typed text not found in input after insertion');
+      log.warn(`[_fillContentEditable] attempt ${attempt + 1} ('${strategies[attempt]}') did not stick — retrying`);
+      await new Promise(r => setTimeout(r, 200));
     }
+    log.warn('[_fillContentEditable] typed text not found in input after all insertion attempts');
   }
 
   /**
@@ -4220,12 +4249,14 @@ class KimiBridge {
     const submitAssistantChain = resolveChain(submitCfg, 'assistantMessage', '.segment-assistant');
     const submitSendChain = resolveChain(submitCfg, 'sendButton', '.send-button-container');
     const submitStopChain = resolveChain(submitCfg, 'stopButton', '.stop-button-container');
-    const prefix = (text || '').slice(0, 100);
-    // Whitespace-normalized comparison: contenteditable innerText can render
-    // whitespace differently from the inserted string (collapsed runs, NBSP).
-    const normPrefix = prefix.replace(/\s+/g, ' ').trim();
+    // v2.6.8-fix: use the whitespace-normalized message (preferring the tail)
+    // as the verification signature. A shared prefix between the previous and
+    // new message used to fool the bridge into thinking the new text was already
+    // in the input, causing the previous message to be re-sent.
+    const signature = (text || '').replace(/\s+/g, ' ').trim();
+    const normText = signature.length > 300 ? signature.slice(-300) : signature;
     const readInput = async () => {
-      if (!normPrefix) return '';
+      if (!normText) return '';
       const current = await inputLocator.inputValue().catch(() =>
         inputLocator.evaluate((el) => el.innerText || el.textContent || '').catch(() => '')
       );
@@ -4247,6 +4278,19 @@ class KimiBridge {
       return { assistants, sendDisabled, generating };
     }, { assistantChain: submitAssistantChain, sendChain: submitSendChain, stopChain: submitStopChain }).catch(() => null);
 
+    // v2.6.8-fix: hard-clear the input before taking a baseline. This prevents
+    // a stale previous message from being mistaken for the new text when the two
+    // happen to share a prefix.
+    try {
+      await this._fillContentEditable(inputLocator, '');
+      const afterClear = await readInput();
+      if (afterClear) {
+        log.warn(`[_submitWithVerification] input still contains text after clear: ${afterClear.slice(0, 80)}`);
+      }
+    } catch (clearErr) {
+      log.warn(`[_submitWithVerification] pre-submit clear failed: ${clearErr.message}`);
+    }
+
     // Pre-submit baseline. Only CHANGES relative to this state confirm the
     // submit — a stop button left over from a previous turn or a send button
     // disabled on an empty input must not count as success.
@@ -4254,8 +4298,8 @@ class KimiBridge {
     // Sticky: true once the box is OBSERVED holding the typed text. An input
     // clear only proves the send if the text was there before — otherwise a
     // silent fill failure would look exactly like a successful submit.
-    let inputHeldPrefix = normPrefix ? (await readInput()).includes(normPrefix) : false;
-    if (normPrefix && !inputHeldPrefix) {
+    let inputHeldPrefix = normText ? (await readInput()).includes(normText) : false;
+    if (normText && !inputHeldPrefix) {
       log.warn('[_submitWithVerification] typed text not visible in the input at baseline — pre-submit fill may have failed');
     }
     const strategies = ['synthetic-enter', 'trusted-enter', 'send-button-click'];
@@ -4270,9 +4314,9 @@ class KimiBridge {
           // the EditorState actually holds the text, then send a TRUSTED Enter
           // via a real Playwright click + keyboard press.
           await this._fillContentEditable(inputLocator, text || '');
-          if (normPrefix && !inputHeldPrefix) {
+          if (normText && !inputHeldPrefix) {
             // Read the box back: only trust the re-fill if the text stuck.
-            inputHeldPrefix = (await readInput()).includes(normPrefix);
+            inputHeldPrefix = (await readInput()).includes(normText);
             if (!inputHeldPrefix) {
               log.warn('[_submitWithVerification] re-fill did not stick — input still missing the typed text');
             }
@@ -4294,7 +4338,7 @@ class KimiBridge {
 
       // Empty-text sends (image/file without caption) have no input-text
       // signal; delivery is verified downstream by the response wait.
-      if (!normPrefix) {
+      if (!normText) {
         log.info(`[_submitWithVerification] empty-text submit via '${strategy}' (attempt ${attempt + 1}) — no input signal to verify`);
         return { confirmed: true, strategy, weak: true };
       }
@@ -4303,14 +4347,18 @@ class KimiBridge {
       const verifyDeadline = Date.now() + 10_000;
       while (Date.now() < verifyDeadline) {
         const current = await readInput();
-        if (current.includes(normPrefix)) inputHeldPrefix = true;
-        const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+        if (current.includes(normText)) inputHeldPrefix = true;
+        const inputCleared = inputHeldPrefix && !current.includes(normText);
         const state = await readState();
 
+        // v2.6.6-fix: require that we actually OBSERVED the typed prefix in the
+        // input before accepting a DOM transition as proof of submit. Otherwise a
+        // stale previous message sitting in the box can generate a 'generating'        // or 'send disabled' transition while the new text was never inserted.
+        const hadText = !normText || inputHeldPrefix;
         if (inputCleared
-          || (state && state.assistants > baseline.assistants)
-          || (state && !baseline.generating && state.generating)
-          || (state && !baseline.sendDisabled && state.sendDisabled)) {
+          || (hadText && state && state.assistants > baseline.assistants)
+          || (hadText && state && !baseline.generating && state.generating)
+          || (hadText && state && !baseline.sendDisabled && state.sendDisabled)) {
           log.info(`[_submitWithVerification] submit confirmed via '${strategy}' (attempt ${attempt + 1})`);
           return { confirmed: true, strategy };
         }
@@ -4343,15 +4391,15 @@ class KimiBridge {
       await this._fillContentEditable(inputLocator, text || '');
       await page.waitForTimeout(500);
       const recoveryInput = await readInput();
-      inputHeldPrefix = normPrefix ? recoveryInput.includes(normPrefix) : true;
+      inputHeldPrefix = normText ? recoveryInput.includes(normText) : true;
       await inputLocator.click({ timeout: 8000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
       await page.waitForTimeout(500);
       await page.keyboard.press('Enter');
       let verifyDeadline = Date.now() + 12_000;
       while (Date.now() < verifyDeadline) {
         const current = await readInput();
-        if (current.includes(normPrefix)) inputHeldPrefix = true;
-        const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+        if (current.includes(normText)) inputHeldPrefix = true;
+        const inputCleared = inputHeldPrefix && !current.includes(normText);
         const state = await readState();
         if (inputCleared
           || (state && state.assistants > baseline.assistants)
@@ -4368,8 +4416,8 @@ class KimiBridge {
         verifyDeadline = Date.now() + 12_000;
         while (Date.now() < verifyDeadline) {
           const current = await readInput();
-          if (current.includes(normPrefix)) inputHeldPrefix = true;
-          const inputCleared = inputHeldPrefix && !current.includes(normPrefix);
+          if (current.includes(normText)) inputHeldPrefix = true;
+          const inputCleared = inputHeldPrefix && !current.includes(normText);
           const state = await readState();
           if (inputCleared
             || (state && state.assistants > baseline.assistants)
@@ -8362,6 +8410,13 @@ class KimiBridge {
       await inputLocator.evaluate((el) => el.focus());
       await page.waitForTimeout(200);
 
+      // v2.6.8-fix: force the Chrome extension to reset its stream state before we
+      // send a new message. This prevents stale thinking/response events from the
+      // previous turn from leaking into the current turn and lagging the stream.
+      await page.evaluate(() => {
+        if (window.__lunaResetObserverState) window.__lunaResetObserverState();
+      }).catch((resetErr) => log.warn(`[sendMessageStream] extension reset failed: ${resetErr.message}`));
+
       // W7-T4: Lexical-safe fill. Playwright's fill() does not register in the
       // React/Lexical contenteditable (text visible in the DOM but EditorState
       // empty → Enter becomes a no-op and the message sits unsent in the box).
@@ -8403,7 +8458,13 @@ class KimiBridge {
         if (!options.isAutoContinue) {
           session._domEventSeen = new Map();
         }
-      }      // v7.7: Keep assistant detection for logging/compatibility, but extraction
+      }
+      // v2.6.8-fix: Events produced by the extension/content-script pipeline before
+      // this turn started can arrive late and overwrite the new turn's stream. We
+      // record the turn start time and drop any queued event whose timestamp is
+      // older than the start of this turn (with a small tolerance for clock skew).
+      const turnStartTime = Date.now();
+      // v7.7: Keep assistant detection for logging/compatibility, but extraction
       // will use snapshot diff which doesn't depend on correct index.
       // v10.27-fix: Kimi-specific .segment-assistant detection does not exist on
       // other providers (DeepSeek, etc.). Skip it for non-Kimi providers so the
@@ -8627,6 +8688,14 @@ class KimiBridge {
         // Process all new events in queue
         while (queue.lastReadIndex < queue.events.length && !stopConsuming) {
           const ev = queue.events[queue.lastReadIndex++];
+
+          // v2.6.8-fix: drop events that belong to the previous turn. The extension
+          // batches events and some can arrive after we cleared the queue; their
+          // timestamps let us identify and discard them before they corrupt the stream.
+          if (turnStartTime && ev.timestamp && ev.timestamp < turnStartTime - 500) {
+            log.info();
+            continue;
+          }
 
           switch (ev.type) {
             case 'state_change': {

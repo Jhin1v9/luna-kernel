@@ -1,0 +1,11 @@
+    // Pre-submit baseline. Only CHANGES relative to this state confirm the
+    // submit — a stop button left over from a previous turn or a send button
+    // disabled on an empty input must not count as success.
+    const baseline = await readState() || { assistants: 0, sendDisabled: false, generating: false };
+    // Sticky: true once the box is OBSERVED holding the typed text. An input
+    // clear only proves the send if the text was there before — otherwise a
+    // silent fill failure would look exactly like a successful submit.
+    let inputHeldPrefix = normPrefix ? (await readInput()).includes(normPrefix) : false;
+    if (normPrefix && !inputHeldPrefix) {
+      log.warn('[_submitWithVerification] typed text not visible in the input at baseline — pre-submit fill may have failed');
+    }

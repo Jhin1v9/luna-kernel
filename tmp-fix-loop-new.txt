@@ -1,0 +1,13 @@
+        // Process all new events in queue
+        while (queue.lastReadIndex < queue.events.length && !stopConsuming) {
+          const ev = queue.events[queue.lastReadIndex++];
+
+          // v2.6.8-fix: drop events that belong to the previous turn. The extension
+          // batches events and some can arrive after we cleared the queue; their
+          // timestamps let us identify and discard them before they corrupt the stream.
+          if (turnStartTime && ev.timestamp && ev.timestamp < turnStartTime - 500) {
+            log.info(`[sendMessageStream] dropping stale event from previous turn: ${ev.type} ts=${ev.timestamp} turnStart=${turnStartTime}`);
+            continue;
+          }
+
+          switch (ev.type) {

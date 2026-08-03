@@ -2689,9 +2689,18 @@ class LunaSoul extends EventEmitter {
               // v11.8-fix: source-of-truth full thinking replacement from the
               // Chrome extension/bridge. Replace the accumulated reasoning instead
               // of appending deltas, so Luna always mirrors Kimi exactly.
-              const t = event.fullText || event.thinking || '';              if (t && t !== fullThinking) {
+              const t = event.fullText || event.thinking || '';
+              const preview = t.slice(0, 60).replace(/s+/g, ' ');
+              console.log(`[LUNA-SOUL] thinking_update received: ${t.length} chars preview="${preview}" source=${event.source || 'unknown'} currentFull=${fullThinking.length}`);
+              // v11.10-fix: never emit a shorter/fuller snapshot back-and-forth;
+              // the reasoning bubble must only grow or stay equal, never shrink.
+              const isNewOrLonger = t.length > fullThinking.length || (t.length === fullThinking.length && t !== fullThinking);
+              if (t && isNewOrLonger) {
                 fullThinking = t;
+                console.log(`[LUNA-SOUL] thinking_update emitting fullText=${t.length}`);
                 yield { type: 'thinking_update', fullText: t, sessionId };
+              } else if (t && t.length < fullThinking.length) {
+                console.log(`[LUNA-SOUL] thinking_update ignored: shorter than current fullThinking (${t.length} < ${fullThinking.length})`);
               }
               break;
             }
@@ -3234,8 +3243,10 @@ class LunaSoul extends EventEmitter {
               // v11.8-fix: source-of-truth full thinking replacement from the
               // Chrome extension/bridge. Replace the accumulated reasoning instead
               // of appending deltas, so Luna always mirrors Kimi exactly.
+              // v11.10-fix: never emit a shorter/fuller snapshot back-and-forth.
               const t = event.fullText || event.thinking || '';
-              if (t && t !== fullThinking) {
+              const isNewOrLonger = t.length > fullThinking.length || (t.length === fullThinking.length && t !== fullThinking);
+              if (t && isNewOrLonger) {
                 fullThinking = t;
                 yield { type: 'thinking_update', fullText: t, sessionId };
               }

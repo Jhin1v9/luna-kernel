@@ -267,22 +267,33 @@ function renameWebSession(id, title) {
   return false;
 }
 
+// v11.10-fix: keep only the last thinking_update snapshot per turn for persistence,
+// but let the live session.messages stream every update to SSE.
+function collapseThinkingUpdates(messages) {
+  const out = [];
+  for (const m of messages) {
+    if (
+      m.type === 'thinking_update' &&
+      out.length > 0 &&
+      out[out.length - 1].type === 'thinking_update' &&
+      out[out.length - 1].messageId === m.messageId
+    ) {
+      out[out.length - 1] = m;
+    } else {
+      out.push(m);
+    }
+  }
+  return out;
+}
+
 function addMessageToSession(sessionId, message, { persist = true } = {}) {
   const session = webSessions.get(sessionId);
   if (session) {
-    // W6-T8+1: replace the previous thinking_update instead of stacking it.
-    // The bridge polls Kimi's DOM frequently and emits the same reasoning text
-    // many times; keeping every copy bloats session.messages and slows reloads.
-    if (message.type === 'thinking_update') {
-      const lastIdx = session.messages.findLastIndex(m => m.type === 'thinking_update' && m.messageId === message.messageId);
-      if (lastIdx >= 0) {
-        session.messages[lastIdx] = message;
-      } else {
-        session.messages.push(message);
-      }
-    } else {
-      session.messages.push(message);
-    }
+    // v11.10-fix: append every thinking_update snapshot so SSE sees each update
+    // and the frontend bubble mirrors Kimi's reasoning as it grows. Storage bloat
+    // is avoided by collapsing consecutive snapshots before JSON/DB persistence.
+    session.messages.push(message);
+
     // v10.13: Add to event ledger for ACK-based reliable delivery
     if (!session.eventLedger) session.eventLedger = [];
     session.eventLedger.push(message);
@@ -298,12 +309,14 @@ function addMessageToSession(sessionId, message, { persist = true } = {}) {
     // the next real event's persistence instead.
     if (!persist) return;
     // v10.32: Persistir no JSON fallback imediatamente.
-    upsertSessionInJson(session);
+    // v11.10-fix: collapse consecutive thinking_update snapshots so storage stays compact.
+    const messagesToPersist = collapseThinkingUpdates(session.messages);
+    upsertSessionInJson({ ...session, messages: messagesToPersist });
     // Persistir no PostgreSQL (fire-and-forget with retry)
     // v10.16-fix: Also persist eventLedger so reconnects don't lose unacked events
     dbRunWithRetry(
       `UPDATE luna_chat_sessions SET messages = $1::jsonb, event_ledger = $2::jsonb, last_acked_event_id = $3, updated_at = NOW() WHERE id = $4`,
-      [JSON.stringify(session.messages), JSON.stringify(session.eventLedger), session.lastAckedEventId || null, sessionId]
+      [JSON.stringify(messagesToPersist), JSON.stringify(session.eventLedger), session.lastAckedEventId || null, sessionId]
     ).catch(e => console.warn('[DB] Erro ao salvar mensagem no PG:', e.message));
   }
 }

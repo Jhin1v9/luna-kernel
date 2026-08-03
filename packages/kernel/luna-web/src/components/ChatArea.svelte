@@ -462,6 +462,7 @@
         // v11.7-fix: Replace the whole thinking bubble with Kimi's current full
         // reasoning. The Kimi page is the source of truth; deltas can drift/cut.
         const fullText = event.fullText || '';
+        console.log(`[ChatArea] thinking_update received: ${fullText.length} chars, thinkingId=${thinkingId}, currentMessageId=${currentMessageId}`);
         if (!fullText) break;
         if (!thinkingId) {
           thinkingId = 'thinking-' + Date.now();
@@ -474,7 +475,9 @@
         } else {
           messages.update(msgs => msgs.map(m =>
             m.id === thinkingId
-              ? { ...m, content: fullText }
+              // v11.9-fix: never shrink the thinking bubble. A collapsed container
+              // or race may send a shorter text; we keep the largest reasoning seen.
+              ? { ...m, content: fullText.length >= (m.content || '').length ? fullText : (m.content || '') }
               : m
           ));
         }
@@ -584,9 +587,9 @@
         // CRITICAL: Reset assistant tracking so the next response becomes a NEW message
         currentAssistantId = null;
         responseBuffer = '';
-        // v11.8-fix: Freeze the current thinking bubble when a tool starts, so the next
-        // reasoning step (if any) creates its own bubble instead of overwriting this one.
-        thinkingId = null;
+        // v11.9-fix: NEVER freeze the active thinking bubble when a tool starts. The
+        // extension/bridge keep emitting thinking_update for the current reasoning step,
+        // and new reasoning steps emit thinking_start which creates a fresh bubble.
 
         messages.update(msgs => [...msgs, {
           id: toolId,
@@ -1136,6 +1139,26 @@
             });
           } else if (msg.type === 'thinking_start' || msg.type === 'thinking_delta') {
             // v8.5-fix: Ignore thinking events in history load
+            continue;
+          } else if (msg.type === 'thinking_update' && msg.content) {
+            // v11.10-fix: Restore the latest reasoning snapshot on reconnect so the
+            // thinking bubble survives page reloads and SSE reconnects.
+            const existingIdx = loaded.findLastIndex(m => m.type === 'thinking' && m.messageId === msg.messageId);
+            if (existingIdx >= 0) {
+              loaded[existingIdx] = {
+                ...loaded[existingIdx],
+                content: msg.content,
+                timestamp: msg.timestamp || new Date().toISOString(),
+              };
+            } else {
+              loaded.push({
+                id: msg.id || 'thinking-' + Math.random().toString(36).slice(2),
+                type: 'thinking',
+                content: msg.content,
+                messageId: msg.messageId,
+                timestamp: msg.timestamp || new Date().toISOString(),
+              });
+            }
             continue;
           } else if (msg.type === 'response_delta' && msg.content) {
             currentAssistantContent = msg.content;

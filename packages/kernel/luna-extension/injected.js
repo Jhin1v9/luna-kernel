@@ -12,7 +12,7 @@
     return;
   }
 
-  const VERSION = '2.6.6';
+  const VERSION = '2.6.8';
   const POLL_MS = 80;           // read DOM every 80ms while generating
   const HEARTBEAT_MS = 600;     // full-state resync while streaming
   const BATCH_MS = 40;          // batch postMessage calls to content script
@@ -700,7 +700,9 @@
         _thinkingStartedEmitted = true;
         // Emit a stream_state immediately with the full snapshot so the bridge/frontend
         // initialize the bubble with everything we have, not just future deltas.
-        emitStreamState(snapshot, '', true);
+        // v2.6.8-fix: keep the last known response so the bridge cursor doesn't see
+        // response oscillate between 0 and N on every thinking update.
+        emitStreamState(snapshot, _lastSentResponse, true);
         // v2.6.1-fix: also emit a source-of-truth full replacement for the thinking bubble.
         emitThinkingUpdate(snapshot);
         _lastSentThinking = snapshot;
@@ -713,7 +715,8 @@
       if (thinking && (forceResync || (thinking.length >= _lastSentThinking.length && thinking !== _lastSentThinking))) {
         console.log(`[LunaExt DEBUG] emitting thinking_update len=${thinking.length} (last=${_lastSentThinking.length})`);
         _lastSentThinking = thinking;
-        emitStreamState(thinking, '', true);
+        // v2.6.8-fix: preserve last known response to stop response=0 / response=N oscillation.
+        emitStreamState(thinking, _lastSentResponse, true);
         // v2.6.1-fix: source-of-truth full replacement so the frontend always mirrors Kimi.
         emitThinkingUpdate(thinking);
       }
@@ -848,6 +851,20 @@
       lastThinkingLen: _lastSentThinking.length,
       lastResponseLen: _lastSentResponse.length
     })
+  };
+
+  // v2.6.8-fix: expose a reset hook so the bridge can force a clean state at the
+  // start of every new user turn. Without this, stale events from the previous
+  // turn (which may still be in the content-script batch pipe) can overwrite the
+  // new turn's thinking/response and make the stream lag by one message.
+  window.__lunaResetObserverState = () => {
+    resetAssistantState();
+    _currentAssistant = null;
+    _lastSeenThinkingContainer = null;
+    _lastChangeHash = '';
+    _lastChangeTime = Date.now();
+    _eventQueue = [];
+    if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
   };
 
   window.addEventListener('beforeunload', teardown, { once: true });
