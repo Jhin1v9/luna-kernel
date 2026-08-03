@@ -1111,7 +1111,10 @@ class KimiBridge {
   _resolveDomSelectorChains(provider) {
     const cfg = this._loadProviderConfig(provider);
     return {
-      assistant: resolveChain(cfg, 'assistantMessage', '.chat-content-item.chat-content-item-assistant', '.segment.segment-assistant'),
+      // v2.6.7-fix: include .segment-container as a fallback so Kimi's context-limit
+      // notice bubble (which uses .segment-container, not .segment-assistant) is
+      // still extracted as a response and caught by _isContextLimitResponse.
+      assistant: resolveChain(cfg, 'assistantMessage', '.chat-content-item.chat-content-item-assistant', '.segment.segment-assistant', '.segment-container'),
       contentBox: resolveChain(cfg, 'responseContainer', '.segment-content-box', '.markdown-container', '.segment-assistant'),
       thinking: resolveChain(cfg, 'thinking', '.toolcall-container.thinking-container', '.thinking-container', '.toolcall-container[class*="thinking"]', '[class*="thinking"]', '[class*="reasoning"]'),
       thinkingText: resolveChain(cfg, 'thinkingText', '.toolcall-container.thinking-container .markdown-container', '.toolcall-container.thinking-container .markdown', '.thinking-container .markdown-container', '.thinking-container .markdown'),
@@ -1158,7 +1161,9 @@ class KimiBridge {
   _isContextLimitResponse(response) {
     // v11.8-fix: broaden detection for Portuguese/Spanish/English context-limit banners
     // and Kimi UI variants (e.g. "Você e o Kimi conversaram bastante. Tente iniciar um novo chat.")
-    const contextLimitRegex = /getting too long|conversation.*too long|reached.*(?:context|token|memory|input) limit|memory limit|input limit|try starting a new session|聊得太长|发起一个新会话|会话太长|对话太长|上下文太长|convers[ao].*(?:muito longa|bastante|demais|muitas mensagens)|conversaram bastante|conversamos bastante|muita conversa|muitas mensagens|chegou ao limite|atingiu o limite|atingimos o limite|limite de (?:contexto|tokens|mem[óo]ria).{0,25}(?:atingido|chegado|excedido|atingiu|atingimos|chegou|chegamos|excedeu|excedemos)|iniciar um novo chat|começar um novo chat|inicie um novo chat|tente iniciar um novo chat|start a new chat|new chat|create a new chat|refresh this chat|nuevo chat|nueva sesi[óo]n|sesi[óo]n.*(?:muy larga|muy longa|demasiado larga|demasiado longa|lleg[óo] al l[íi]mite|llegamos al l[íi]mite|llegou ao limite)/i;
+    // Kimi's hardcoded context-limit messages in PT/EN/ES/ZH. Kept tight to the exact
+    // phrases Kimi emits; broad regexes are intentionally avoided per owner directive.
+    const contextLimitRegex = /Você e o Kimi|you and Kimi|t[uú] y Kimi|Tu y Kimi|Kimi conversaram bastante|Kimi have (?:talked|chatted)|han hablado mucho|Tente iniciar um novo chat|Try starting a new chat|Intenta iniciar un nuevo chat|iniciar um novo chat|tente iniciar um novo chat|start a new chat|nuevo chat|new chat|getting too long|conversation.*too long|reached.*(?:context|token|memory|input) limit|memory limit|input limit|try starting a new session|聊得太长|发起一个新会话|会话太长|对话太长|上下文太长|convers[ao].*(?:muito longa|bastante|demais|muitas mensagens)|conversaram bastante|conversamos bastante|muita conversa|muitas mensagens|chegou ao limite|atingiu o limite|atingimos o limite|limite de (?:contexto|tokens|mem[óo]ria).{0,25}(?:atingido|chegado|excedido|atingiu|atingimos|chegou|chegamos|excedeu|excedemos)|começar um novo chat|inicie um novo chat|create a new chat|refresh this chat|nueva sesi[óo]n|sesi[óo]n.*(?:muy larga|muy longa|demasiado larga|demasiado longa|lleg[óo] al l[íi]mite|llegamos al l[íi]mite|llegou ao limite)/i;
     if (!response) return false;
     return contextLimitRegex.test(response);
   }
@@ -6851,9 +6856,10 @@ class KimiBridge {
             });
           }
         }
-        log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}, tools=${(structureBased.detectedTools || []).length}, debug=${JSON.stringify(structureBased._debug || {})}`);
+        const isContextLimit = this._isContextLimitResponse(structureBased.response);
+        log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}, tools=${(structureBased.detectedTools || []).length}, isContextLimit=${isContextLimit}, debug=${JSON.stringify(structureBased._debug || {})}`);
         const { _debug, ...rest } = structureBased;
-        return { ...rest, canSteer, isGenerating };
+        return { ...rest, isContextLimit, canSteer, isGenerating };
       }
       const debugStr = structureBased?._debug ? JSON.stringify(structureBased._debug) : 'no-debug';
       log.info(`[_poll] dom-structure: NOT FOUND debug=` + debugStr);
