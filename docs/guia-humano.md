@@ -63,6 +63,9 @@ Si Luna ya estaba encendida, simplemente la reinician.
 > correcto es que arranquen `~/.luna-kernel/pm2-ecosystem.config.js`. Si algún día
 > desaparece la carpeta `.worktrees`, estos atajos dejarán de funcionar y habrá
 > que actualizarlos.
+>
+> 📌 **Rama activa:** todos los cambios nuevos van a la rama `Luna-Abner`, no a
+> `main`. Si haces `git pull`, asegúrate de estar en `Luna-Abner`.
 
 ### Apagar
 
@@ -76,15 +79,22 @@ pm2 stop all
 pm2 status
 ```
 
-Deben aparecer estos 5 procesos en estado `online`:
+Deben aparecer al menos estos 2 procesos en estado `online`:
 
 | Proceso | Qué es | Puerto |
 |---|---|---|
 | `luna-server` | Servidor web de Luna (chat + API) | 3458 |
 | `nexo-dashboard` | Dashboard clásico | 3456 |
+
+Procesos opcionales:
+
+| Proceso | Qué es | Puerto |
+|---|---|---|
 | `luna-vite` | Servidor de desarrollo del frontend | 5173 |
 | `luna-telegram-adapter` | Bot de Telegram | — |
-| `luna-health-watchdog` | Vigilante de salud (reinicia lo que se cae) | — |
+
+> ⚠️ `luna-health-watchdog` fue desactivado el 2026-08-03 porque causaba reinicios
+> en bucle. No lo arranques a menos que se decida lo contrario.
 
 ---
 
@@ -97,6 +107,19 @@ Deben aparecer estos 5 procesos en estado `online`:
   dashboard (tareas, leads, finanzas…); no puede tocar archivos ni la terminal.
 - **El primer día** tendrás que hacer login manual en Kimi (ver la sección 5).
   Después, Luna recuerda la sesión sola.
+
+### Estado actual del sistema (2026-08-03)
+
+Luna está funcionando correctamente:
+
+- Servidor estable: `luna-server` ya no se reinicia solo.
+- Chat web responde en http://localhost:3458.
+- El pensamiento y la respuesta llegan completos al frontend.
+- El wallpaper de constelaciones es determinista: se ve igual después de un
+  `Ctrl+Shift+R` (hard refresh).
+
+Si ves la línea `JSON Copiar` al final del pensamiento, es un texto residual de
+la interfaz de Kimi que no afecta el funcionamiento. Se deja así por ahora.
 
 ---
 
@@ -139,10 +162,10 @@ Si esa página da error, el Chrome aislado está caído: reinicia con
 Hay tres máquinas con Luna: **Jhin**, **Pai** y **Nonoke**.
 
 ```
-PC Jhin ──push──▶ GitHub ◀──pull── PC Pai / PC Nonoke
+PC Jhin ──push──▶ GitHub (rama Luna-Abner) ◀──pull── PC Pai / PC Nonoke
 ```
 
-- **Jhin** hace los cambios y los sube (`git push`).
+- **Jhin** hace los cambios y los sube a la rama **`Luna-Abner`** (`git push origin Luna-Abner`).
 - **Pai y Nonoke** reciben los cambios automáticamente: un cron ejecuta el
   script `luna-sync.sh` cada 5 minutos, que hace `git pull`, recompila y
   reinicia Luna si hay novedades.
@@ -154,9 +177,9 @@ Jhin.
 > ⚠️ El `luna-sync.sh` que circula hoy viene de la época anterior al monorepo
 > (referencia dos repositorios separados, `luna-kernel` y `NEXO_DASHBOARD_PRO`)
 > y no existe en el repositorio actual. Antes de instalarlo en un PC nuevo hay
-> que actualizarlo al layout del monorepo (un solo `git pull` en
-> `~/.luna-kernel`, `corepack pnpm install && corepack pnpm build`,
-> `pm2 restart all`).
+> que actualizarlo al layout del monorepo: hacer `git pull origin Luna-Abner`
+> en `~/.luna-kernel`, `corepack pnpm install && corepack pnpm build`,
+> `pm2 restart all`.
 
 ---
 
