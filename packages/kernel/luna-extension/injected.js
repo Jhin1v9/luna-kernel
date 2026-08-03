@@ -12,7 +12,7 @@
     return;
   }
 
-  const VERSION = '2.6.0';
+  const VERSION = '2.6.2';
   const POLL_MS = 80;           // read DOM every 80ms while generating
   const HEARTBEAT_MS = 600;     // full-state resync while streaming
   const BATCH_MS = 40;          // batch postMessage calls to content script
@@ -299,7 +299,17 @@
       let combined = '';
       const explicitNodes = thinkingContainer.querySelectorAll(SELECTORS.thinkingText);
       if (explicitNodes.length > 0) {
+        // v2.6.2-fix: selectors may match nested containers (e.g. .markdown-container
+        // and the .markdown inside it). Keep only the deepest nodes to avoid duplicating
+        // the same text for every ancestor/descendant pair.
+        const keep = [];
         for (const node of explicitNodes) {
+          const hasDescendantSelected = Array.from(explicitNodes).some(other =>
+            other !== node && node.contains(other)
+          );
+          if (!hasDescendantSelected) keep.push(node);
+        }
+        for (const node of keep) {
           const t = collectTextIgnoringChrome(node);
           if (t) combined += t + '\n\n';
         }

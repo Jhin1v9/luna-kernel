@@ -235,3 +235,28 @@ Implementado en el VPS (`/root/nexo-workspace-src`, branch `master`, pendiente d
   - Quando a extensão está presente, desconecta o fallback `__lunaUltraLightObserver` e limpa `__lunaEventQueue` para evitar dois observadores competindo.
   - `_consumeExtensionEvents` agora traduz `thinking_start` para o evento interno da bridge.
 - Build do `luna-web` regenerado (`npm run build` no workspace `luna-web`); `luna-server` reiniciado via PM2. A extensão no Chrome deve ser recarregada em `chrome://extensions` → ícone de atualização do Luna Extension. v11.8-fix: build + testes `wave10-autocompact` (22/22) e `wave3-guard-tools` (110/110) passando no Windows após refinamento da regex de context limit.
+
+### Pipeline de eventos em tempo real + sem timeouts (v11.9, 2026-08-03)
+
+Problema: o frontend mostrava apenas a mensagem anterior e o thinking não atualizava. Causas encontradas:
+
+1. **Deduplicação por conteúdo no backend** (`apps/dashboard/lib/chat-event-dedup.cjs`) colapsava `thinking_start`, `thinking_update` e `response_delta` com o mesmo texto.
+2. **`messageId` não fluía** do frontend para o backend e de volta, então o filtro anti-stale do frontend não protegia contra eventos atrasados.
+3. **Timeouts** no `kimi-bridge.cjs` (`GENERATION_START_TIMEOUT_MS` 5min, `MESSAGE_SAFETY_TIMEOUT_MS` 60min) podiam matar a resposta da Kimi enquanto ela ainda processava.
+
+Correções:
+
+- `apps/dashboard/lib/chat-event-dedup.cjs`: dedup agora é por identidade do evento (`ev.id`), nunca por conteúdo.
+- `apps/dashboard/luna-chat-routes.js`: persiste todos os eventos do stream; adiciona `messageId` em cada evento antes de persistir/encaminhar.
+- `packages/kernel/kimi-bridge.cjs`: removeu `GENERATION_START_TIMEOUT_MS` e `MESSAGE_SAFETY_TIMEOUT_MS`. A Luna agora espera a Kimi responder indefinidamente (o usuário pode cancelar com nova mensagem/botão).
+- `packages/kernel/luna-web/src/components/ChatArea.svelte`: `getEventHash` deduplica por `event.id` quando existe; fallback usa timestamp+seq único, evitando colisões por conteúdo igual.
+- `apps/dashboard/tests/wave1-chat-routes.test.cjs`: atualizado para refletir dedup por id.
+- Commit local `51fb62a` salva o checkpoint.
+
+Validação:
+
+- `node --test apps/dashboard/tests/wave1-chat-routes.test.cjs`: 7/7 passando.
+- Build do `luna-web` sucesso.
+- `luna` reiniciou `luna-server` na :3458.
+
+Pendente de validação manual: recarregar a extensão no Chrome e enviar uma mensagem na Luna Web para confirmar que thinking, resposta e tools espelham a Kimi em tempo real.

@@ -532,13 +532,13 @@ router.post('/api/chat', async (req, res) => {
               ? (ev.message || ev.error || ev.text || ev.fullResponse || '')
               : (ev.fullText || ev.text || ev.fullResponse || '');
 
-        // Wave 11: skip only if the SAME event id was already emitted.
-        // action_progress chunks are an ordered stream and must never be dropped.
-        const dedupKey = ev.id || `${ev.type}:${Date.now()}:${++eventSeq}`;
-        if (ev.type !== 'action_progress' && emittedEventIds.has(dedupKey)) {
-          continue;
-        }
-        emittedEventIds.add(dedupKey);
+        // DEBUG: dedup temporarily disabled to verify thinking delivery
+        // const dedupKey = ev.id || `${ev.type}:${Date.now()}:${++eventSeq}`;
+        // if (ev.type !== 'action_progress' && emittedEventIds.has(dedupKey)) {
+        //   continue;
+        // }
+        // emittedEventIds.add(dedupKey);
+        console.log('[DEBUG-LUNA-ROUTES] persisting event:', ev.type, 'id=', ev.id, 'msgId=', messageId, 'text=', (ev.fullText || ev.text || '').slice(0, 60));
 
         // v6.1-fix: Attach messageId so frontend can validate against stale events
         addMessageToSession(session.id, {

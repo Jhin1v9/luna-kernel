@@ -84,8 +84,23 @@ class LunaExtensionHandler extends EventEmitter {
     // Receive event from extension
     app.post('/ext/event', (req, res) => {
       const { sessionId, ...eventData } = req.body;
-      if (!sessionId || !this.sessions.has(sessionId)) {
-        return res.status(400).json({ error: 'invalid session' });
+      console.log(`[LunaExt-RAW] /ext/event session=${sessionId} type=${eventData.eventType || eventData.type} dataKeys=${Object.keys(eventData.data || {}).join(',')}`);
+      if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId required' });
+      }
+      // v11.8-fix: auto-register extension sessions after server restart. The
+      // extension keeps reusing its stored sessionId; instead of rejecting it,
+      // recreate the session on the fly so DOM events keep flowing.
+      if (!this.sessions.has(sessionId)) {
+        console.log(`[LunaExt] Auto-registering session after restart: ${sessionId}`);
+        this.sessions.set(sessionId, {
+          connectedAt: Date.now(),
+          lastPing: Date.now(),
+          messages: [],
+          deliveredIds: new Set(),
+          ws: null,
+          type: 'extension'
+        });
       }
 
       const session = this.sessions.get(sessionId);
@@ -98,8 +113,21 @@ class LunaExtensionHandler extends EventEmitter {
     // Poll for server messages
     app.get('/ext/poll', (req, res) => {
       const { sessionId } = req.query;
-      if (!sessionId || !this.sessions.has(sessionId)) {
-        return res.status(400).json({ error: 'invalid session' });
+      if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId required' });
+      }
+      // v11.8-fix: auto-register on poll too, so the extension can pull
+      // server messages immediately after a server restart.
+      if (!this.sessions.has(sessionId)) {
+        console.log(`[LunaExt] Auto-registering session on poll: ${sessionId}`);
+        this.sessions.set(sessionId, {
+          connectedAt: Date.now(),
+          lastPing: Date.now(),
+          messages: [],
+          deliveredIds: new Set(),
+          ws: null,
+          type: 'extension'
+        });
       }
 
       const session = this.sessions.get(sessionId);

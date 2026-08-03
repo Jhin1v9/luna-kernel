@@ -2698,6 +2698,7 @@ class LunaSoul extends EventEmitter {
               // Chrome extension/bridge. Replace the accumulated reasoning instead
               // of appending deltas, so Luna always mirrors Kimi exactly.
               const t = event.fullText || event.thinking || '';
+              console.log(`[DEBUG-LUNA-SOUL] thinking_update len=${t.length}`);
               if (t && t !== fullThinking) {
                 fullThinking = t;
                 yield { type: 'thinking_update', fullText: t, sessionId };
@@ -2706,6 +2707,7 @@ class LunaSoul extends EventEmitter {
             }
 
             case 'thinking_delta':
+              console.log(`[DEBUG-LUNA-SOUL] thinking_delta text=${event.text?.slice(0, 40)}`);
               fullThinking += event.text;
               yield { type: 'thinking_delta', text: event.text, fullThinking, sessionId };
               break;

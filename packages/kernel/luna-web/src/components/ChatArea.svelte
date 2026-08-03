@@ -383,18 +383,20 @@
     } else {
       dedupKey = getEventHash(event);
     }
-    if (processedEventIds.has(dedupKey)) {
-      return;
-    }
-    processedEventIds.add(dedupKey);
-    // Limit set size to prevent memory leaks — Wave 4: trim to 80% in one pass
-    evictOldestEntries(processedEventIds, 5000);
+    // DEBUG: temporarily disabled to verify thinking delivery
+    // if (processedEventIds.has(dedupKey)) {
+    //   return;
+    // }
+    // processedEventIds.add(dedupKey);
+    // // Limit set size to prevent memory leaks — Wave 4: trim to 80% in one pass
+    // evictOldestEntries(processedEventIds, 5000);
 
-    // v3.6-fix: Also deduplicate by backend event ID
-    if (event.id) {
-      const exists = $messages.some(m => m.id === event.id);
-      if (exists) return;
-    }
+    // // v3.6-fix: Also deduplicate by backend event ID
+    // if (event.id) {
+    //   const exists = $messages.some(m => m.id === event.id);
+    //   if (exists) return;
+    // }
+    console.log('[DEBUG-LUNA-UI] event received:', event.type, event.id, event.messageId, event.text?.slice(0, 40), event.fullText?.slice(0, 40));
 
     const { type } = event;
 

@@ -3,6 +3,7 @@
  * Multi-user Playwright automation for Kimi Web (kimi.com) via CDP
  * v2.2: Always uses persistent profile (~/.luna/chrome-profile) to preserve Kimi login across sessions.
  *       Kills Chrome if running with a temporary /tmp/ profile. Copies login data from user's Chrome on first run.
+ * vTEST: unique marker 1785751600
  *
  * Patterns borrowed from luna-cto-agent.cjs (Luna v15.1–v19.0):
  * - Persistent Logger with circular buffer + rotation
@@ -34,6 +35,8 @@ const { makeDomEventDedupKey } = require('./lib/tool-dedup-key.cjs');
 const { scanPageContextLimit } = require('./bridge-libs/dom-scripts/poll-dom-structure.js');
 const { loadProviderConfig, listProviders, getProviderUrl, getProviderSelector, getProviderCookies, getProviderFeature, getProviderInputSelector, getProviderResponseSelectors, getProviderUiSelectors } = require('./provider-loader.cjs');
 const { resolveChain, providerDisplayName, firstMatchingLocator, waitForChain } = require('./lib/provider-selectors.cjs');
+
+console.error('[KIMI-BRIDGE-BOOT] vTEST marker loaded 1785751600');
 
 // Lazy-load turndown — fail gracefully if not installed
 let TurndownService = null;
@@ -5788,19 +5791,39 @@ class KimiBridge {
    * user's poller steal another user's streamed text/tool events.
    */
   _consumeExtensionEvents(expectedUrl) {
+    console.log(`[DEBUG-LUNA-CONSUME] FUNCTION CALLED expectedUrl=${expectedUrl}`);
     try {
       const buffers = global.__lunaExtensionEventBuffers;
-      if (!buffers || buffers.size === 0) return [];
+      if (!buffers || buffers.size === 0) {
+        console.log(`[DEBUG-LUNA-CONSUME] no buffers`);
+        return [];
+      }
 
-      // Same chat thread, tolerant of tracking params: strip query, hash,
-      // and trailing slashes before comparing.
+      // Same chat thread, tolerant of tracking params and www differences.
       const normalizeUrl = (u) => {
         if (!u || typeof u !== 'string') return '';
-        return u.split('#')[0].split('?')[0].replace(/\/+$/, '');
+        try {
+          const url = new URL(u);
+          // ignore www. vs bare domain
+          url.hostname = url.hostname.replace(/^www\./, '');
+          // keep origin + pathname only
+          let pathname = url.pathname;
+          if (pathname.length > 1 && pathname.endsWith('/')) pathname = pathname.slice(0, -1);
+          return `${url.protocol}//${url.hostname}${pathname}`;
+        } catch (e) {
+          return u.split('#')[0].split('?')[0].replace(/\/+$/, '');
+        }
       };
       const expected = normalizeUrl(expectedUrl);
       const multiBuffer = buffers.size > 1;
       let loggedNoUrl = false;
+
+      log.info(`[DEBUG-LUNA-CONSUME] expectedUrl=${expected} rawExpected=${expectedUrl} buffers=${buffers.size}`);
+      for (const [sid, buf] of buffers) {
+        if (!buf || buf.length === 0) continue;
+        const first = buf[0];
+        log.info(`[DEBUG-LUNA-CONSUME] buffer ${sid}: len=${buf.length} tabUrl=${normalizeUrl(first.tabUrl || first.url || '')} eventType=${first.eventType || 'unknown'}`);
+      }
 
       const allEvents = [];
       for (const [sessionId, buf] of buffers) {
@@ -5816,7 +5839,7 @@ class KimiBridge {
             // exactly one buffer exists (single-user dev scenario preserved).
             belongs = !multiBuffer;
             if (!loggedNoUrl) {
-              log.debug(`[ChromeExt] Event without url/tabUrl — ${belongs ? 'consuming (single buffer)' : 'skipping (multiple buffers, ownership unknown)'}`);
+              log.info(`[DEBUG-LUNA-CONSUME] Event without url/tabUrl — ${belongs ? 'consuming (single buffer)' : 'skipping (multiple buffers, ownership unknown)'}`);
               loggedNoUrl = true;
             }
           } else {
@@ -5826,6 +5849,7 @@ class KimiBridge {
             remaining.push(raw);
             continue;
           }
+          log.info(`[DEBUG-LUNA-CONSUME] consuming event ${raw.eventType} for ${expected}`);
           // Translate extension event format to bridge internal format
           switch (raw.eventType) {
             case 'thinking_start': {
@@ -5968,6 +5992,7 @@ class KimiBridge {
             // own tab are consumed (cross-user event theft fix).
             let pageUrl = '';
             try { pageUrl = session.page.url(); } catch (_) { pageUrl = ''; }
+            console.log(`[DEBUG-LUNA] about to call _consumeExtensionEvents pageUrl=${pageUrl}`);
             const extEvents = this._consumeExtensionEvents(pageUrl);
             for (const ev of extEvents) {
               // v11.1-fix: DeepSeek's DOM observer emits partial tool_call events while
@@ -8641,18 +8666,13 @@ class KimiBridge {
               // The Kimi page is the source of truth; the cursor emits only the
               // new suffix so the frontend accumulates a perfect mirror.
               if (t) {
-                const { emit, diverged } = thinkingCursor.next(ev.source, t);
-                if (diverged) {
-                  const srcKey = ev.source || 'unknown';
-                  if (!divergedSourcesLogged.has(srcKey)) {
-                    divergedSourcesLogged.add(srcKey);
-                    log.warn(`[sendMessageStream] Thinking source '${srcKey}' diverged from committed text — swallowing chunk to avoid duplicated stream`);
-                  }
-                }
-                if (emit) {
-                  yield { type: 'thinking_delta', text: emit, fullThinking: t };
-                  lastThinking = t;
-                }
+                // DEBUG: bypass cursor diff for thinking — emit full update every time
+                // const { emit, diverged } = thinkingCursor.next(ev.source, t);
+                // if (diverged) { ... }
+                // if (emit) { yield { type: 'thinking_delta', text: emit, fullThinking: t }; lastThinking = t; }
+                log.info(`[DEBUG-LUNA-BRIDGE] state_change thinking=${t.length} source=${ev.source||'unknown'}`);
+                yield { type: 'thinking_update', fullText: t, source: ev.source || 'state_change' };
+                lastThinking = t;
               }
 
               // Yield response deltas
@@ -8801,18 +8821,17 @@ class KimiBridge {
             // v11.2-fix: chrome_extension can emit an explicit thinking_start —
             // forward it so the frontend creates the bubble immediately.
             case 'thinking_start': {
+              log.info(`[DEBUG-LUNA-BRIDGE] yielding thinking_start source=${ev.source||'chrome_extension'}`);
               yield { type: 'thinking_start', source: ev.source || 'chrome_extension' };
               break;
             }
 
             // v11.8-fix: source-of-truth full thinking replacement from the
             // Chrome extension. Pass through as-is so the frontend replaces the
-            // entire bubble content with Kimi's current reasoning. We do NOT
-            // deduplicate here — the frontend handles replacement, and trying to
-            // dedup against lastThinking would swallow the first event when it
-            // matches the Phase 0 seed.
+            // entire bubble content with Kimi's current reasoning.
             case 'thinking_update': {
               const fullText = ev.fullText || '';
+              log.info(`[DEBUG-LUNA-BRIDGE] thinking_update len=${fullText.length} source=${ev.source||'unknown'}`);
               if (fullText) {
                 lastThinking = fullText;
                 yield { type: 'thinking_update', fullText, source: ev.source || 'chrome_extension' };
@@ -8823,6 +8842,7 @@ class KimiBridge {
             // v8.5-fix: Direct thinking/response deltas from ultra-light observer
             case 'thinking_delta': {
               const t = ev.fullThinking || ev.text || '';
+              log.info(`[DEBUG-LUNA-BRIDGE] thinking_delta len=${t.length}`);
               if (t && t !== lastThinking) {
                 const delta = t.slice(lastThinking.length);
                 if (delta) {
