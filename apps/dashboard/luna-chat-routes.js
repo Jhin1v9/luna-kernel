@@ -270,7 +270,19 @@ function renameWebSession(id, title) {
 function addMessageToSession(sessionId, message, { persist = true } = {}) {
   const session = webSessions.get(sessionId);
   if (session) {
-    session.messages.push(message);
+    // W6-T8+1: replace the previous thinking_update instead of stacking it.
+    // The bridge polls Kimi's DOM frequently and emits the same reasoning text
+    // many times; keeping every copy bloats session.messages and slows reloads.
+    if (message.type === 'thinking_update') {
+      const lastIdx = session.messages.findLastIndex(m => m.type === 'thinking_update' && m.messageId === message.messageId);
+      if (lastIdx >= 0) {
+        session.messages[lastIdx] = message;
+      } else {
+        session.messages.push(message);
+      }
+    } else {
+      session.messages.push(message);
+    }
     // v10.13: Add to event ledger for ACK-based reliable delivery
     if (!session.eventLedger) session.eventLedger = [];
     session.eventLedger.push(message);
@@ -532,13 +544,14 @@ router.post('/api/chat', async (req, res) => {
               ? (ev.message || ev.error || ev.text || ev.fullResponse || '')
               : (ev.fullText || ev.text || ev.fullResponse || '');
 
-        // DEBUG: dedup temporarily disabled to verify thinking delivery
-        // const dedupKey = ev.id || `${ev.type}:${Date.now()}:${++eventSeq}`;
-        // if (ev.type !== 'action_progress' && emittedEventIds.has(dedupKey)) {
-        //   continue;
-        // }
-        // emittedEventIds.add(dedupKey);
-        console.log('[DEBUG-LUNA-ROUTES] persisting event:', ev.type, 'id=', ev.id, 'msgId=', messageId, 'text=', (ev.fullText || ev.text || '').slice(0, 60));
+        // W6-T8+1: re-enable dedup now that thinking delivery is verified.
+        // thinking_update is handled separately (replace-last in addMessageToSession)
+        // because the bridge may emit the same reasoning text many times during polling.
+        const dedupKey = ev.id || `${ev.type}:${content}`;
+        if (ev.type !== 'action_progress' && ev.type !== 'thinking_update' && emittedEventIds.has(dedupKey)) {
+          continue;
+        }
+        emittedEventIds.add(dedupKey);
 
         // v6.1-fix: Attach messageId so frontend can validate against stale events
         addMessageToSession(session.id, {
