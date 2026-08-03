@@ -2528,6 +2528,7 @@ class KimiBridge {
             : contentBox.querySelectorAll('.block-item');
           for (const item of blockItems) {
             if (firstMatch(item, selectors.thinking)) continue;
+            if (thinkContainer && (item === thinkContainer || thinkContainer.contains(item))) continue;
             for (const cb of item.querySelectorAll('.segment-code, pre code, [class*="code-block"]')) {
               const text = (cb.textContent || cb.innerText || '').trim();
               if (text) rawResponse += text + '\n\n';
@@ -6700,7 +6701,10 @@ class KimiBridge {
         const seenResponseTexts = new Set();
         for (const md of markdownContainers) {
           // v10.8-fix: skip markdowns that live inside the thinking container
-          if (thinkContainer && md.closest && md.closest(selectors.thinking[0])) continue;
+          if (thinkContainer && md.closest) {
+            const thinkingSelectors = Array.isArray(selectors.thinking) ? selectors.thinking : [selectors.thinking];
+            if (thinkingSelectors.some(s => md.closest(s))) continue;
+          }
 
           // v10.42-fix: avoid duplicate text when .markdown-container and .markdown
           // are nested and both selected.
@@ -7238,6 +7242,8 @@ class KimiBridge {
             // v10.42-fix: the new Kimi frontend renders the thinking block as a
             // .toolcall-container.thinking-container; it is NOT a real tool call.
             if (className.includes('thinking') || className.includes('reasoning')) continue;
+            // v2.6.6-fix: also skip any toolcall container nested inside a thinking container.
+            if (container.closest && container.closest('.thinking-container, [class*="thinking-container"], [class*="thinking"]')) continue;
             let toolName = 'ipython';
             if (className.includes('web_search')) toolName = 'web_search';
             else if (className.includes('browser')) toolName = 'browser';
@@ -7489,10 +7495,9 @@ class KimiBridge {
              '.markdown pre code', '.markdown-container pre code'];
         const allCodeEls = allMatches(lastAssistant, codeSelectors);
 
-        // v5.3-fix: Exclude code blocks inside the thinking container.
-        // v8.5-fix: In THINKING mode, Kimi may place REAL tool calls inside
-        // the thinking container. We scan them too, but only accept if they look
-        // like actual tool calls (have 'tool'/'script'/'action' keys).
+        // v2.6.6-fix: ABSOLUTE boundary rule — never extract response/tool JSON from inside
+        // the thinking container. The model's reasoning may quote JSON examples that must
+        // stay inside the thinking bubble and never be treated as real actions/responses.
         const thinkContainer = selectors
           ? firstMatch(lastAssistant, selectors.thinking)
           : lastAssistant.querySelector('.toolcall-container.thinking-container, .thinking-container, [class*="thinking-container"]');
@@ -7506,7 +7511,6 @@ class KimiBridge {
           return false;
         };
         const filteredCodeEls = allCodeEls.filter(el => !isInsideThinking(el));
-        const thinkingCodeEls = allCodeEls.filter(el => isInsideThinking(el));
 
         for (const el of filteredCodeEls) {
           let text = '';
@@ -7664,93 +7668,7 @@ class KimiBridge {
           }
         }
 
-        // v8.5-fix: Also scan code blocks inside the thinking container, but ONLY
-        // accept actual tool calls (not examples). In THINKING mode, Kimi may place
-        // real JSON tool calls inside the thinking panel.
-        for (const el of thinkingCodeEls) {
-          let text = (el.innerText || el.textContent || '').trim();
-          if (!text && el.parentElement && el.parentElement.tagName === 'PRE') {
-            text = (el.parentElement.innerText || el.parentElement.textContent || '').trim();
-          }
-          if (!text || text.length < 10 || seen.has(text)) continue;
-          seen.add(text);
-
-          const cleaned = text
-            .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
-            .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '');
-
-          function tolerantJsonParseThinking(str) {
-            const trimmed = str.trim();
-            if (!trimmed.endsWith('}')) return null;
-            try { return JSON.parse(str); } catch {}
-            const firstBrace = str.indexOf('{');
-            const lastBrace = str.lastIndexOf('}');
-            if (firstBrace >= 0 && lastBrace > firstBrace) {
-              const extracted = str.slice(firstBrace, lastBrace + 1);
-              try { return JSON.parse(extracted); } catch {}
-            }
-            const toolMatch = str.match(/"tool"\s*:\s*"([^"]+)"/);
-            if (!toolMatch) return null;
-            const tool = toolMatch[1];
-            const paramsStart = str.indexOf('"params"');
-            if (paramsStart === -1) return { tool, params: {} };
-            let braceDepth = 0;
-            let paramsStr = '';
-            let inStr = false;
-            let strChar = null;
-            let escaped = false;
-            for (let i = paramsStart; i < str.length; i++) {
-              const ch = str[i];
-              if (escaped) { paramsStr += ch; escaped = false; continue; }
-              if (ch === '\\') { paramsStr += ch; escaped = true; continue; }
-              if (!inStr) {
-                if (ch === '"' || ch === "'") { inStr = true; strChar = ch; }
-                else if (ch === '{') braceDepth++;
-                else if (ch === '}') { braceDepth--; if (braceDepth === 0) { paramsStr += ch; break; } }
-                paramsStr += ch;
-              } else {
-                if (ch === strChar) { inStr = false; strChar = null; }
-                paramsStr += ch;
-              }
-            }
-            let fixedParams = '';
-            inStr = false; strChar = null; escaped = false;
-            for (let i = 0; i < paramsStr.length; i++) {
-              const ch = paramsStr[i];
-              if (escaped) { fixedParams += ch; escaped = false; continue; }
-              if (ch === '\\') { fixedParams += ch; escaped = true; continue; }
-              if (!inStr) {
-                if (ch === '"' || ch === "'") { inStr = true; strChar = ch; }
-                fixedParams += ch;
-              } else {
-                if (ch === strChar) { inStr = false; strChar = null; fixedParams += ch; }
-                else if (ch === '\n') fixedParams += '\\n';
-                else if (ch === '\r') fixedParams += '\\r';
-                else if (ch === '\t') fixedParams += '\\t';
-                else fixedParams += ch;
-              }
-            }
-            try {
-              const params = JSON.parse(fixedParams);
-              return { tool, params };
-            } catch { return null; }
-          }
-
-          const parsed = tolerantJsonParseThinking(cleaned);
-          if (!parsed) continue;
-
-          // Only accept REAL tool calls from thinking container — ignore examples
-          if (parsed.tool && parsed.params !== undefined) {
-            actions.push({ tool: parsed.tool, params: parsed.params, raw: text });
-          } else if (parsed.script) {
-            actions.push({
-              tool: 'executeScript',
-              params: { code: parsed.script, language: parsed.language || 'bash' },
-              raw: text,
-            });
-          }
-        }
-
+        // v2.6.6-fix: thinking container code blocks are NEVER treated as actions/responses.
         return { responses, actions };
       }, { selectors: chains, marker: assistantMarker });
     } catch (e) {
