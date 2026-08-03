@@ -35,23 +35,30 @@ teste
 
 ## Estado dos componentes no momento da evidência
 
-- `luna-extension/injected.js` v2.6.2
+- `luna-extension/injected.js` v2.6.5
 - `kimi-bridge.cjs` v11.9
 - `luna-soul.cjs` v11.9
 - `luna-chat-routes.js` v11.9
 - `ChatArea.svelte` v11.9
 
-## Commit do checkpoint
+## Commits do checkpoint
 
 ```
 de7f57f checkpoint(v11.9): thinking espelhado em tempo real do Kimi Web +
-            dedup por event.id + sem timeouts
+        dedup por event.id + sem timeouts
+7df4da9 fix(extension): v2.6.3 — regra absoluta do thinking container + logs limpos
+9afefe5 fix(extension): v2.6.5 — congela thinking quando resposta começa +
+        stream_end por inatividade
 ```
 
-## Observação para próximos passos
+## Regras aplicadas no v2.6.5
 
-O usuário decidiu simplificar ainda mais a regra de fronteira do thinking:
-**tudo que está dentro do container `Think`/`thinking-container` da Kimi é
-pensamento; tudo fora é resposta/tool**. A detecção de "JSON Copy" ou code
-block JSON dentro do thinking não deve encerrar o raciocínio — isso será
-aplicado no próximo ajuste.
+1. **Fronteira absoluta**: tudo dentro do container `Think`/`thinking-container`
+   da Kimi é raciocínio; tudo fora é resposta/tool.
+2. **Thinking primeiro, resposta depois**: a Kimi termina o pensamento antes de
+   emitir qualquer resposta, então o raciocínio é congelado assim que texto real
+   aparece fora do thinking container — isso evita que um container colapsado/
+   truncado sobrescreva o thinking completo já capturado.
+3. **Fim do turno por inatividade**: se o DOM para de mudar por 3s após o
+   início da resposta, a extensão emite `stream_end` para o backend finalizar o
+   turno (fallback para variantes da Kimi onde o botão stop não é detectado).
