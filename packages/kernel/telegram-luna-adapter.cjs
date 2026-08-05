@@ -44,6 +44,18 @@ if (!TOKEN) {
   process.exit(1);
 }
 
+// ── ALLOWLIST ──
+// Solo usuarios autorizados pueden operar Luna via Telegram.
+// Lista separada por coma en ALLOWED_TELEGRAM_IDS (IDs numericos).
+// OWNER_TELEGRAM_ID autoriza siempre (owner) y puede ver quien intenta operar.
+const ALLOWED_TELEGRAM_IDS = (process.env.ALLOWED_TELEGRAM_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+const OWNER_TELEGRAM_ID = (process.env.OWNER_TELEGRAM_ID || '').trim();
+
+function _isAllowedTelegramUser(fromId) {
+  const id = String(fromId);
+  return ALLOWED_TELEGRAM_IDS.includes(id) || (OWNER_TELEGRAM_ID && id === OWNER_TELEGRAM_ID);
+}
+
 // ── ADAPTER ──
 class TelegramLunaAdapter {
   constructor() {
@@ -77,15 +89,26 @@ class TelegramLunaAdapter {
 
   _setupHandlers() {
     // ── Comandos ──
-    this.bot.onText(/^\/start/, (msg) => this._cmdStart(msg));
-    this.bot.onText(/^\/modo\s+(.+)/, (msg, match) => this._cmdModo(msg, match));
-    this.bot.onText(/^\/persona\s+(.+)/, (msg, match) => this._cmdModo(msg, match));
-    this.bot.onText(/^\/status/, (msg) => this._cmdStatus(msg));
-    this.bot.onText(/^\/newaba/, (msg) => this._cmdNewAba(msg));
-    this.bot.onText(/^\/kimi(?:\s+(on|off))?/, (msg, match) => this._cmdKimi(msg, match));
+    const guarded = (handler) => (msg, match) => {
+      if (!_isAllowedTelegramUser(msg.from?.id)) {
+        console.warn(`[TG] Denied command from unauthorized user ${msg.from?.id}`);
+        return;
+      }
+      return handler(msg, match);
+    };
+    this.bot.onText(/^\/start/, guarded((msg) => this._cmdStart(msg)));
+    this.bot.onText(/^\/modo\s+(.+)/, guarded((msg, match) => this._cmdModo(msg, match)));
+    this.bot.onText(/^\/persona\s+(.+)/, guarded((msg, match) => this._cmdModo(msg, match)));
+    this.bot.onText(/^\/status/, guarded((msg) => this._cmdStatus(msg)));
+    this.bot.onText(/^\/newaba/, guarded((msg) => this._cmdNewAba(msg)));
+    this.bot.onText(/^\/kimi(?:\s+(on|off))?/, guarded((msg, match) => this._cmdKimi(msg, match)));
 
     // ── Mensagens genéricas ──
     this.bot.on('message', async (msg) => {
+      if (!_isAllowedTelegramUser(msg.from?.id)) {
+        console.warn(`[TG] Denied message from unauthorized user ${msg.from?.id}`);
+        return;
+      }
       if (!msg.text || msg.text.startsWith('/')) return;
       await this._handleUserMessage(msg);
     });
@@ -104,6 +127,11 @@ class TelegramLunaAdapter {
   async _handleCallbackQuery(query) {
     const data = query.data || '';
     if (!data.startsWith('vote:')) return;
+
+    if (!_isAllowedTelegramUser(query.from.id)) {
+      console.warn(`[TG] Denied callback from unauthorized user ${query.from.id}`);
+      return;
+    }
 
     const parts = data.split(':');
     if (parts.length !== 3) return;
