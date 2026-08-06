@@ -5076,10 +5076,30 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     // FIX: Empty output (result.output === '') is falsy and was skipped.
     // Use explicit checks so empty strings are preserved and reported back to the LLM.
     // v8.5-fix: Prioritize friendlyMessage (human-readable) over raw JSON
-    if (result.friendlyMessage === undefined && result.content === undefined && result.stdout === undefined && result.output === undefined) {
-      console.log('[LUNA] Storage fallback raw result (debug):', JSON.stringify(result).slice(0, 500));
+    // v2.6.13-fix: Also serialize result.results / result.data arrays so tools
+    // like searchWeb (which returns {results:[...]}) produce readable output.
+    let rawOutput;
+    if (result.friendlyMessage !== undefined) rawOutput = result.friendlyMessage;
+    else if (result.content !== undefined) rawOutput = result.content;
+    else if (result.stdout !== undefined) rawOutput = result.stdout;
+    else if (result.output !== undefined) rawOutput = result.output;
+    else if (result.error !== undefined && result.error !== '') rawOutput = 'Erro: ' + result.error;
+    else if (Array.isArray(result.results) && result.results.length > 0) {
+      rawOutput = result.results.map((r, i) => {
+        if (typeof r === 'string') return `${i + 1}. ${r}`;
+        const parts = [];
+        if (r.title) parts.push(`${i + 1}. ${r.title}`);
+        if (r.url) parts.push(`URL: ${r.url}`);
+        if (r.snippet) parts.push(r.snippet);
+        return parts.join('\n') || JSON.stringify(r);
+      }).join('\n\n');
     }
-    const rawOutput = (result.friendlyMessage !== undefined ? result.friendlyMessage : result.content !== undefined ? result.content : result.stdout !== undefined ? result.stdout : result.output !== undefined ? result.output : '[Resultado da ferramenta não possui saída legível]').slice(0, 2000);
+    else if (result.data !== undefined) rawOutput = typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2);
+    else {
+      console.log('[LUNA] Storage fallback raw result (debug):', JSON.stringify(result).slice(0, 500));
+      rawOutput = '[Resultado da ferramenta não possui saída legível]';
+    }
+    rawOutput = String(rawOutput).slice(0, 2000);
     const outputText = this._scrubSecrets(rawOutput);
     if (result.error) result.error = this._scrubSecrets(result.error);
     if (result.stdout) result.stdout = this._scrubSecrets(result.stdout);

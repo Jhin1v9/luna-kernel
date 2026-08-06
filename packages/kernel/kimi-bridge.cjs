@@ -8547,6 +8547,14 @@ class KimiBridge {
       // v7.0: Stream consumer — reads from event queue, NOT from DOM directly
       let lastThinking = '';
       let lastResponse = '';
+      // v2.6.13-fix: carry the previous turn's final answer across generators so we
+      // can ignore DOM leftovers that still show the old response at the start of a
+      // new turn. `lastResponse` is local to this generator and starts empty.
+      const previousTurnFinalResponse = session?.lastTurnFinalResponse || '';
+      const previousTurnFinalThinking = session?.lastTurnFinalThinking || '';
+      if (previousTurnFinalResponse) {
+        log.info(`[sendMessageStream] previousTurnFinalResponse=${previousTurnFinalResponse.length} chars available for stale guard`);
+      }
       // Wave2-fix E: per-source response cursors. Each producer (chrome_extension,
       // dom-structure poll, dom_observer) emits FULL cumulative text from its own
       // extraction; diffing all of them against one shared cursor duplicated or
@@ -8568,6 +8576,10 @@ class KimiBridge {
       // W10-T2: page-level context_limit event from the DomPoller's revived
       // full-page scanner (modal/banner outside the response bubbles).
       let pageContextLimit = null;
+      // v2.6.12-fix: reset the response cursor once the new turn's thinking starts.
+      // This prevents any stale response text (from the previous turn or from the
+      // DomPoller) from seeding the cursor and making the real new response diverge.
+      let responseCursorResetForTurn = false;
 
       // v9.4-fix: JSON Accumulation Buffer state
       let jsonAccumulator = '';
@@ -8699,7 +8711,7 @@ class KimiBridge {
           // batches events and some can arrive after we cleared the queue; their
           // timestamps let us identify and discard them before they corrupt the stream.
           if (turnStartTime && ev.timestamp && ev.timestamp < turnStartTime - 500) {
-            log.info();
+            log.info('[sendMessageStream] dropping stale event from previous turn');
             continue;
           }
 
@@ -8708,6 +8720,21 @@ class KimiBridge {
               const sanitized = sanitizeStateChange(ev);
               let t = sanitized.thinking || '';
               let r = sanitized.response || '';
+
+              // v2.6.12-fix: the DomPoller starts before the message is sent and can
+              // enqueue a state_change containing only the previous turn's response
+              // still visible on screen. If we let it through, the response cursor
+              // seeds with stale text and the new turn's real response is treated as
+              // a continuation/divergence. Drop it when it exactly matches the text
+              // that was already on screen before this turn began, or the final
+              // answer committed at the end of the previous turn.
+              if (r && !t && (
+                (initialText && r === initialText) ||
+                (previousTurnFinalResponse && r === previousTurnFinalResponse)
+              )) {
+                log.info(`[sendMessageStream] dropping state_change that repeats previous-turn response (${r.length} chars)`);
+                continue;
+              }
 
               // v11.8-fix: diff thinking exactly like we diff response.
               // The Kimi page is the source of truth; the cursor emits only the
@@ -8719,7 +8746,16 @@ class KimiBridge {
                 // DEBUG: bypass cursor diff for thinking — emit full update every time
                 // const { emit, diverged } = thinkingCursor.next(ev.source, t);
                 // if (diverged) { ... }
-                // if (emit) { yield { type: 'thinking_delta', text: emit, fullThinking: t }; lastThinking = t; }                yield { type: 'thinking_update', fullText: t, source: ev.source || 'state_change' };
+                // if (emit) { yield { type: 'thinking_delta', text: emit, fullThinking: t }; lastThinking = t; }
+                // v2.6.12-fix: reset response cursor when new-turn thinking arrives.
+                // Any stale response already seeded (from previous turn / DomPoller)
+                // is discarded so the real response is emitted as a fresh delta.
+                if (!responseCursorResetForTurn) {
+                  responseCursor.startNewTurn(previousTurnFinalResponse);
+                  responseCursorResetForTurn = true;
+                  log.info('[sendMessageStream] response cursor startNewTurn on state_change (previousResponse=' + previousTurnFinalResponse.length + ' chars)');
+                }
+                yield { type: 'thinking_update', fullText: t, source: ev.source || 'state_change' };
                 lastThinking = t;
               }
 
@@ -8728,10 +8764,13 @@ class KimiBridge {
               // shared lastResponse — producers with divergent extractions no
               // longer spray duplicated/corrupted chunks.
               if (r && r !== lastResponse) {
-                const { emit, diverged } = responseCursor.next(ev.source, r);
+                const { emit, diverged, stale } = responseCursor.next(ev.source, r);
+                if (stale) {
+                  log.info(`[sendMessageStream] dropping stale previous-turn response from source=${ev.source || 'unknown'} (${r.length} chars)`);
+                  continue;
+                }
                 if (diverged) {
-                  const srcKey = ev.source || 'unknown';
-                  if (!divergedSourcesLogged.has(srcKey)) {
+                  const srcKey = ev.source || 'unknown';                  if (!divergedSourcesLogged.has(srcKey)) {
                     divergedSourcesLogged.add(srcKey);
                     log.warn(`[sendMessageStream] Response source '${srcKey}' diverged from committed text — swallowing chunk to avoid duplicated stream`);
                   }
@@ -8861,6 +8900,11 @@ class KimiBridge {
               if (!emittedResponseHashes.has(hash)) {
                 emittedResponseHashes.add(hash);
                 log.info(`[JSON STREAM] Response detected (${ev.response.length} chars)`);
+                // v2.6.13-fix: keep lastResponse in sync with the full answer we just
+                // committed, otherwise the final 'done' event may yield a stale response.
+                if (ev.response && ev.response.length > lastResponse.length) {
+                  lastResponse = ev.response;
+                }
                 yield { type: 'response_detected', response: ev.response, source: ev.source };
               }
               break;
@@ -8868,7 +8912,13 @@ class KimiBridge {
 
             // v11.2-fix: chrome_extension can emit an explicit thinking_start —
             // forward it so the frontend creates the bubble immediately.
-            case 'thinking_start': {              yield { type: 'thinking_start', source: ev.source || 'chrome_extension' };
+            case 'thinking_start': {
+              if (!responseCursorResetForTurn) {
+                responseCursor.startNewTurn(previousTurnFinalResponse);
+                responseCursorResetForTurn = true;
+                log.info('[sendMessageStream] response cursor startNewTurn on thinking_start (previousResponse=' + previousTurnFinalResponse.length + ' chars)');
+              }
+              yield { type: 'thinking_start', source: ev.source || 'chrome_extension' };
               break;
             }
 
@@ -8877,7 +8927,13 @@ class KimiBridge {
             // entire bubble content with Kimi's current reasoning.
             case 'thinking_update': {
               const fullText = ev.fullText || '';
-              log.info(`[sendMessageStream] thinking_update from chrome_extension: ${fullText.length} chars`);              if (fullText) {
+              log.info(`[sendMessageStream] thinking_update from chrome_extension: ${fullText.length} chars`);
+              if (fullText) {
+                if (!responseCursorResetForTurn) {
+                  responseCursor.startNewTurn(previousTurnFinalResponse);
+                  responseCursorResetForTurn = true;
+                  log.info('[sendMessageStream] response cursor startNewTurn on thinking_update (previousResponse=' + previousTurnFinalResponse.length + ' chars)');
+                }
                 lastThinking = fullText;
                 yield { type: 'thinking_update', fullText, source: ev.source || 'chrome_extension' };
               }
@@ -8906,6 +8962,9 @@ class KimiBridge {
                     divergedSourcesLogged.add(srcKey);
                     log.warn(`[sendMessageStream] Response source '${srcKey}' diverged from committed text — swallowing chunk to avoid duplicated stream`);
                   }
+                  // v2.6.13-fix: do NOT let a discarded divergent response corrupt
+                  // lastResponse, otherwise the final 'done' may yield stale text.
+                  continue;
                 }
                 if (emit) {
                   yield { type: 'response_delta', text: emit };
@@ -9210,12 +9269,20 @@ class KimiBridge {
       // W10-T2: the page-level scanner's context_limit event (modal/banner
       // outside the bubbles) takes precedence over the text-based check.
       const isContextLimit = !!pageContextLimit || this._isContextLimitResponse(finalResponse);
+      // v2.6.13-fix: persist the final answer of this turn so the next turn can
+      // distinguish stale DOM leftovers from the real new response.
+      if (session) {
+        session.lastTurnFinalResponse = finalResponse || '';
+        session.lastTurnFinalThinking = lastThinking || '';
+        log.info(`[sendMessageStream] persisted lastTurnFinalResponse=${session.lastTurnFinalResponse.length} chars`);
+      }
       if (isContextLimit) {
         log.warn(`[sendMessageStream] Context limit detected${pageContextLimit ? ' (page-level scanner)' : ''}`);
         yield { type: 'context_limit', response: pageContextLimit?.response || finalResponse, thinking: lastThinking };
       } else {
         yield { type: 'done', response: finalResponse, thinking: lastThinking };
-      }    } catch (err) {
+      }
+    } catch (err) {
       if (err.message === 'STREAM_CANCELLED') {
         log.info(`[sendMessageStream] Stream cancelled gracefully for user ${hashUserId(userId)}`);
       } else {

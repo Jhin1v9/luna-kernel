@@ -12,7 +12,7 @@
     return;
   }
 
-  const VERSION = '2.6.8';
+  const VERSION = '2.6.12';
   const POLL_MS = 80;           // read DOM every 80ms while generating
   const HEARTBEAT_MS = 600;     // full-state resync while streaming
   const BATCH_MS = 40;          // batch postMessage calls to content script
@@ -564,6 +564,10 @@
   let _lastChangeTime = Date.now();
   let _lastChangeHash = '';
   let _streamEndEmitted = false;
+  // v2.6.11-fix: after a reset we prime the observer with the current DOM; while
+  // primed, heartbeat forceResync must NOT re-emit the stale thinking/response
+  // that is still on screen, otherwise the bridge seeds the new turn with it.
+  let _resetPrimed = false;
 
   function getToolKey(tool, params) {
     try {
@@ -645,6 +649,11 @@
       const btnState = detectButtonState();
       const nowStreaming = btnState.stopVisible;
 
+      // v2.6.11-fix: after a reset we ignore forceResync until a new assistant or
+      // thinking container actually appears. Otherwise the heartbeat re-emits the
+      // stale thinking/response still on screen and seeds the new turn with it.
+      const effectiveForceResync = forceResync && !_resetPrimed;
+
       // Reset state when the assistant bubble changes (new turn)
       if (assistant !== _currentAssistant) {
         const oldClass = _currentAssistant ? className(_currentAssistant) : 'null';
@@ -652,6 +661,7 @@
         console.log(`[LunaExt DEBUG] assistant changed: ${oldClass} -> ${newClass}`);
         _currentAssistant = assistant;
         resetAssistantState();
+        _resetPrimed = false;
       }
 
       if (!assistant) return;
@@ -670,6 +680,7 @@
         console.log(`[LunaExt DEBUG] first thinking snapshot length: ${_firstThinkingSnapshot.length}`);
         _thinkingStartedEmitted = false;
         _lastSentThinking = '';
+        _resetPrimed = false;
       }
 
       // v2.6.3: Absolute boundary rule — everything inside the thinking container is
@@ -689,7 +700,7 @@
       }
 
       if (thinking || response) {
-        console.log(`[LunaExt DEBUG] extracted thinking=${thinking.length} response=${response.length} forceResync=${forceResync}`);
+        console.log(`[LunaExt DEBUG] extracted thinking=${thinking.length} response=${response.length} forceResync=${forceResync} resetPrimed=${_resetPrimed}`);
       }
 
       // ── thinking lifecycle ──
@@ -712,7 +723,7 @@
       // Kimi may continue reasoning after response text starts. We keep the largest
       // reasoning text we've ever seen so the Luna bubble only grows / updates,
       // never shrinks or gets truncated.
-      if (thinking && (forceResync || (thinking.length >= _lastSentThinking.length && thinking !== _lastSentThinking))) {
+      if (thinking && (effectiveForceResync || (thinking.length >= _lastSentThinking.length && thinking !== _lastSentThinking))) {
         console.log(`[LunaExt DEBUG] emitting thinking_update len=${thinking.length} (last=${_lastSentThinking.length})`);
         _lastSentThinking = thinking;
         // v2.6.8-fix: preserve last known response to stop response=0 / response=N oscillation.
@@ -722,7 +733,7 @@
       }
 
       // ── response ──
-      if (response && (forceResync || response !== _lastSentResponse)) {
+      if (response && (effectiveForceResync || response !== _lastSentResponse)) {
         console.log(`[LunaExt DEBUG] emitting response_update len=${response.length}`);
         _lastSentResponse = response;
         emitStreamState(_lastSentThinking, response, true);
@@ -857,14 +868,32 @@
   // start of every new user turn. Without this, stale events from the previous
   // turn (which may still be in the content-script batch pipe) can overwrite the
   // new turn's thinking/response and make the stream lag by one message.
+  // v2.6.9-fix: after resetting, prime the observer with the CURRENT DOM as
+  // already-seen. Otherwise the old assistant/thinking container still on screen
+  // is treated as "new" and the previous turn's thinking/response is re-emitted,
+  // causing the next message to look like it answered the previous question.
+  // v2.6.10-fix: also mark the current thinking/response as already-emitted so
+  // the observer does not fire a fresh thinking_start for stale content while it
+  // waits for the new turn's assistant bubble to appear.
   window.__lunaResetObserverState = () => {
     resetAssistantState();
-    _currentAssistant = null;
-    _lastSeenThinkingContainer = null;
+    const currentAssistant = findLastAssistant();
+    _currentAssistant = currentAssistant;
+    const currentThinkingContainer = findThinkingContainer(currentAssistant);
+    _lastSeenThinkingContainer = currentThinkingContainer;
+    if (currentAssistant) {
+      // Treat whatever is currently on screen as already streamed. This stops
+      // the previous turn's thinking from seeding the new turn's bubble.
+      _thinkingStartedEmitted = true;
+      _lastSentThinking = currentThinkingContainer ? extractThinking(currentThinkingContainer) : '';
+      _lastSentResponse = extractResponse(currentAssistant, currentThinkingContainer);
+    }
+    _resetPrimed = true;
     _lastChangeHash = '';
     _lastChangeTime = Date.now();
     _eventQueue = [];
     if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
+    console.log(`[LunaExt DEBUG] observer state reset — primed assistant=${!!currentAssistant} thinkingLen=${_lastSentThinking.length} responseLen=${_lastSentResponse.length}`);
   };
 
   window.addEventListener('beforeunload', teardown, { once: true });
@@ -882,6 +911,16 @@
     queueEvent('spa_navigate', { method: 'replaceState', url: window.location.href });
     return result;
   };
+
+  // v2.6.11-fix: prime the observer with the current DOM on every injection.
+  // Content-script SPA navigation (pushState/replaceState) tears down and
+  // re-injects the observer, which would otherwise start with a clean slate and
+  // treat the previous turn's bubble/thinking as brand-new. Priming here makes
+  // the initial state identical to the explicit reset the bridge does before
+  // each new message, so stale content is never re-streamed.
+  if (typeof window.__lunaResetObserverState === 'function') {
+    window.__lunaResetObserverState();
+  }
 
   queueEvent('observer_ready', { url: window.location.href, version: VERSION });
   console.log(`[Luna Injected] v${VERSION} active — mirroring Kimi UI every ${POLL_MS}ms`);

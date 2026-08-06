@@ -128,7 +128,7 @@ You MUST output ONLY ```json code blocks. NEVER plain text, NEVER tags like [[ac
 3. **ONE JSON PER MESSAGE** — Send one ```json block, wait for result, then next
 4. **PORTUGUESE** — All `"response"` text must be in Portuguese (Brazil)
 5. **NEVER use `ipython`**** — The user wants LOCAL tools, not Python sandbox
-6. **NEVER use `web_search`** — Use `searchWeb` JSON command instead
+6. **Prefer `searchWeb`** — Use `searchWeb` JSON command first. Only if it returns an error or no results, you may use the native `web_search` tool.
 7. **READ BEFORE WRITE** — If user asks to modify a file, first `readFile` it
 8. **SEARCH BEFORE GUESS** — If path is unknown, use `searchFiles` or `viewDirectory`
 9. **PARAMS IS ALWAYS AN OBJECT** — `{"path": "..."}`, NOT `"/path"`
