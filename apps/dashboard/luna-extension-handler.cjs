@@ -83,9 +83,22 @@ class LunaExtensionHandler extends EventEmitter {
 
     // Receive event from extension
     app.post('/ext/event', (req, res) => {
-      const { sessionId, ...eventData } = req.body;
-      if (!sessionId || !this.sessions.has(sessionId)) {
-        return res.status(400).json({ error: 'invalid session' });
+      const { sessionId, ...eventData } = req.body;      if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId required' });
+      }
+      // v11.8-fix: auto-register extension sessions after server restart. The
+      // extension keeps reusing its stored sessionId; instead of rejecting it,
+      // recreate the session on the fly so DOM events keep flowing.
+      if (!this.sessions.has(sessionId)) {
+        console.log(`[LunaExt] Auto-registering session after restart: ${sessionId}`);
+        this.sessions.set(sessionId, {
+          connectedAt: Date.now(),
+          lastPing: Date.now(),
+          messages: [],
+          deliveredIds: new Set(),
+          ws: null,
+          type: 'extension'
+        });
       }
 
       const session = this.sessions.get(sessionId);
@@ -98,8 +111,21 @@ class LunaExtensionHandler extends EventEmitter {
     // Poll for server messages
     app.get('/ext/poll', (req, res) => {
       const { sessionId } = req.query;
-      if (!sessionId || !this.sessions.has(sessionId)) {
-        return res.status(400).json({ error: 'invalid session' });
+      if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId required' });
+      }
+      // v11.8-fix: auto-register on poll too, so the extension can pull
+      // server messages immediately after a server restart.
+      if (!this.sessions.has(sessionId)) {
+        console.log(`[LunaExt] Auto-registering session on poll: ${sessionId}`);
+        this.sessions.set(sessionId, {
+          connectedAt: Date.now(),
+          lastPing: Date.now(),
+          messages: [],
+          deliveredIds: new Set(),
+          ws: null,
+          type: 'extension'
+        });
       }
 
       const session = this.sessions.get(sessionId);
@@ -144,7 +170,10 @@ class LunaExtensionHandler extends EventEmitter {
     }
 
     // v8.6: Buffer DOM events for bridge Layer 0 consumption
-    const bufferableTypes = ['stream_state', 'stream_end', 'tool_call_detected', 'tool_response_detected', 'segment_complete', 'json_block_added', 'button_state'];
+    // v11.6: added thinking_start so the bridge can create the bubble immediately.
+    // v11.8-fix: added thinking_update so the bridge can forward Kimi's full reasoning
+    // text to the frontend as a source-of-truth replacement.
+    const bufferableTypes = ['stream_state', 'thinking_start', 'thinking_update', 'stream_end', 'tool_call_detected', 'tool_response_detected', 'segment_complete', 'json_block_added', 'button_state'];
     if (bufferableTypes.includes(eventType)) {
       this._bufferEvent(sessionId, { eventType, data, timestamp, url, tabId, tabUrl });
     }

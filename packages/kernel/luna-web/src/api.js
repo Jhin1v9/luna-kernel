@@ -627,6 +627,20 @@ export async function executeLunaTool(tool, params = {}) {
   return res.json();
 }
 
+// v3.3: resolve a pending destructive-operation confirmation (Confirm/Cancel)
+export async function confirmToolAction(sessionId, confirmationId, action = 'confirm') {
+  const res = await fetch('/api/luna/confirm', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ sessionId, confirmationId, action }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erro ao confirmar' }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function downloadSelfHost() {
   const res = await fetch('/api/selfhost/download', { method: 'POST', headers: authHeaders(false) });
   if (!res.ok) {

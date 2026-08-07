@@ -8,9 +8,11 @@ const path = require('path');
 // pass raw strings to fs would escape a lexical guard — so resolve component
 // by component, realpathing each existing prefix as we walk.
 function realpathKernel(p) {
-  let abs = p.startsWith('/') ? p : process.cwd() + '/' + p;
-  const parts = abs.split('/').filter(Boolean);
-  let cur = '/';
+  const abs = path.resolve(p);
+  const parsed = path.parse(abs);
+  const root = parsed.root; // e.g. '/' on Linux, 'C:\\' on Windows
+  const parts = abs.slice(root.length).split(path.sep).filter(Boolean);
+  let cur = root;
   for (const part of parts) {
     if (part === '.') continue;
     if (part === '..') {
@@ -18,7 +20,7 @@ function realpathKernel(p) {
       cur = path.dirname(cur);
       continue;
     }
-    cur = cur === '/' ? '/' + part : cur + '/' + part;
+    cur = path.join(cur, part);
     try {
       if (fs.lstatSync(cur).isSymbolicLink()) cur = fs.realpathSync(cur);
     } catch { /* nonexistent tail: keep lexical */ }

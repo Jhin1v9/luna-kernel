@@ -301,7 +301,7 @@ test('D: scanner regex stays in sync with KimiBridge._isContextLimitResponse', (
   const extractRegex = (src, anchor) => {
     const i = src.indexOf(anchor);
     assert.ok(i !== -1, `anchor missing: ${anchor}`);
-    const m = src.slice(i, i + 500).match(/\/([^/]+)\/i/);
+    const m = src.slice(i, i + 1500).match(/\/([^/]+)\/i/);
     assert.ok(m, 'regex literal not found after anchor');
     return m[1];
   };
@@ -365,16 +365,15 @@ test('A-src: soul imports the policy module and uses it in the stream loop', () 
   assert.ok(soulSrc.includes('continue autoCompactLoop;'), 'resend must re-enter the stream loop');
 });
 
-test('A-src: soul drains the _compactContext generator and forwards its events', () => {
+test('A-src: soul drains the unified compact flow and forwards its events', () => {
   const i = soulSrc.indexOf("case 'context_limit':");
   assert.ok(i !== -1, 'context_limit case missing');
   const end = soulSrc.indexOf("case 'done':", i);
   assert.ok(end !== -1, 'next case anchor missing');
   const window = soulSrc.slice(i, end);
-  assert.ok(window.includes('const compactGen = this._compactContext(sessionId, userId);'),
-    'must call _compactContext with sessionId and userId');
-  assert.ok(window.includes('await compactGen.next()'), 'generator must be drained via next() to capture the return value');
-  assert.ok(window.includes('yield step.value'), 'compact progress events must be forwarded');
+  assert.ok(window.includes('const flow = yield* this._runCompactFlow(sessionId, userId, messageInput, options);'),
+    'must call _runCompactFlow with sessionId, userId and messageInput');
+  assert.ok(window.includes('flow.action'), 'flow result must drive the resend decision');
   assert.ok(window.includes("type: 'error'"), 'compact failure must yield a visible error');
   const doneCount = (window.match(/type: 'done'/g) || []).length;
   assert.ok(doneCount >= 2, 'both failure and fallback paths must emit done');

@@ -30,6 +30,42 @@ const { shellQuote, toNonNegInt, assertSafeName } = require('./lib/shell-quote.c
 const { checkUrlSafety, fetchAllowList } = require('./lib/url-safety.cjs');
 const { resolveTerminal, enrichSessionEnv, _argvFor } = require('./lib/terminal-resolver.cjs');
 const { resolveShellTimeout } = require('./lib/build-detect.cjs');
+// ═══════════════════════════════════════════════════════════════════════════
+// WINDOWS GIT BASH DETECTION (v3.1-fix)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const IS_WINDOWS = process.platform === 'win32';
+
+function findGitBash() {
+  if (!IS_WINDOWS) return '/bin/bash';
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    'C:\\Git\\bin\\bash.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs/Git/bin/bash.exe'),
+    path.join(process.env.USERPROFILE || '', 'scoop/apps/git/current/bin/bash.exe'),
+    'bash.exe',
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        execSync(`"${candidate}" -c "echo luna-bash-test"`, { 
+          encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore']
+        });
+        return candidate;
+      }
+    } catch { continue; }
+  }
+  return null;
+}
+
+const GIT_BASH_PATH = findGitBash();
+const HAS_GIT_BASH = !!GIT_BASH_PATH;
+const DEFAULT_SHELL = IS_WINDOWS ? (HAS_GIT_BASH ? GIT_BASH_PATH : 'cmd.exe') : '/bin/bash';
+const DEFAULT_SHELL_FLAG = (IS_WINDOWS && !HAS_GIT_BASH) ? '/c' : '-c';
+
+console.log(`[LUNA] Platform: ${process.platform} | Git Bash: ${HAS_GIT_BASH ? GIT_BASH_PATH : 'NOT FOUND'} | Shell: ${DEFAULT_SHELL}`);
+
 
 // Wave3-fix G: SSRF caps for the LLM-facing network tools (fetchURL,
 // downloadFile, browser) — see lib/url-safety.cjs for the host policy.
@@ -153,6 +189,7 @@ function safeExec(cmd, opts = {}) {
   }
   try {
     const output = execSync(finalCmd, {
+      shell: IS_WINDOWS ? GIT_BASH_PATH : undefined,
       encoding: 'utf8',
       cwd: opts.cwd || process.cwd(),
       timeout: execTimeout,
@@ -343,6 +380,14 @@ function replaceInFile(filePath, oldStr, newStr, opts = {}) {
   }
 }
 
+function toMsysPath(winPath) {
+  if (!IS_WINDOWS || !winPath) return winPath;
+  const normalized = winPath.replace(/\\/g, '/');
+  const m = normalized.match(/^([A-Za-z]):\/(.+)$/);
+  if (m) return `/${m[1].toLowerCase()}/${m[2]}`;
+  return normalized;
+}
+
 function executeScript(code, opts = {}) {
   if (!code || typeof code !== 'string') return err('Código do script é obrigatório');
 
@@ -350,12 +395,13 @@ function executeScript(code, opts = {}) {
   // v10.36-fix: Default to the user's workspace, not the luna-server directory.
   const cwd = opts.cwd ? resolvePath(opts.cwd) : (lunaConfig.PATHS.workspaceBase || process.cwd());
   const timeout = opts.timeout || 120000;
+  const isBashLike = ['bash', 'sh', 'shell'].includes(language.toLowerCase());
 
   // Mapeia linguagem para extensão e executor
   const langMap = {
-    bash: { ext: 'sh', executor: 'bash', shell: true },
-    sh: { ext: 'sh', executor: 'bash', shell: true },
-    shell: { ext: 'sh', executor: 'bash', shell: true },
+    bash: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? toMsysPath(GIT_BASH_PATH) : 'bash', shell: true },
+    sh: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? toMsysPath(GIT_BASH_PATH) : 'bash', shell: true },
+    shell: { ext: 'sh', executor: IS_WINDOWS && HAS_GIT_BASH ? toMsysPath(GIT_BASH_PATH) : 'bash', shell: true },
     powershell: { ext: 'ps1', executor: 'pwsh', shell: true },
     ps1: { ext: 'ps1', executor: 'pwsh', shell: true },
     python: { ext: 'py', executor: 'python3', shell: true },
@@ -374,8 +420,11 @@ function executeScript(code, opts = {}) {
     fs.writeFileSync(scriptPath, code, 'utf8');
     fs.chmodSync(scriptPath, 0o755);
 
+    // Windows + Git Bash: pass MSYS-style paths so bash can resolve the script.
+    const scriptArg = (IS_WINDOWS && HAS_GIT_BASH && isBashLike) ? toMsysPath(scriptPath) : scriptPath;
+
     // Executa o script
-    const result = safeExec(`${config.executor} "${scriptPath}"`, { cwd, timeout: timeout / 1000 });
+    const result = safeExec(`${shellQuote(config.executor)} ${shellQuote(scriptArg)}`, { cwd, timeout: timeout / 1000 });
 
     // Limpa arquivo temporário (não bloqueante)
     try { fs.unlinkSync(scriptPath); } catch {}
@@ -687,72 +736,89 @@ function glob(pattern, opts = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3b. WEB SEARCH (DuckDuckGo HTML scraping — no API key required)
-// ═══════════════════════════════════════════════════════════════════════════
-
-function searchWeb(query, opts = {}) {
-  return new Promise((resolve) => {
-    const searchUrl = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
-    const client = searchUrl.startsWith('https:') ? https : http;
-    const req = client.get(searchUrl, {
-      timeout: opts.timeout || 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      }
-    }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // Wave3-fix G: resolve relative Location and route through the guarded
-        // fetchURL (host validation + redirect cap come for free there).
-        let nextUrl;
-        try { nextUrl = new URL(res.headers.location, searchUrl).href; } catch { return resolve(err('Search redirect Location inválida')); }
-        return fetchURL(nextUrl, opts).then(resolve);
-      }
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const results = [];
-          // DuckDuckGo HTML uses .result__a for title+link, .result__snippet for description
-          const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
-          let match;
-          let count = 0;
-          const limit = opts.limit || 10;
-          while ((match = resultRegex.exec(data)) !== null && count < limit) {
-            const url = match[1].replace(/&amp;/g, '&');
-            const title = match[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim();
-            const snippet = match[3].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim();
-            if (title && url) {
-              results.push({ title, url, snippet });
-              count++;
-            }
-          }
-          // Fallback: try alternative selectors if no results
-          if (results.length === 0) {
-            const altRegex = /<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>[\s\S]*?(?:<div[^>]*>[\s\S]*?)?<span[^>]*>([\s\S]*?)<\/span>/gi;
-            while ((match = altRegex.exec(data)) !== null && count < limit) {
-              const url = match[1].replace(/&amp;/g, '&');
-              const title = match[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').trim();
-              const snippet = match[3] ? match[3].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').trim() : '';
-              if (title && url && !url.includes('duckduckgo.com')) {
-                results.push({ title, url, snippet });
-                count++;
-              }
-            }
-          }
-          resolve(ok({ query, engine: 'duckduckgo', results, count: results.length }));
-        } catch (e) {
-          resolve(err('Search parse error: ' + e.message));
-        }
-      });
-    });
-    req.on('error', (e) => resolve(err('Search request error: ' + e.message)));
-    req.on('timeout', () => { req.destroy(); resolve(err('Search timeout')); });
-  });
+// 3b. WEB SEARCH (SerpAPI → Brave → DuckDuckGo fallback)
+function _serializeSearchResults(query, engine, results, limit) {
+  const content = results.length
+    ? results.slice(0, limit).map((r, i) => `${i + 1}. ${r.title}\nURL: ${r.url}\n${r.snippet}`).join('\n\n')
+    : 'Nenhum resultado encontrado.';
+  return { query, engine, results: results.slice(0, limit), count: results.length, content, stdout: content };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+async function searchWeb(query, opts = {}) {
+  const limit = opts.limit || 10;
+
+  // 1. Yahoo Search via real browser (currently works with residential IP)
+  try {
+    const yahooUrl = 'https://search.yahoo.com/search?p=' + encodeURIComponent(query);
+    const yahooResult = await browser(yahooUrl, { waitUntil: 'networkidle', timeout: 30000, limit: 50000 });
+    if (yahooResult.success && yahooResult.content) {
+      const results = [];
+      const itemRegex = new RegExp('<div[^>]*class="[^"]*(?:algo|web-res)[^"]*"[^>]*>[\\\\s\\\\S]*?<a[^>]*href="([^"]*)"[^>]*>[\\\\s\\\\S]*?</a>[\\\\s\\\\S]*?</div>', 'gi');
+      let match;
+      while ((match = itemRegex.exec(yahooResult.content)) !== null && results.length < limit) {
+        const block = match[0];
+        const urlMatch = block.match(new RegExp('href="([^"]*)"'));
+        const titleMatch = block.match(new RegExp('<h3[^>]*>([\\\\s\\\\S]*?)<\\\\/h3>'));
+        const snippetMatch = block.match(new RegExp('<p[^>]*class="[^"]*fc-falcon[^"]*"[^>]*>([\\\\s\\\\S]*?)<\\\\/p>')) ||
+                             block.match(new RegExp('<span[^>]*class="[^"]*fc-falcon[^"]*"[^>]*>([\\\\s\\\\S]*?)<\\\\/span>'));
+        if (urlMatch && titleMatch) {
+          const url = urlMatch[1].replace(/&amp;/g, '&');
+          const title = titleMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+          const snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim() : '';
+          if (title && url && !url.includes('search.yahoo.com/search;_ylt')) {
+            results.push({ title, url, snippet });
+          }
+        }
+      }
+      if (results.length) return ok(_serializeSearchResults(query, 'yahoo', results, limit));
+    }
+  } catch (e) {
+    console.log('[LUNA] Yahoo search failed:', e.message);
+  }
+
+  // 2. DuckDuckGo scraping fallback (often blocked; kept as last resort)
+  try {
+    const searchUrl = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
+    const ddg = await new Promise((resolve, reject) => {
+      const client = searchUrl.startsWith('https:') ? https : http;
+      const req = client.get(searchUrl, {
+        timeout: opts.timeout || 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        }
+      }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          let nextUrl;
+          try { nextUrl = new URL(res.headers.location, searchUrl).href; } catch { return reject(new Error('Search redirect inválido')); }
+          return fetchURL(nextUrl, opts).then(resolve).catch(reject);
+        }
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve(data));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('Search timeout')); });
+    });
+
+    const results = [];
+    const resultRegex = new RegExp('<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\\\\s\\\\S]*?)<\\\\/a>[\\\\s\\\\S]*?<a[^>]*class="result__snippet"[^>]*>([\\\\s\\\\S]*?)<\\\\/a>', 'gi');
+    let match;
+    while ((match = resultRegex.exec(ddg)) !== null && results.length < limit) {
+      const url = match[1].replace(/&amp;/g, '&');
+      const title = match[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim();
+      const snippet = match[3].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim();
+      if (title && url) results.push({ title, url, snippet });
+    }
+    if (results.length) return ok(_serializeSearchResults(query, 'duckduckgo', results, limit));
+  } catch (e) {
+    console.log('[LUNA] DuckDuckGo fallback failed:', e.message);
+  }
+
+  // 3. All engines failed
+  return err('Nenhum motor de busca gratuito conseguiu retornar resultados. Yahoo e DuckDuckGo estão bloqueando requisições automatizadas. Tente novamente em alguns minutos ou use fetchURL com uma URL específica.');
+}
 // 3c. BROWSER (Playwright navigation for JS-heavy pages)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -825,7 +891,14 @@ function fetchURL(url, opts = {}) {
     const redirects = Math.max(0, opts._redirects | 0);
     const maxBytes = opts.maxBytes || DEFAULT_FETCH_MAX_BYTES;
     const client = url.startsWith('https:') ? https : http;
-    const req = client.get(url, { timeout: opts.timeout || 15000 }, (res) => {
+    const req = client.get(url, {
+      timeout: opts.timeout || 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+    }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         if (redirects >= MAX_FETCH_REDIRECTS) return resolve(err('fetchURL: excesso de redirects (max 5)'));
         let nextUrl;
@@ -1042,7 +1115,7 @@ function executeShell(command, opts = {}, onProgress) {
     let killed = false;
 
     // v10.27-fix: Always run via /bin/bash for consistent, surgical shell behavior.
-    const child = spawn('/bin/bash', ['-c', command], { cwd, env: process.env });
+    const child = spawn(DEFAULT_SHELL, [DEFAULT_SHELL_FLAG, command], { cwd, env: process.env });
     const timer = timeoutMs > 0 ? setTimeout(() => {
       killed = true;
       child.kill('SIGTERM');

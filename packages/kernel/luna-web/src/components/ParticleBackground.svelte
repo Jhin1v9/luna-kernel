@@ -26,6 +26,7 @@
     MODE_COLORS,
     MODE_SHIFT_INTENSITY,
     MODE_BEHAVIOR,
+    resetWallpaperRng,
   } from '../lib/starAnimations.js';
   import {
     shouldAnimateBackground,
@@ -96,6 +97,10 @@
   // ═══════════════════════════════════════════════════════════
 
   function initStars() {
+    // v2.6.2-fix: reset the deterministic RNG so every hard refresh produces
+    // the exact same starfield layout, phases and dynamic lines.
+    resetWallpaperRng();
+
     starIndex = buildStarIndex(BRIGHT_STARS);
     const validLines = getValidLines(BRIGHT_STARS, CONSTELLATION_LINES);
     lines = validLines.map(([a, b]) => [starIndex[a], starIndex[b]]);
@@ -387,7 +392,7 @@
       if (!a || !b) continue;
 
       const pulse = Math.sin(t * dl.speed * twinkleMult + dl.phase) * 0.5 + 0.5;
-      const alpha = (1 - dl.dist / DYN_CONNECT_DIST) * 0.05 * pulse * brightnessMult;
+      const alpha = (1 - dl.dist / DYN_CONNECT_DIST) * 0.09 * pulse * brightnessMult;
       if (alpha < 0.003) continue;
 
       ctx.beginPath();
@@ -400,7 +405,7 @@
     }
 
     // ── Constellation lines (fixed, more visible in idle/thinking) ──
-    const constLineOpacity = targetMode === 'thinking-loading' ? 0.06 : 0.12;
+    const constLineOpacity = targetMode === 'thinking-loading' ? 0.14 : 0.22;
     ctx.lineWidth = 1.0;
     ctx.lineCap = 'round';
     ctx.shadowColor = accent;

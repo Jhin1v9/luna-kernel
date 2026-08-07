@@ -19,6 +19,13 @@ and the doc must be fixed**.
    - `telegram-409-conflict.md` — duplicate Telegram pollers
    - `compactacao-travou.md` — manual compaction stuck/failed
 
+## Branch rule
+
+**All agent work must be committed and pushed to the `Luna-Abner` branch, not `main`.**
+- Before editing: `git checkout Luna-Abner`.
+- Push target: `git push origin Luna-Abner`.
+- Do not merge to `main` unless the owner explicitly asks for it.
+
 ## Golden rule
 
 **Whenever you change system behavior, update the corresponding doc in the same commit.**

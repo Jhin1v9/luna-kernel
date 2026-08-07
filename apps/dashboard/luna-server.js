@@ -6,20 +6,26 @@
  */
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
-// v5.3-fix: KEEP-ALIVE — agent never dies unless Chrome is intentionally closed
+// v5.4-fix: log fatal errors but let the process die so PM2 can restart it cleanly.
+// The previous keep-alive handlers were holding the port open and causing EADDRINUSE
+// when PM2 tried to restart the server.
 process.on('uncaughtException', (err) => {
-  console.error('[LUNA-KEEP-ALIVE] Uncaught Exception:', err.message);
+  console.error('[LUNA-FATAL] Uncaught Exception:', err.message);
   console.error(err.stack);
+  process.exit(1);
 });
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[LUNA-KEEP-ALIVE] Unhandled Rejection at:', promise, 'reason:', reason);
+  console.error('[LUNA-FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
 });
-// Also catch SIGTERM/SIGINT to prevent accidental death
+// SIGTERM/SIGINT: exit cleanly so the port is released immediately.
 process.on('SIGTERM', () => {
-  console.log('[LUNA-KEEP-ALIVE] SIGTERM received — ignoring, agent stays alive');
+  console.log('[LUNA] SIGTERM received — shutting down cleanly');
+  process.exit(0);
 });
 process.on('SIGINT', () => {
-  console.log('[LUNA-KEEP-ALIVE] SIGINT received — ignoring, agent stays alive');
+  console.log('[LUNA] SIGINT received — shutting down cleanly');
+  process.exit(0);
 });
 
 const express = require('express');

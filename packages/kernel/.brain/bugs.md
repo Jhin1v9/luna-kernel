@@ -147,6 +147,14 @@
 
 - [x] 🟡 **`[KimiNetworkInterceptor] CDP Fetch failed (this._buildFetchPatterns is not a function)`** — dead CDP Fetch branch removed from `kimi-bridge.cjs`, so the broken call path no longer exists; `_isChatUrl` now resolves via provider config and `getProviderApiPatterns` was dropped. (`848bf4c`; tests `wave11-provider-config.test.cjs`)
 
+### Regressão `355570e` — stubs de guarda + Windows Git Bash (2026-08-01)
+
+- [x] 🔴 **`PATH_PARAM_KEYS is not iterable` — todas as tools falhavam** — Causa: commit `355570e` (`fix-pm2-cleanup`) substituiu `packages/kernel/lib/path-guard.cjs` por um stub que não exportava `checkPathWithinRoots` nem `PATH_PARAM_KEYS`, quebrando `luna-soul.cjs:4528`. Corrigido revertendo o arquivo para a versão funcional (`e1f00a1`) e adaptando `realpathKernel` para paths Windows (`path.resolve` + `path.sep`).
+- [x] 🔴 **`luna-tool-guard.cjs` reduzido a stub** — O mesmo commit removeu `ToolGuard`, circuit breaker, idempotency, checksum e `validatePythonCode`, quebrando a tool `ipython` e toda a resiliência. Revertido para a versão completa (`2598f92`).
+- [x] 🟠 **Windows Git Bash não era detectado** — As strings de caminho em `luna-tools.cjs` usavam barras simples (`'C:\Program Files\...'`) que o JavaScript interpretava como escapes, então `findGitBash()` falhava e `executeShell` caía no `cmd.exe`. Corrigido para barras duplas/`path.join` com barras normais.
+- [x] 🟠 **`executeScript('bash')` falhava no Windows** — Com Git Bash detectado, o caminho do script temporário era passado em formato Windows (`C:\...`) e o bash não encontrava. Adicionado `toMsysPath()` para converter `C:\dir\file` → `/c/dir/file` quando executor é bash-like no Windows.
+- [x] 🟡 **Testes wave3 falhavam no Windows por razões de plataforma** — `B4` (Unix mode) e `W7-T3a` (symlink) agora pulam no Windows; `E2` passou após as correções de Git Bash/MSYS path.
+
 ### Known issue (owner decision needed)
 
 - [ ] 🟠 **`~/NEXO_DASHBOARD_PRO/luna-nexo.sh` is stale and dangerous if run manually** — old layout paths, `pm2 start ... --name telegram-bot` spawns a **duplicate Telegram adapter** (real name: `luna-telegram-adapter`), `--update-env` on starts. The server no longer depends on it (pm2 fallback above), but a manual `./luna-nexo.sh restart` would misbehave. Fix it or delete it — owner's call.

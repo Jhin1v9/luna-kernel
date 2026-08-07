@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Luna DOM Observer",
-  "version": "2.1.2",
+  "version": "2.6.12",
   "description": "Real-time Kimi Web DOM observer — streams tool calls and responses to Luna server",
   "permissions": [
     "activeTab",

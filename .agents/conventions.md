@@ -66,12 +66,14 @@ via dotenv) and `packages/kernel/.env`. `config/luna-config.js` also points
 
 ## Git
 
-- Single branch: `main`. **Only Jhin pushes.**
-- Other PCs (Pai, Nonoke) run `packages/kernel/luna-sync.sh` via cron every 5 minutes
-  (`*/5 * * * *`) to `git pull`, rebuild the frontend and restart PM2 — see
-  `docs/guia-humano.md`, section 6 ("Sincronización entre los 3 PCs"). Note: that
-  script still carries pre-monorepo paths
-  (`NEXO_DASHBOARD_DIR`, pm2 name `telegram-bot`) and needs updating; treat it as legacy.
+- **Active development branch: `Luna-Abner`.** All agent commits and pushes must target
+  `Luna-Abner`; do not push directly to `main` unless the owner explicitly requests it.
+- Run `git checkout Luna-Abner` before making changes.
+- Push with `git push origin Luna-Abner`.
+- Other PCs (Pai, Nonoke) should pull from `origin/Luna-Abner` and run the rebuild/restart
+  routine — see `docs/guia-humano.md`, section 6 ("Sincronización entre los 3 PCs"). Note:
+  the legacy `luna-sync.sh` script still references pre-monorepo paths and the old `main`
+  branch; it needs to be updated to pull `Luna-Abner` and use the monorepo layout.
 - Do not commit secrets; `.env` files are local-only.
 
 ## PM2 processes (`pm2-ecosystem.config.js` at repo root)
@@ -80,8 +82,10 @@ via dotenv) and `packages/kernel/.env`. `config/luna-config.js` also points
 |---|---|---|
 | `luna-server` | `apps/dashboard/luna-server.js` | Luna chat + API, :3458, serves `luna-web/dist` |
 | `nexo-dashboard` | `apps/dashboard/server.js` | Legacy dashboard API, :3456 |
-| `luna-vite` | `packages/kernel/luna-web` vite | Dev server, :5173 |
-| `luna-health-watchdog` | `packages/kernel/luna-health-watchdog.js` | Health monitor |
+| `luna-vite` | `packages/kernel/luna-web` vite | Dev server, :5173 (not started by default in production) |
+| `luna-health-watchdog` | `packages/kernel/luna-health-watchdog.js` | Health monitor — **disabled** as of 2026-08-03 because it caused restart loops |
 | `luna-telegram-adapter` | `packages/kernel/telegram-luna-adapter.cjs` | Telegram bot — **exact name is `luna-telegram-adapter`, not `telegram-bot`** |
 
-`pm2 status` should show these 5 online. Logs: `pm2 logs <name>`.
+Current minimal production set: `luna-server` + `nexo-dashboard`.
+Full optional set adds `luna-vite` (dev) and `luna-telegram-adapter` (Telegram).
+Logs: `pm2 logs <name>`.

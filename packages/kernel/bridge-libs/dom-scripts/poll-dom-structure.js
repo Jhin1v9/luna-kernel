@@ -23,8 +23,14 @@
  * NOTE: keep the regex in sync with KimiBridge._isContextLimitResponse().
  */
 function scanPageContextLimit() {
-  const contextLimitRegex = /getting too long|conversation.*too long|try starting a new session|context limit|token limit|聊得太长|发起一个新会话|会话太长/i;
-  const allTextElements = document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5, h6, li');
+  // v11.8-fix: keep in sync with KimiBridge._isContextLimitResponse().
+  // Broadened to catch Portuguese/Spanish/English/Chinese variants and newer Kimi UI wording.
+  // Kimi's hardcoded context-limit messages in PT/EN/ES/ZH. Kept tight to the exact
+  // phrases Kimi emits; broad regexes are intentionally avoided per owner directive.
+  const contextLimitRegex = /Você e o Kimi|you and Kimi|t[uú] y Kimi|Tu y Kimi|Kimi conversaram bastante|Kimi have (?:talked|chatted)|han hablado mucho|Tente iniciar um novo chat|Try starting a new chat|Intenta iniciar un nuevo chat|iniciar um novo chat|tente iniciar um novo chat|start a new chat|nuevo chat|new chat|getting too long|conversation.*too long|reached.*(?:context|token|memory|input) limit|memory limit|input limit|try starting a new session|聊得太长|发起一个新会话|会话太长|对话太长|上下文太长|convers[ao].*(?:muito longa|bastante|demais|muitas mensagens)|conversaram bastante|conversamos bastante|muita conversa|muitas mensagens|chegou ao limite|atingiu o limite|atingimos o limite|limite de (?:contexto|tokens|mem[óo]ria).{0,25}(?:atingido|chegado|excedido|atingiu|atingimos|chegou|chegamos|excedeu|excedemos)|começar um novo chat|inicie um novo chat|create a new chat|refresh this chat|nueva sesi[óo]n|sesi[óo]n.*(?:muy larga|muy longa|demasiado larga|demasiado longa|lleg[óo] al l[íi]mite|llegamos al l[íi]mite|llegou ao limite)/i;
+  // v2.6.7-fix: broaden element coverage so Kimi's context-limit notice is found
+  // whether it renders as a plain div, a banner, a toast, or inside a button/link.
+  const allTextElements = document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5, h6, li, button, a, section, article, header, footer, aside, main');
   for (const el of allTextElements) {
     if (el.closest && el.closest('.segment-user, .segment-assistant')) continue;
     const text = (el.innerText || el.textContent || '').trim();
@@ -87,7 +93,7 @@ function pollDomStructure() {
     }
   }
 
-  const thinkStarters = /^(O usuário|Vou |Agora |Preciso |Primeiro |Vamos |Então |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay )/i;
+  const thinkStarters = /^(O usu[áa]rio|Vou |Agora |Preciso |Primeiro |Vamos |Ent[aã]o |Deixa |Hmm |Ok |Okay |Let me |I need |I'll |First |Now |So |The user |Hmm |Okay |Pensando|Analisando|Raciocinando|Reasoning|Thinking|Processando|Searching|Buscando|Concluindo|Conclu[íi]do)/i;
 
   const contentBox = lastAssistant.querySelector('.segment-content-box');
   if (!contentBox) return null;
