@@ -72,7 +72,10 @@ function pollDomStructure() {
 
   function tryParseToolJson(text) {
     if (!text || text.length < 10) return null;
-    if (!text.includes('"tool"')) return null;
+    // Detect both the classic {"tool": ...} wrapper and Kimi's newer
+    // {"script": ...} format. The latter has no "tool" key but is a shell
+    // execution request Luna must run locally.
+    if (!text.includes('"tool"') && !text.includes('"script"')) return null;
     try {
       const parsed = JSON.parse(text);
       if (parsed && typeof parsed.tool === 'string' && parsed.params && typeof parsed.params === 'object') {
@@ -80,6 +83,10 @@ function pollDomStructure() {
       }
       if (parsed && typeof parsed.tool === 'string' && (parsed.path || parsed.command || parsed.script || parsed.query)) {
         return { tool: parsed.tool, params: parsed };
+      }
+      // v13-fix: Kimi's {"script": "bash code", "language": "bash"} format.
+      if (parsed && typeof parsed.script === 'string' && parsed.script.trim().length > 0) {
+        return { tool: 'executeScript', params: { code: parsed.script, language: parsed.language || 'bash' } };
       }
     } catch (e) {}
     return null;
