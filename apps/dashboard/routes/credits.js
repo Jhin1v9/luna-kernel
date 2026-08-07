@@ -245,6 +245,13 @@ module.exports = function(dataStore, { requireAuth }) {
         clientId: req.params.clientId, planId, autoRenew,
         hostingAddon, status: 'active'
       });
+      // Garantiza que el cliente tenga registro de creditos (incluso con saldo 0),
+      // para que toda organizacion con suscripcion tenga sistema de creditos activo.
+      try {
+        await ensureCredits(req.params.clientId);
+      } catch (e) {
+        console.warn('[credits] ensureCredits tras suscripcion fallo:', e.message);
+      }
       res.json({ ok: true, subscription: sub });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
