@@ -113,8 +113,18 @@ function detectStuckStream() {
       }
     }
     if (!firstTs) return null;
-    const frozenMs = Date.now() - new Date(firstTs.replace(' ', 'T') + 'Z').getTime();
-    return frozenMs > STUCK_MS ? { session, thinking, response, frozenMs } : null;
+    // A frozen stream floods the log with the SAME thinking/response over and over.
+    // Count consecutive lines with the identical frozen signature — if many, it's stuck.
+    let count = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (re.test(lines[i])) count++;
+      else break;
+    }
+    // ~10 state lines per second → >= 30 consecutive identical ≈ stuck for several seconds
+    const STUCK_LINE_COUNT = 30;
+    const frozenMs = Date.now() - new Date(firstTs.slice(0, 19).replace(' ', 'T') + 'Z').getTime();
+    const stuck = count >= STUCK_LINE_COUNT || frozenMs > STUCK_MS;
+    return stuck ? { session, thinking, response, frozenMs, count } : null;
   } catch {
     return null;
   }
