@@ -1,0 +1,10 @@
+      // v10.18-fix: Focus the editor first. Kimi's Lexical contenteditable on the
+      // landing page does not register fill()/Enter events unless it is focused.
+      // Playwright's click() can hang on the landing editor, so we use JS focus().
+      await inputLocator.evaluate((el) => el.focus());
+      await page.waitForTimeout(200);
+
+      // W7-T4: Lexical-safe fill. Playwright's fill() does not register in the
+      // React/Lexical contenteditable (text visible in the DOM but EditorState
+      // empty → Enter becomes a no-op and the message sits unsent in the box).
+      await this._fillContentEditable(inputLocator, text);

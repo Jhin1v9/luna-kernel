@@ -1,0 +1,13 @@
+    } catch (e) {
+      log.warn(`Navigation failed for ${hashUserId(userId)}: ${e.message}`);
+      if (page && !page.isClosed()) {
+        try { await page.close(); } catch {}
+      }
+      this.semaphore.release();
+      throw e;
+    }
+
+    const session = {
+      page,
+      context: userCtx,
+      chatUrl: page.url(),

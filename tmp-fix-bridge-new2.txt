@@ -1,0 +1,23 @@
+    } catch (e) {
+      log.warn(`Navigation failed for ${hashUserId(userId)}: ${e.message}`);      if (page && !page.isClosed()) {
+        try { await page.close(); } catch {}
+      }
+      this.semaphore.release();
+      throw e;
+    }
+
+    // v2.6.8-fix: A brand-new Luna session with no saved chat must start in a
+    // fresh provider thread, not in whatever tab happened to be open.
+    if (needsNewChat) {
+      try {
+        const freshChatUrl = await this._openNewChat(page, provider);
+        log.info(`[_getOrCreateUserPage] Opened fresh chat for ${hashUserId(userId)}: ${freshChatUrl}`);
+      } catch (openErr) {
+        log.warn(`[_getOrCreateUserPage] _openNewChat failed: ${openErr.message}`);
+      }
+    }
+
+    const session = {
+      page,
+      context: userCtx,
+      chatUrl: page.url(),
