@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { Vote, CheckCircle2, XCircle, Hourglass } from 'lucide-svelte';
   
   export let open = false;
   export let onClose = () => {};
@@ -79,7 +80,7 @@
         </div>
       {:else if error || !voting}
         <div class="modal-empty">
-          <span style="font-size: 32px;">🗳️</span>
+          <span style="display: inline-flex; color: #4ade80;"><Vote size={32} strokeWidth={1.5} /></span>
           <p>Não foi possível carregar as votações.</p>
           <button class="btn-primary" style="background: #4ade80;" on:click={loadData}>Tentar novamente</button>
         </div>
@@ -143,11 +144,11 @@
                   <div class="vote-pill" class:voted={vote !== null} class:yes={vote === true} class:no={vote === false}>
                     <span class="vote-name">{voter}</span>
                     {#if vote === true}
-                      <span class="vote-icon">✅</span>
+                      <span class="vote-icon"><CheckCircle2 size={14} strokeWidth={1.5} /></span>
                     {:else if vote === false}
-                      <span class="vote-icon">❌</span>
+                      <span class="vote-icon"><XCircle size={14} strokeWidth={1.5} /></span>
                     {:else}
-                      <span class="vote-icon">⏳</span>
+                      <span class="vote-icon"><Hourglass size={14} strokeWidth={1.5} /></span>
                     {/if}
                   </div>
                 {/each}

@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
+  import { Zap, Brain, Globe, Drama } from 'lucide-svelte';
   import { lunaStore, MODE_COLORS } from '../stores.js';
   import { fetchPersonas, setSessionPersona, setSessionProvider, fetchProviders, compactSession } from '../api.js';
 
@@ -18,8 +19,8 @@
 
   // ── Mode Switch ──
   const modes = [
-    { id: 'instant', label: '⚡ Instant', short: '⚡' },
-    { id: 'thinking', label: '🧠 Thinking', short: '🧠' },
+    { id: 'instant', label: 'Instant', icon: Zap },
+    { id: 'thinking', label: 'Thinking', icon: Brain },
   ];
 
   function setMode(m) {
@@ -209,7 +210,7 @@
             ? `background: ${MODE_COLORS[m.id].primary}22; color: ${MODE_COLORS[m.id].primary}; border-color: ${MODE_COLORS[m.id].primary}44; box-shadow: 0 0 12px ${MODE_COLORS[m.id].glow}`
             : ''}
         >
-          <span class="mode-icon">{m.short}</span>
+          <span class="mode-icon"><svelte:component this={m.icon} size={14} strokeWidth={1.5} /></span>
           <span class="mode-label">{m.id}</span>
         </button>
       {/each}
@@ -226,7 +227,7 @@
         disabled={providerLoading}
         title="Provider: {currentProviderName}"
       >
-        <span class="provider-emoji">🌐</span>
+        <span class="provider-emoji"><Globe size={14} strokeWidth={1.5} /></span>
         <span class="provider-name">{currentProviderName}</span>
         <svg class="provider-chevron" class:open={providerDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
           <polyline points="6 9 12 15 18 9"/>
@@ -258,7 +259,7 @@
         disabled={personaLoading || !sessionId}
         title="Personalidade: {currentPersonaName}"
       >
-        <span class="persona-emoji">🎭</span>
+        <span class="persona-emoji"><Drama size={14} strokeWidth={1.5} /></span>
         <span class="persona-name">{currentPersonaName}</span>
         <svg class="persona-chevron" class:open={personaDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
           <polyline points="6 9 12 15 18 9"/>

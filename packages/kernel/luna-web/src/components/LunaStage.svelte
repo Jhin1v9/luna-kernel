@@ -32,12 +32,12 @@
   const STAGE_H = 160;
 
   const MESSAGES = {
-    sleep: ['Zzz... 💤', 'Sonhando com código...', '5 minutinhos...'],
-    idle: ['Oi! 👋', 'Clique pra eu ir até lá!', 'Vamos criar algo? ✨'],
-    thinking: ['Hmm... 🤔', 'Processando...', 'Quase lá!'],
-    working: ['Digitando! ⌨️', 'Compilando...', 'Foco total! ⚡'],
-    error: ['Ops! 😰', 'Deu ruim...', 'Vamos debugar! 🐛'],
-    walk: ['Indo! 🏃‍♀️', 'Espera aí!', 'Chegando! ✨']
+    sleep: ['Zzz...', 'Sonhando com código...', '5 minutinhos...'],
+    idle: ['Oi!', 'Clique pra eu ir até lá!', 'Vamos criar algo?'],
+    thinking: ['Hmm...', 'Processando...', 'Quase lá!'],
+    working: ['Digitando!', 'Compilando...', 'Foco total!'],
+    error: ['Ops!', 'Deu ruim...', 'Vamos debugar!'],
+    walk: ['Indo!', 'Espera aí!', 'Chegando!']
   };
 
   // ========== WALK ==========
@@ -50,7 +50,7 @@
     
     // Se está dormindo, acorda primeiro com uma mensagem
     if ($mascotState === 'sleep') {
-      showMsg('Hmm? *bocejo* Oi! 👋');
+      showMsg('Hmm? *bocejo* Oi!');
     } else {
       showMsg(MESSAGES.walk[Math.floor(Math.random() * MESSAGES.walk.length)]);
     }

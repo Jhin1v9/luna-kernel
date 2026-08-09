@@ -1,5 +1,6 @@
 <script>
   import { slide } from 'svelte/transition';
+  import { Search, AlertTriangle, File, Terminal, Lightbulb, Play, CheckCircle2, Hourglass, Wrench, CircleDot, Brain } from 'lucide-svelte';
 
   export let text = '';
   export let isExpanded = true;
@@ -10,16 +11,16 @@
   // Contextual icon mapping for thinking lines
   function getLineIcon(line) {
     const lower = line.toLowerCase();
-    if (lower.includes('search') || lower.includes('buscar') || lower.includes('pesquisar') || lower.includes('find')) return '🔍';
-    if (lower.includes('error') || lower.includes('erro') || lower.includes('fail') || lower.includes('falha')) return '⚠️';
-    if (lower.includes('file') || lower.includes('arquivo') || lower.includes('write') || lower.includes('read') || lower.includes('save')) return '📄';
-    if (lower.includes('code') || lower.includes('script') || lower.includes('function') || lower.includes('class')) return '💻';
-    if (lower.includes('idea') || lower.includes('ideia') || lower.includes('consider') || lower.includes('maybe') || lower.includes('talvez')) return '💡';
-    if (lower.includes('step') || lower.includes('passo') || lower.includes('next') || lower.includes('depois')) return '▶️';
-    if (lower.includes('done') || lower.includes('complete') || lower.includes('finished') || lower.includes('pronto')) return '✅';
-    if (lower.includes('wait') || lower.includes('aguarde') || lower.includes('loading')) return '⏳';
-    if (lower.includes('tool') || lower.includes('execute') || lower.includes('run') || lower.includes('shell')) return '🔧';
-    return '•';
+    if (lower.includes('search') || lower.includes('buscar') || lower.includes('pesquisar') || lower.includes('find')) return Search;
+    if (lower.includes('error') || lower.includes('erro') || lower.includes('fail') || lower.includes('falha')) return AlertTriangle;
+    if (lower.includes('file') || lower.includes('arquivo') || lower.includes('write') || lower.includes('read') || lower.includes('save')) return File;
+    if (lower.includes('code') || lower.includes('script') || lower.includes('function') || lower.includes('class')) return Terminal;
+    if (lower.includes('idea') || lower.includes('ideia') || lower.includes('consider') || lower.includes('maybe') || lower.includes('talvez')) return Lightbulb;
+    if (lower.includes('step') || lower.includes('passo') || lower.includes('next') || lower.includes('depois')) return Play;
+    if (lower.includes('done') || lower.includes('complete') || lower.includes('finished') || lower.includes('pronto')) return CheckCircle2;
+    if (lower.includes('wait') || lower.includes('aguarde') || lower.includes('loading')) return Hourglass;
+    if (lower.includes('tool') || lower.includes('execute') || lower.includes('run') || lower.includes('shell')) return Wrench;
+    return CircleDot;
   }
 
   function getLineClass(line) {
@@ -34,7 +35,7 @@
 
 <div class="thinking-bubble" class:expanded={isExpanded}>
   <button class="thinking-header" on:click={() => isExpanded = !isExpanded} aria-expanded={isExpanded}>
-    <span class="thinking-icon">🧠</span>
+    <span class="thinking-icon"><Brain size={15} strokeWidth={1.5} /></span>
     <span class="thinking-title">Pensando</span>
     <span class="thinking-dots">
       <span class="dot"></span>
@@ -51,7 +52,7 @@
       {#if lines.length > 0}
         {#each lines as line}
           <div class="thinking-line {getLineClass(line)}">
-            <span class="line-icon">{getLineIcon(line)}</span>
+            <span class="line-icon"><svelte:component this={getLineIcon(line)} size={11} strokeWidth={1.5} /></span>
             <span class="line-text">{line}</span>
           </div>
         {/each}

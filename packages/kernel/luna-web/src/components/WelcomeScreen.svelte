@@ -1,6 +1,7 @@
 <script>
   import { currentMode, MODE_COLORS, currentProvider } from '../stores.js';
   import { onMount } from 'svelte';
+  import { Moon, Globe, MessageSquare, Zap, Brain } from 'lucide-svelte';
   import { fetchProviders } from '../api.js';
   import ToolsPanel from './ToolsPanel.svelte';
   import LeadDashboardModal from './LeadDashboardModal.svelte';
@@ -65,7 +66,7 @@
 
     <!-- Logo -->
     <div class="welcome-logo">
-      <span class="logo-moon">🌙</span>
+      <span class="logo-moon"><Moon size={56} strokeWidth={1.5} /></span>
       <h1 class="welcome-title moon-glow">LUNA</h1>
       <p class="welcome-subtitle">Seu assistente autônomo inteligente</p>
     </div>
@@ -78,7 +79,7 @@
         disabled={providerLoading}
         title="Provider: {currentProviderName}"
       >
-        <span class="welcome-provider-emoji">🌐</span>
+        <span class="welcome-provider-emoji"><Globe size={15} strokeWidth={1.5} /></span>
         <span class="welcome-provider-name">{currentProviderName}</span>
         <svg class="welcome-provider-chevron" class:open={providerDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
           <polyline points="6 9 12 15 18 9"/>
@@ -115,7 +116,7 @@
     <!-- Recent Sessions -->
     {#if recentSessions.length > 0}
       <div class="recent-section">
-        <h3 class="recent-title">💬 Conversas recentes</h3>
+        <h3 class="recent-title"><MessageSquare size={16} strokeWidth={1.5} /> Conversas recentes</h3>
         <div class="recent-list">
           {#each recentSessions as session (session.id)}
             <button
@@ -134,14 +135,14 @@
     <!-- Tips -->
     <div class="tips-section">
       <div class="tip-card">
-        <span class="tip-icon">⚡</span>
+        <span class="tip-icon"><Zap size={20} strokeWidth={1.5} /></span>
         <div class="tip-text">
           <strong>Modo Instant <span class="badge-recommended">Recomendado</span></strong>
           <span>Respostas rápidas sem raciocínio</span>
         </div>
       </div>
       <div class="tip-card">
-        <span class="tip-icon">🧠</span>
+        <span class="tip-icon"><Brain size={20} strokeWidth={1.5} /></span>
         <div class="tip-text">
           <strong>Modo Thinking</strong>
           <span>Raciocínio passo a passo</span>

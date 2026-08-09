@@ -34,6 +34,7 @@
 
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
+  import { BarChart3, Terminal, CheckCircle2, Copy, ThumbsUp, ThumbsDown, RefreshCcw, Moon } from 'lucide-svelte';
   import { createDebouncedScheduler } from '../lib/debounce.js';
   import { formatTime } from '../utils.js';
   import LunaAvatar from './LunaAvatar.svelte';
@@ -164,14 +165,14 @@
       <LunaAvatar state={avatarState} size={32} animate={isLast} />
       <span class="name">Luna</span>
       {#if hasTable}
-        <span class="content-badge table-badge">📊 tabela</span>
+        <span class="content-badge table-badge"><BarChart3 size={12} strokeWidth={1.5} /> tabela</span>
       {/if}
       {#if hasCode}
-        <span class="content-badge code-badge">💻 código</span>
+        <span class="content-badge code-badge"><Terminal size={12} strokeWidth={1.5} /> código</span>
       {/if}
     </div>
     <button class="copy-message-btn" on:click={copyMessage} title="Copiar mensagem" aria-label="Copiar mensagem">
-      {#if copiedMessage}✅{:else}📋{/if}
+      {#if copiedMessage}<CheckCircle2 size={14} strokeWidth={1.5} />{:else}<Copy size={14} strokeWidth={1.5} />{/if}
       <span>{copiedMessage ? 'Copiado' : 'Copiar'}</span>
     </button>
     <div class="message-body" bind:this={contentEl} on:click={handleCopy} on:keydown={(e) => e.key === 'Enter' && handleCopy(e)} role="button" tabindex="0" aria-label="Clique para copiar codigo">
@@ -185,18 +186,18 @@
       {/if}
       <div class="feedback-buttons">
         <button class="feedback-btn" on:click={() => onFeedback('up')} title="Boa resposta" aria-label="Gostei">
-          👍
+          <ThumbsUp size={14} strokeWidth={1.5} />
         </button>
         <button class="feedback-btn" on:click={() => onFeedback('down')} title="Resposta ruim" aria-label="Nao gostei">
-          👎
+          <ThumbsDown size={14} strokeWidth={1.5} />
         </button>
         <button class="feedback-btn" on:click={() => onFeedback('retry')} title="Tentar novamente" aria-label="Tentar novamente">
-          🔄
+          <RefreshCcw size={14} strokeWidth={1.5} />
         </button>
       </div>
     </div>
     <!-- Luna signature -->
-    <div class="luna-signature" aria-hidden="true">🌙</div>
+    <div class="luna-signature" aria-hidden="true"><Moon size={14} strokeWidth={1.5} /></div>
   </div>
 </div>
 
@@ -397,7 +398,7 @@
     font-style: italic;
   }
   .message-body :global(blockquote::before) {
-    content: '🌙';
+    content: '✦';
     font-size: 1.3rem;
     opacity: 0.8;
     filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.4));

@@ -515,15 +515,27 @@
     ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
     ctx.fill();
 
-    // Emoji da lua 🌙 com sombra ciano
+    // Lua premium (SVG-like path) com sombra ciano — v12.5: emoji removido
     ctx.save();
     ctx.globalAlpha = alpha * 0.85;
-    ctx.font = '48px serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
     ctx.shadowColor = '#06b6d4';
     ctx.shadowBlur = 20 * pulse;
-    ctx.fillText('🌙', cx, cy);
+    ctx.fillStyle = '#f1f5f9';
+
+    const moonR = 22 * pulse;
+    // Círculo principal
+    ctx.beginPath();
+    ctx.arc(cx, cy, moonR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Sombra para efeito crescente (círculo sobreposto à direita)
+    ctx.globalAlpha = alpha * 0.85;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#07070f';
+    ctx.beginPath();
+    ctx.arc(cx + moonR * 0.38, cy - moonR * 0.12, moonR * 0.92, 0, Math.PI * 2);
+    ctx.fill();
+
     ctx.restore();
     ctx.shadowBlur = 0;
   }

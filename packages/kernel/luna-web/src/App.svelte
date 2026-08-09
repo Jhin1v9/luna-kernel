@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { Moon } from 'lucide-svelte';
   import { sessions, currentSessionId, isStreaming, messages, lunaConfig, connectionStatus, currentMode, user, MODE_COLORS, planModeState, PLAN_MODE_COLORS, mascotState, changelogModalOpen, changelogData, currentProvider } from './stores.js';
 
   // Update CSS theme variables when mode changes
@@ -36,7 +37,7 @@
   let sidebarCollapsed = false;
   let sessionsLoading = false;
 
-  // Quando não há sessão ativa, Luna vai dormir 💤
+  // Quando não há sessão ativa, Luna vai dormir Zzz
   $: if (!$currentSessionId) mascotState.set('sleep');
 
   async function handleNewSession(selectedProvider = null) {
@@ -297,7 +298,7 @@
 {:else}
   <!-- Auth checking loader -->
   <div class="auth-loader">
-    <div class="auth-loader-icon">🌙</div>
+    <div class="auth-loader-icon"><Moon size={24} /></div>
     <div class="auth-loader-text">Conectando...</div>
   </div>
 {/if}

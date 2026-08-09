@@ -1,6 +1,11 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
+  import {
+    Settings, Bot, BarChart3, Brain, Zap, Dna, Terminal, BookOpen,
+    Eye, EyeOff, Hourglass, Plug, CheckCircle2, XCircle, AlertTriangle,
+    RefreshCcw, Save, Rocket, Download, Upload, Users, Star, Globe, Search, Bug,
+  } from 'lucide-svelte';
   import { downloadFile, parseEnvFile, generateEnvFile } from '../utils.js';
   import { testConnection, downloadSelfHost, systemStatus } from '../api.js';
 
@@ -163,13 +168,13 @@
   });
 
   const sections = [
-    { key: 'telegram', icon: '🤖', title: 'Bot do Telegram' },
-    { key: 'dashboard', icon: '📊', title: 'Dashboard NEXO PRO' },
-    { key: 'kimi', icon: '🧠', title: 'Kimi Bridge' },
-    { key: 'advanced', icon: '⚡', title: 'Avancado' },
-    { key: 'prompt', icon: '🧬', title: 'System Prompt' },
-    { key: 'selfhost', icon: '💻', title: 'Self-Host Local' },
-    { key: 'tutorial', icon: '📖', title: 'Tutorial' },
+    { key: 'telegram', icon: Bot, title: 'Bot do Telegram' },
+    { key: 'dashboard', icon: BarChart3, title: 'Dashboard NEXO PRO' },
+    { key: 'kimi', icon: Brain, title: 'Kimi Bridge' },
+    { key: 'advanced', icon: Zap, title: 'Avancado' },
+    { key: 'prompt', icon: Dna, title: 'System Prompt' },
+    { key: 'selfhost', icon: Terminal, title: 'Self-Host Local' },
+    { key: 'tutorial', icon: BookOpen, title: 'Tutorial' },
   ];
 
   function statusBadge(status) {
@@ -199,7 +204,7 @@
   >
     <!-- Header -->
     <div class="drawer-header">
-      <h2 class="drawer-title">⚙️ Configuracoes</h2>
+      <h2 class="drawer-title"><Settings size={20} strokeWidth={1.5} /> Configuracoes</h2>
       <button class="close-btn" on:click={onClose} aria-label="Fechar">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <line x1="18" y1="6" x2="6" y2="18"/>
@@ -210,10 +215,10 @@
 
     <!-- Content -->
     <div class="drawer-content">
-      <!-- 🤖 Telegram -->
+      <!-- Telegram -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('telegram')}>
-          <span>🤖 Bot do Telegram</span>
+          <span><Bot size={16} strokeWidth={1.5} /> Bot do Telegram</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'telegram'}>
             <polyline points="6 9 12 15 18 9"/>
           </svg>
@@ -229,13 +234,13 @@
                   <input id="telegram-token" type="password" class="field-input" bind:value={localConfig.TELEGRAM_BOT_TOKEN} placeholder="Seu token do BotFather" />
                 {/if}
                 <button class="toggle-password" on:click={() => showPasswordToken = !showPasswordToken}>
-                  {showPasswordToken ? '🙈' : '👁'}
+                  {#if showPasswordToken}<EyeOff size={16} strokeWidth={1.5} />{:else}<Eye size={16} strokeWidth={1.5} />{/if}
                 </button>
               </div>
             </div>
             <div class="field-row">
               {#if statusLoading}
-                <span class="status-indicator">⏳</span>
+                <span class="status-indicator"><Hourglass size={14} strokeWidth={1.5} /></span>
                 <span class="status-text">Verificando...</span>
               {:else}
                 {@const badge = statusBadge(serviceStatus['telegram-bot']?.status)}
@@ -247,21 +252,21 @@
               <a href="https://t.me/BotFather" target="_blank" rel="noopener" class="field-link">@BotFather</a>
             </div>
             <button class="test-btn" on:click={() => handleTestConnection('telegram')} disabled={testLoading['telegram']}>
-              {testLoading['telegram'] ? '⏳ Testando...' : '🔌 Testar Conexao'}
+              {#if testLoading['telegram']}<Hourglass size={14} strokeWidth={1.5} /> Testando...{:else}<Plug size={14} strokeWidth={1.5} /> Testar Conexao{/if}
             </button>
             {#if testResults['telegram']}
               <div class="test-result {testResults['telegram'].ok ? 'test-success' : 'test-error'}">
-                {testResults['telegram'].ok ? '✅ ' + (testResults['telegram'].bot?.username || 'Conectado') : '❌ ' + (testResults['telegram'].error || 'Falha')}
+                {#if testResults['telegram'].ok}<CheckCircle2 size={14} strokeWidth={1.5} /> {testResults['telegram'].bot?.username || 'Conectado'}{:else}<XCircle size={14} strokeWidth={1.5} /> {testResults['telegram'].error || 'Falha'}{/if}
               </div>
             {/if}
           </div>
         {/if}
       </div>
 
-      <!-- 📊 Dashboard -->
+      <!-- Dashboard -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('dashboard')}>
-          <span>📊 Dashboard NEXO PRO</span>
+          <span><BarChart3 size={16} strokeWidth={1.5} /> Dashboard NEXO PRO</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'dashboard'}>
             <polyline points="6 9 12 15 18 9"/>
           </svg>
@@ -277,13 +282,13 @@
                   <input id="api-token" type="password" class="field-input" bind:value={localConfig.INTERNAL_API_TOKEN} placeholder="Token da API interna" />
                 {/if}
                 <button class="toggle-password" on:click={() => showPasswordApi = !showPasswordApi}>
-                  {showPasswordApi ? '🙈' : '👁'}
+                  {#if showPasswordApi}<EyeOff size={16} strokeWidth={1.5} />{:else}<Eye size={16} strokeWidth={1.5} />{/if}
                 </button>
               </div>
             </div>
             <div class="field-row">
               {#if statusLoading}
-                <span class="status-indicator">⏳</span>
+                <span class="status-indicator"><Hourglass size={14} strokeWidth={1.5} /></span>
                 <span class="status-text">Verificando...</span>
               {:else}
                 {@const badge = statusBadge(serviceStatus['nexo-dashboard']?.status)}
@@ -294,21 +299,21 @@
               {/if}
             </div>
             <button class="test-btn" on:click={() => handleTestConnection('dashboard')} disabled={testLoading['dashboard']}>
-              {testLoading['dashboard'] ? '⏳ Testando...' : '🔌 Testar Token'}
+              {#if testLoading['dashboard']}<Hourglass size={14} strokeWidth={1.5} /> Testando...{:else}<Plug size={14} strokeWidth={1.5} /> Testar Token{/if}
             </button>
             {#if testResults['dashboard']}
               <div class="test-result {testResults['dashboard'].ok ? 'test-success' : 'test-error'}">
-                {testResults['dashboard'].ok ? '✅ Token válido' : '❌ ' + (testResults['dashboard'].error || 'Token inválido')}
+                {#if testResults['dashboard'].ok}<CheckCircle2 size={14} strokeWidth={1.5} /> Token válido{:else}<XCircle size={14} strokeWidth={1.5} /> {testResults['dashboard'].error || 'Token inválido'}{/if}
               </div>
             {/if}
           </div>
         {/if}
       </div>
 
-      <!-- 🧠 Kimi Bridge -->
+      <!-- Kimi Bridge -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('kimi')}>
-          <span>🧠 Kimi Bridge</span>
+          <span>Kimi Bridge</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'kimi'}>
             <polyline points="6 9 12 15 18 9"/>
           </svg>
@@ -333,7 +338,7 @@
             </div>
             <div class="field-row">
               {#if statusLoading}
-                <span class="status-indicator">⏳</span>
+                <span class="status-indicator"><Hourglass size={14} strokeWidth={1.5} /></span>
                 <span class="status-text">Verificando...</span>
               {:else}
                 {@const badge = statusBadge(serviceStatus['kimi-bridge']?.status)}
@@ -344,21 +349,21 @@
               {/if}
             </div>
             <button class="test-btn" on:click={() => handleTestConnection('kimi')} disabled={testLoading['kimi']}>
-              {testLoading['kimi'] ? '⏳ Testando...' : '🔌 Testar Chrome'}
+              {testLoading['kimi'] ? 'Testando...' : 'Testar Chrome'}
             </button>
             {#if testResults['kimi']}
               <div class="test-result {testResults['kimi'].ok ? 'test-success' : 'test-error'}">
-                {testResults['kimi'].ok ? '✅ Chrome conectado (' + (testResults['kimi'].pages || 0) + ' paginas)' : '❌ ' + (testResults['kimi'].error || 'Desconectado')}
+                {testResults['kimi'].ok ? 'Chrome conectado (' + (testResults['kimi'].pages || 0) + ' paginas)' : (testResults['kimi'].error || 'Desconectado')}
               </div>
             {/if}
           </div>
         {/if}
       </div>
 
-      <!-- ⚡ Advanced -->
+      <!-- Advanced -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('advanced')}>
-          <span>⚡ Avancado</span>
+          <span>Avancado</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'advanced'}>
             <polyline points="6 9 12 15 18 9"/>
           </svg>
@@ -382,7 +387,7 @@
                   <input id="jwt-secret" type="password" class="field-input" bind:value={localConfig.JWT_SECRET} placeholder="Chave secreta para tokens JWT" />
                 {/if}
                 <button class="toggle-password" on:click={() => showPasswordJwt = !showPasswordJwt}>
-                  {showPasswordJwt ? '🙈' : '👁'}
+                  {#if showPasswordJwt}<EyeOff size={16} strokeWidth={1.5} />{:else}<Eye size={16} strokeWidth={1.5} />{/if}
                 </button>
               </div>
             </div>
@@ -400,10 +405,10 @@
         {/if}
       </div>
 
-      <!-- 🧬 System Prompt -->
+      <!-- System Prompt -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('prompt')}>
-          <span>🧬 System Prompt</span>
+          <span>System Prompt</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'prompt'}>
             <polyline points="6 9 12 15 18 9"/>
           </svg>
@@ -411,7 +416,7 @@
         {#if activeSection === 'prompt'}
           <div class="section-body" transition:slideExpand>
             <div class="prompt-warning">
-              <span>⚠️</span>
+              <span><AlertTriangle size={16} /></span>
               <span>Alterar o system prompt pode afetar o comportamento da Luna.</span>
             </div>
             <textarea class="prompt-textarea" rows="20" value={systemPromptValue} on:input={handleSystemPromptChange} placeholder="Digite o system prompt aqui..." />
@@ -419,17 +424,17 @@
               {charCount.toLocaleString()} caracteres, {lineCount} linhas
             </div>
             <div class="prompt-actions">
-              <button class="btn-secondary" on:click={handleResetPrompt}>🔄 Reset Original</button>
-              <button class="btn-primary" on:click={handleSave}>💾 Salvar</button>
+              <button class="btn-secondary" on:click={handleResetPrompt}>Reset Original</button>
+              <button class="btn-primary" on:click={handleSave}>Salvar</button>
             </div>
           </div>
         {/if}
       </div>
 
-      <!-- 💻 Self-Host -->
+      <!-- Self-Host -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('selfhost')}>
-          <span>💻 Self-Host Local</span>
+          <span>Self-Host Local</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'selfhost'}>
             <polyline points="6 9 12 15 18 9"/>
           </svg>
@@ -437,20 +442,20 @@
         {#if activeSection === 'selfhost'}
           <div class="section-body" transition:slideExpand>
             <div class="selfhost-info">
-              <p>🚀 Baixe a Luna completa para rodar no seu PC.</p>
+              <p>Baixe a Luna completa para rodar no seu PC.</p>
               <p>O pacote inclui:</p>
               <ul>
-                <li>✅ Todos os arquivos do kernel (sem precisar de Git)</li>
-                <li>✅ .env pre-configurado com seus tokens</li>
-                <li>✅ Web interface + Telegram bot</li>
-                <li>✅ Kimi Bridge com Chrome</li>
-                <li>✅ README com tutorial completo</li>
+                <li>Todos os arquivos do kernel (sem precisar de Git)</li>
+                <li>.env pre-configurado com seus tokens</li>
+                <li>Web interface + Telegram bot</li>
+                <li>Kimi Bridge com Chrome</li>
+                <li>README com tutorial completo</li>
               </ul>
-              <p style="margin-top:12px; color: var(--luna-primary);">👨‍👦 Compartilhe com a familia:</p>
+              <p style="margin-top:12px; color: var(--luna-primary);">Compartilhe com a familia:</p>
               <p>Copie o <code>luna-selfhost.zip</code> para o PC do seu pai/mae/irmao. Ele so precisa descompactar, rodar <code>npm install</code> e <code>node luna-server.js</code>. Todos usam a mesma conta!</p>
             </div>
             <button class="btn-primary btn-wide" on:click={handleDownloadSelfHost} disabled={downloadLoading}>
-              {downloadLoading ? '⏳ Gerando pacote...' : '📥 Baixar Luna Local'}
+              {downloadLoading ? 'Gerando pacote...' : 'Baixar Luna Local'}
             </button>
             <div class="selfhost-note">
               Requer: Node.js v20+, Google Chrome (Git opcional)
@@ -459,10 +464,10 @@
         {/if}
       </div>
 
-      <!-- 📖 Tutorial -->
+      <!-- Tutorial -->
       <div class="section">
         <button class="section-header" on:click={() => setSection('tutorial')}>
-          <span>📖 Tutorial</span>
+          <span>Tutorial</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:rotated={activeSection === 'tutorial'}>
             <polyline points="6 9 12 15 18 9"/>
           </svg>
@@ -473,11 +478,11 @@
               <h4>Bem-vindo a Luna Web!</h4>
               <p>A Luna e um agente autonomo que pode:</p>
               <ul>
-                <li>💻 Criar e editar arquivos</li>
-                <li>🐛 Executar comandos no terminal</li>
-                <li>🌐 Pesquisar na web</li>
-                <li>📊 Gerenciar tarefas no dashboard</li>
-                <li>🔍 Analisar repositorios Git</li>
+                <li>Criar e editar arquivos</li>
+                <li>Executar comandos no terminal</li>
+                <li>Pesquisar na web</li>
+                <li>Gerenciar tarefas no dashboard</li>
+                <li>Analisar repositorios Git</li>
               </ul>
               <h4>Atalhos do teclado</h4>
               <ul>
@@ -487,11 +492,11 @@
                 <li><kbd>Esc</kbd> — Cancelar/Close</li>
               </ul>
               <h4>Modos de resposta</h4>
-              <p><strong>⭐ thinking</strong> — A Luna pensa antes de responder (mais preciso)</p>
-              <p><strong>⚡ instant</strong> — Resposta rapida sem thinking <span class="badge-recommended">Recomendado</span></p>
+              <p><strong>thinking</strong> — A Luna pensa antes de responder (mais preciso)</p>
+              <p><strong>instant</strong> — Resposta rapida sem thinking <span class="badge-recommended">Recomendado</span></p>
               <h4>Self-Host e Compartilhamento</h4>
               <p>Va em <strong>Configuracoes → Self-Host Local</strong> para baixar a Luna completa e rodar no seu PC.</p>
-              <p><strong>👨‍👦 Compartilhar com a familia:</strong> Baixe o pacote, copie o ZIP para outro PC, descompacte, rode <code>npm install</code> e <code>node luna-server.js</code>. Pronto — todos usam a mesma conta e tokens!</p>
+              <p><strong>Compartilhar com a familia:</strong> Baixe o pacote, copie o ZIP para outro PC, descompacte, rode <code>npm install</code> e <code>node luna-server.js</code>. Pronto — todos usam a mesma conta e tokens!</p>
             </div>
           </div>
         {/if}
@@ -502,10 +507,10 @@
     <div class="drawer-footer">
       <input type="file" accept=".env" bind:this={importInputEl} on:change={processImport} class="hidden-input" />
       <div class="footer-row">
-        <button class="btn-secondary btn-small" on:click={handleExportEnv}>📥 Exportar .env</button>
-        <button class="btn-secondary btn-small" on:click={handleImportEnv}>📤 Importar .env</button>
+        <button class="btn-secondary btn-small" on:click={handleExportEnv}>Exportar .env</button>
+        <button class="btn-secondary btn-small" on:click={handleImportEnv}>Importar .env</button>
       </div>
-      <button class="btn-danger" on:click={handleRestart}>🔄 Reiniciar Luna</button>
+      <button class="btn-danger" on:click={handleRestart}>Reiniciar Luna</button>
     </div>
   </aside>
 {/if}

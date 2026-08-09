@@ -4,7 +4,8 @@
   // (packages/kernel/lib/tool-registry.cjs → scripts/gen-tool-meta.cjs).
   // Never hand-edit toolMeta.generated.js — update the registry and regenerate.
   import { TOOL_COLORS, TOOL_ICONS } from '../lib/toolMeta.generated.js';
-  import { Ban } from 'lucide-svelte';
+  import { Ban, Radio } from 'lucide-svelte';
+  import LunaIcon from '../lib/icons/LunaIcon.svelte';
 
   export let tool = '';
   export let params = {};
@@ -33,7 +34,7 @@
 
   $: displayStatus = status || (result ? (result.success !== false ? 'completed' : 'failed') : 'running');
   $: color = TOOL_COLORS[tool] || '#6b7280';
-  $: icon = TOOL_ICONS[tool] || '🔧';
+  $: icon = TOOL_ICONS[tool] || 'fallback';
   $: displayPath = params?.path || params?.file || params?.dir || params?.url || '';
   $: displayCommand = params?.command || params?.code || params?.script || '';
 
@@ -50,7 +51,9 @@
       .trim();
   }
 
-  $: rawResultOutput = result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.result?.stdout !== undefined ? result.result.stdout : result?.result?.output !== undefined ? result.result.output : result?.content !== undefined ? result.content : '';
+  // v12.4-fix: readFile places file content in result.result.content; include it
+  // in the output scan so the frontend actually shows what was read.
+  $: rawResultOutput = result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.result?.stdout !== undefined ? result.result.stdout : result?.result?.output !== undefined ? result.result.output : result?.content !== undefined ? result.content : result?.result?.content !== undefined ? result.result.content : '';
   $: resultOutput = cleanCodeFences(rawResultOutput);
   $: truncatedOutput = resultOutput
     ? resultOutput.length > 500
@@ -95,7 +98,9 @@
 >
   <div class="tool-header">
     <div class="tool-info">
-      <span class="tool-icon">{icon}</span>
+      <span class="tool-icon">
+        <LunaIcon name={icon} size={18} ariaLabel={tool} />
+      </span>
       <span class="tool-name">{tool}</span>
     </div>
     <div class="tool-status">
@@ -172,11 +177,12 @@
 
   {#if displayStatus === 'running' && liveOutput}
     <details class="tool-output live" open>
-      <summary>📡 Output em tempo real</summary>
+      <summary><Radio size={14} strokeWidth={1.5} style="display:inline-block; vertical-align:middle; margin-right:4px;" /> Output em tempo real</summary>
       <pre class="output-content live-content">{liveOutput}</pre>
     </details>
   {:else if truncatedOutput && displayStatus !== 'running'}
-    <details class="tool-output" open={displayStatus === 'failed'}>
+    <!-- v12.5-fix: open output by default so the user sees the result without clicking -->
+    <details class="tool-output" open={displayStatus === 'failed' || truncatedOutput.length > 0}>
       <summary>{displayStatus === 'failed' ? 'Ver erro' : 'Ver output'}</summary>
       <pre class="output-content" class:output-success={displayStatus === 'completed'} class:output-error={displayStatus === 'failed'}>{truncatedOutput}</pre>
     </details>

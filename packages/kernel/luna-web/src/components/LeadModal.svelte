@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { Target, CheckCircle2 } from 'lucide-svelte';
   
   export let open = false;
   export let onClose = () => {};
@@ -99,14 +100,14 @@
   <div class="modal-backdrop" on:click={handleBackdropClick}>
     <div class="modal-container">
       <div class="modal-header">
-        <h2 class="modal-title">🎯 Novo Lead</h2>
+        <h2 class="modal-title"><Target size={20} strokeWidth={1.5} /> Novo Lead</h2>
         <button class="modal-close" on:click={onClose} aria-label="Fechar">×</button>
       </div>
       
       <div class="modal-body">
         {#if success}
           <div class="success-state">
-            <div class="success-icon">✅</div>
+            <div class="success-icon"><CheckCircle2 size={40} strokeWidth={1.5} /></div>
             <div class="success-text">Lead criado com sucesso!</div>
           </div>
         {:else}

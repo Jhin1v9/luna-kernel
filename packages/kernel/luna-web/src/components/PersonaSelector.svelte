@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { Drama } from 'lucide-svelte';
   import { fetchPersonas, setSessionPersona } from '../api.js';
 
   export let sessionId = null;
@@ -57,7 +58,7 @@
     disabled={loading || !sessionId}
     title="Selecionar personalidade"
   >
-    <span class="persona-icon">🎭</span>
+    <span class="persona-icon"><Drama size={14} strokeWidth={1.5} /></span>
     <span class="persona-label">{currentPersonaName}</span>
     <svg width="0.75rem" height="0.75rem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
       <polyline points="6 9 12 15 18 9"/>

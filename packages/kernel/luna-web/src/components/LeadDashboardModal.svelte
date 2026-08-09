@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { Target, Search } from 'lucide-svelte';
   
   export let open = false;
   export let onClose = () => {};
@@ -179,7 +180,7 @@
         </div>
       {:else if showCreateForm}
         <div class="create-form">
-          <h3 class="form-title">🎯 Novo Lead</h3>
+          <h3 class="form-title"><Target size={18} strokeWidth={1.5} /> Novo Lead</h3>
           <div class="form-grid">
             <div class="form-field">
               <label>Nome *</label>
@@ -227,7 +228,7 @@
         </div>
       {:else if filteredLeads.length === 0}
         <div class="empty-state">
-          <div class="empty-icon">🔍</div>
+          <div class="empty-icon"><Search size={32} strokeWidth={1.5} /></div>
           <div class="empty-text">Nenhum lead encontrado</div>
         </div>
       {:else}

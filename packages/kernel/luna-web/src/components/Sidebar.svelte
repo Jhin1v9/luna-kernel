@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { ClipboardList, MessageSquare, FilePenLine, Trash2, Moon, BrainCircuit, Zap, XCircle, CircleDot } from 'lucide-svelte';
   import { formatTime } from '../utils.js';
   import { user, mascotState } from '../stores.js';
   import { logout } from '../api.js';
@@ -143,7 +144,7 @@
   {/if}
 
   <!-- Sessions Label -->
-  <div class="section-label">📋 Sessoes {#if searchQuery}({filteredSessions.length}){/if}</div>
+  <div class="section-label"><ClipboardList size={12} strokeWidth={1.5} /> Sessoes {#if searchQuery}({filteredSessions.length}){/if}</div>
 
   <!-- Session List -->
   <div class="session-list">
@@ -154,7 +155,7 @@
       </div>
     {:else if filteredSessions.length === 0}
       <div class="empty-state">
-        <div class="empty-icon">💬</div>
+        <div class="empty-icon"><MessageSquare size={32} strokeWidth={1.5} /></div>
         <div class="empty-text">{searchQuery ? 'Nenhuma sessao encontrada' : 'Nenhuma sessao ainda'}</div>
         <div class="empty-hint">{searchQuery ? 'Tente outro termo' : 'Clique em "Nova Sessao" para comecar'}</div>
       </div>
@@ -200,10 +201,10 @@
           {#if contextMenuId === session.id}
             <div class="context-menu" style="top: 8px; right: 8px;">
               <button class="context-item" on:click={(e) => startRename(session, e)}>
-                ✏️ Renomear
+                <FilePenLine size={14} strokeWidth={1.5} /> Renomear
               </button>
               <button class="context-item" on:click={() => handleDelete(session.id)}>
-                🗑️ Excluir
+                <Trash2 size={14} strokeWidth={1.5} /> Excluir
               </button>
             </div>
           {/if}
@@ -248,10 +249,17 @@
       <div class="footer-mascot-info">
         <span class="footer-mascot-name">Luna</span>
         <span class="footer-mascot-status" data-state={$mascotState}>
-          {$mascotState === 'sleep' ? '💤 Dormindo' :
-           $mascotState === 'thinking' ? '🤔 Pensando' :
-           $mascotState === 'working' ? '⚡ Trabalhando' :
-           $mascotState === 'error' ? '❌ Erro' : '🟢 Online'}
+          {#if $mascotState === 'sleep'}
+            <Moon size={12} strokeWidth={1.5} /> Dormindo
+          {:else if $mascotState === 'thinking'}
+            <BrainCircuit size={12} strokeWidth={1.5} /> Pensando
+          {:else if $mascotState === 'working'}
+            <Zap size={12} strokeWidth={1.5} /> Trabalhando
+          {:else if $mascotState === 'error'}
+            <XCircle size={12} strokeWidth={1.5} /> Erro
+          {:else}
+            <CircleDot size={12} strokeWidth={1.5} /> Online
+          {/if}
         </span>
       </div>
     </div>
@@ -502,7 +510,9 @@
     min-width: 140px;
   }
   .context-item {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     width: 100%;
     padding: 8px 12px;
     background: none;
@@ -571,6 +581,9 @@
     letter-spacing: -0.2px;
   }
   .footer-mascot-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 11px;
     font-weight: 500;
     font-family: 'JetBrains Mono', monospace;

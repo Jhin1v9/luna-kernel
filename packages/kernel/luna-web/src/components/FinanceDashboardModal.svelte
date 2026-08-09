@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { DollarSign, BarChart3, Users } from 'lucide-svelte';
   
   export let open = false;
   export let onClose = () => {};
@@ -68,7 +69,7 @@
         </div>
       {:else if error || !finance}
         <div class="modal-empty">
-          <span style="font-size: 32px;">💰</span>
+          <span style="display: inline-flex; color: #f59e0b;"><DollarSign size={32} strokeWidth={1.5} /></span>
           <p>Não foi possível carregar os dados financeiros.</p>
           <button class="btn-primary" style="background: #f59e0b;" on:click={loadData}>Tentar novamente</button>
         </div>
@@ -92,7 +93,7 @@
         <!-- Details Grid -->
         <div class="finance-details">
           <div class="detail-section">
-            <h3>📊 Expectativa de Receitas</h3>
+            <h3><BarChart3 size={18} strokeWidth={1.5} /> Expectativa de Receitas</h3>
             <div class="detail-row">
               <span>Total Esperado</span>
               <span class="detail-value">{fmtMoney(finance.totalExpected)}</span>
@@ -108,7 +109,7 @@
           </div>
           
           <div class="detail-section">
-            <h3>👥 Clientes</h3>
+            <h3><Users size={18} strokeWidth={1.5} /> Clientes</h3>
             <div class="detail-row">
               <span>Clientes Ativos</span>
               <span class="detail-value">{finance.activeClients}</span>

@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { Wrench, AlertTriangle } from 'lucide-svelte';
   import LeadDashboardModal from './LeadDashboardModal.svelte';
   import TaskDashboardModal from './TaskDashboardModal.svelte';
   import FinanceDashboardModal from './FinanceDashboardModal.svelte';
@@ -60,10 +61,10 @@
 
 <div class="tools-panel">
   <div class="tools-header">
-    <span class="tools-icon">🛠️</span>
+    <span class="tools-icon"><Wrench size={16} strokeWidth={1.5} /></span>
     <span class="tools-title">Ferramentas do Dashboard</span>
     {#if error}
-      <span class="tools-error" title="Dashboard PRO temporariamente indisponível. Tentando reconectar...">⚠️</span>
+      <span class="tools-error" title="Dashboard PRO temporariamente indisponível. Tentando reconectar..."><AlertTriangle size={16} strokeWidth={1.5} /></span>
     {:else if loading}
       <span class="tools-loading"></span>
     {/if}

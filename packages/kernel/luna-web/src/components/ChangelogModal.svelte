@@ -1,5 +1,6 @@
 <script>
   import { changelogModalOpen, changelogData } from '../stores.js';
+  import { Sparkles } from 'lucide-svelte';
   import MoonPhase from './MoonPhase.svelte';
 
   let selectedIndex = 0;
@@ -108,7 +109,7 @@
       <!-- Footer -->
       <div class="changelog-footer">
         <button class="continue-btn" on:click={closeModal}>
-          Continuar ✨
+          Continuar <Sparkles size={16} strokeWidth={1.5} />
         </button>
       </div>
     </div>

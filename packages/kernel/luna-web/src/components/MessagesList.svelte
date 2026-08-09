@@ -1,11 +1,13 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { Moon, Terminal, Search, Code, Lock } from 'lucide-svelte';
   import { isStreaming } from '../stores.js';
   import { scrollManager } from '../utils.js';
   import UserMessage from './UserMessage.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import ThinkingBubble from './ThinkingBubble.svelte';
   import ToolCard from './ToolCard.svelte';
+  import ToolGroup from './ToolGroup.svelte';
   import PlanCard from './PlanCard.svelte';
   import TypingIndicator from './TypingIndicator.svelte';
 
@@ -29,6 +31,33 @@
       if (messages[i].type === 'assistant') return i;
     }
     return -1;
+  })();
+
+  // v12.6-fix: group consecutive tool cards to reduce visual noise. Sequences of
+  // 3+ tools render as a collapsible ToolGroup; 1-2 tools keep their full cards.
+  const TOOL_GROUP_THRESHOLD = 3;
+  $: messageSlots = (() => {
+    const slots = [];
+    let i = 0;
+    while (i < messages.length) {
+      if (messages[i].type === 'tool') {
+        let j = i;
+        while (j < messages.length && messages[j].type === 'tool') j++;
+        const toolRun = messages.slice(i, j);
+        if (toolRun.length >= TOOL_GROUP_THRESHOLD) {
+          slots.push({ type: 'tool_group', id: `tool-group-${toolRun[0].id}`, tools: toolRun, index: i });
+        } else {
+          for (let k = 0; k < toolRun.length; k++) {
+            slots.push({ type: 'message', message: toolRun[k], index: i + k });
+          }
+        }
+        i = j;
+      } else {
+        slots.push({ type: 'message', message: messages[i], index: i });
+        i++;
+      }
+    }
+    return slots;
   })();
 
   $: if (messages.length > 0) {
@@ -70,26 +99,30 @@
 >
   {#if messages.length === 0}
     <div class="welcome">
-      <div class="welcome-icon">🌙</div>
+      <div class="welcome-icon"><Moon size={48} strokeWidth={1.5} /></div>
       <h2 class="welcome-title">Bem-vindo a Luna Web</h2>
       <p class="welcome-subtitle">Como posso ajudar voce hoje?</p>
       <div class="welcome-suggestions">
         <button class="suggestion" on:click>
-          💻 Crie um app React com Tailwind
+          <Terminal size={14} strokeWidth={1.5} /> Crie um app React com Tailwind
         </button>
         <button class="suggestion" on:click>
-          🔍 Pesquise as ultimas noticias de IA
+          <Search size={14} strokeWidth={1.5} /> Pesquise as ultimas noticias de IA
         </button>
         <button class="suggestion" on:click>
-          🐍 Execute um script Python
+          <Code size={14} strokeWidth={1.5} /> Execute um script Python
         </button>
       </div>
     </div>
   {:else}
     <div class="messages-container">
-      {#each messages as message, i (message.id)}
-        <div class="message-wrapper" class:system-msg={message.type === 'system' || message.type === 'error' || message.type === 'login_required'}>
-          {#if message.type === 'user'}
+      {#each messageSlots as slot (slot.id || slot.message?.id || slot.index)}
+        {@const message = slot.type === 'message' ? slot.message : null}
+        {@const i = slot.index}
+        <div class="message-wrapper" class:system-msg={message?.type === 'system' || message?.type === 'error' || message?.type === 'login_required'}>
+          {#if slot.type === 'tool_group'}
+            <ToolGroup tools={slot.tools} onConfirmTool={onConfirmTool} onCancelTool={onCancelTool} />
+          {:else if message.type === 'user'}
             <UserMessage content={message.content} timestamp={message.timestamp} files={message.files} />
           {:else if message.type === 'assistant'}
             <AssistantMessage content={message.content} timestamp={message.timestamp} isStreaming={$isStreaming} isLast={i === lastAssistantIndex} />
@@ -122,7 +155,7 @@
             </div>
           {:else if message.type === 'login_required'}
             <div class="system-banner login-required">
-              🔒 {message.content}
+              <Lock size={14} strokeWidth={1.5} /> {message.content}
               <button class="retry-btn" on:click={() => location.reload()}>Recarregar página</button>
             </div>
           {/if}

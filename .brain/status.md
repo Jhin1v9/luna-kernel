@@ -1,7 +1,7 @@
 # Luna Status
 
 > Living memory for AI agents. Update this file when system reality changes.
-> Last verified: 2026-08-09 (v12.4) by Kimi Code CLI.
+> Last verified: 2026-08-09 (v12.5) by Kimi Code CLI.
 
 ## Current Branch
 
@@ -46,13 +46,27 @@ Sessão Kimi Code corrigindo os 4 bugs relatados pelo dono + prompts + limpeza. 
 
 **Validação manual pendente (dono):** reload da extensão v2.7.0 (pendente desde v12.1) + teste real: confirmar/cancelar ação destrutiva, turno tool-only, F5 com confirmação pendente.
 
+## v12.5 (2026-08-09) — Luna Premium Icon System (0 emojis)
+
+**Detalhe: `packages/kernel/.brain/bugs.md` (seção v12.5), `changelog.md` (entrada SEM-HASH), `docs/superpowers/specs/2026-08-09-luna-premium-icon-system-design.md`.**
+
+1. Icon system → `src/lib/icons/lunaIconMap.js` + `LunaIcon.svelte` criados; Lucide já estava instalado.
+2. ToolCard/ChatArea/ChatInput/slashCommands → todos os emojis substituídos por Lucide.
+3. ConfigDrawer/LunaMascot/LunaStage/LoginPage/modais → emojis removidos das strings.
+4. ParticleBackground → lua desenhada via path (círculo + sombra), sem emoji `🌙`.
+5. Bugfix extra → `tryParseToolJson` detecta `{"script"}` e mapeia para `executeScript`; `final-poll` processa candidates tool/script JSON como `action_detected` (fixa `ipython` e tools grandes ignoradas); `ToolCard` abre output por padrão; dedup TTL de action_detected 10s→2s.
+
+**Validação manual pendente (dono):** abrir `http://localhost:3458`, enviar mensagem, confirmar que tools aparecem com ícones Lucide e que a lua no wallpaper não mudou de comportamento.
+
 ## v12.4 (2026-08-09) — thinking cortado (causa raiz real) + empty response falso
 
 **Detalhe: `packages/kernel/.brain/bugs.md` (seção v12.4), `changelog.md` (entrada SEM-HASH).**
 
 1. Thinking cortado → `_detectUiState` agora consulta `_hasActiveLoadingIndicators` (thinking containers, spinners, tool calls em execução, cursores) e força `isGenerating=true` quando o Stop some; `completion_candidate` só é aceito sem loading ativo.
 2. "Empty response from provider" falso → `luna-soul.cjs` não emite erro fatal quando há confirmação destrutiva pendente; mantém o card ativo com mensagem `system`.
-3. v12.3 reclassificado → as defesas da v12.3 eram necessárias, mas a causa raiz do thinking cortado era a detecção de geração; resolvido na v12.4.
+3. readFile sem output → `ToolCard.svelte` agora lê `result.result.content`; `_makeFriendlyFeedback('readFile')` inclui snippet do conteúdo na mensagem do card.
+4. Tools ignoradas com `{"script"}` → `tryParseToolJson` no DOM structure agora detecta `script` e mapeia para `executeScript`; Kimi usando script em vez de tool não é mais ignorada.
+5. v12.3 reclassificado → as defesas da v12.3 eram necessárias, mas a causa raiz do thinking cortado era a detecção de geração; resolvido na v12.4.
 
 **Validação manual pendente (dono):** reload da extensão v2.7.0 + teste real: mensagem que force thinking longo (pergunta complexa ou "pensa passo a passo"), confirmar que o thinking não é cortado e a resposta corresponde ao turno atual.
 

@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { CheckCircle2, ClipboardList, Check, Calendar } from 'lucide-svelte';
   
   export let open = false;
   export let onClose = () => {};
@@ -185,7 +186,7 @@
         </div>
       {:else if panelMode === 'create' || showCreateForm}
         <div class="create-form">
-          <h3 class="form-title">✅ Nova Tarefa</h3>
+          <h3 class="form-title"><CheckCircle2 size={18} strokeWidth={1.5} /> Nova Tarefa</h3>
           <div class="form-grid">
             <div class="form-field full">
               <label>Título *</label>
@@ -198,9 +199,9 @@
             <div class="form-field">
               <label>Prioridade</label>
               <select bind:value={formPriority}>
-                <option value="Alta">🔴 Alta</option>
-                <option value="Média">🟡 Média</option>
-                <option value="Baixa">🟢 Baixa</option>
+                <option value="Alta">Alta</option>
+                <option value="Média">Média</option>
+                <option value="Baixa">Baixa</option>
               </select>
             </div>
             <div class="form-field">
@@ -230,7 +231,7 @@
         </div>
       {:else if filteredTasks.length === 0}
         <div class="empty-state">
-          <div class="empty-icon">📋</div>
+          <div class="empty-icon"><ClipboardList size={32} strokeWidth={1.5} /></div>
           <div class="empty-text">Nenhuma tarefa encontrada</div>
         </div>
       {:else}
@@ -239,7 +240,7 @@
             <div class="task-card">
               <div class="task-left">
                 <div class="task-checkbox" class:completed={task.status === 'completed'}>
-                  {#if task.status === 'completed'}✓{/if}
+                  {#if task.status === 'completed'}<Check size={12} strokeWidth={2.5} />{/if}
                 </div>
                 <div class="task-info">
                   <div class="task-title" class:completed={task.status === 'completed'}>{task.title}</div>
@@ -254,7 +255,7 @@
                       {statusConfig[task.status]?.label || task.status}
                     </span>
                     {#if task.dueDate}
-                      <span class="task-due">📅 {formatDate(task.dueDate)}</span>
+                      <span class="task-due"><Calendar size={12} strokeWidth={1.5} /> {formatDate(task.dueDate)}</span>
                     {/if}
                   </div>
                 </div>

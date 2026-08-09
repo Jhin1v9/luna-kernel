@@ -1,9 +1,11 @@
 <script>
+  import { Moon } from 'lucide-svelte';
+
   export let text = 'Luna está pensando';
 </script>
 
 <div class="typing-indicator">
-  <div class="typing-avatar">🌙</div>
+  <div class="typing-avatar"><Moon size={16} strokeWidth={1.5} color="#fff" /></div>
   <div class="typing-bubble">
     <span class="typing-text">{text}</span>
     <span class="typing-dots">

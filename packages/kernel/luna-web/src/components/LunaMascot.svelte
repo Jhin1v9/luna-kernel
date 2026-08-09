@@ -28,40 +28,40 @@
     sleep: [
       'Zzz... tô sonhando com código...',
       '5 minutinhos só... *ronrona*',
-      'Me acorda com café, tá? ☕',
-      'Hora da soneca... 🌙'
+      'Me acorda com café, tá?',
+      'Hora da soneca...'
     ],
     idle: [
-      'Oi! Sou a Luna ✨',
+      'Oi! Sou a Luna',
       'Vamos criar algo incrível?',
-      'Tô de olho em você! 👀',
-      'Manda ver, chefia! 💪'
+      'Tô de olho em você!',
+      'Manda ver, chefia!'
     ],
     thinking: [
-      'Hmm, deixa eu pensar... 🤔',
-      'Processando... 🧠',
-      'Quase lá! 💭',
+      'Hmm, deixa eu pensar...',
+      'Processando...',
+      'Quase lá!',
       'Analisando todas as possibilidades...'
     ],
     working: [
-      'Digitando na velocidade da luz! ⚡',
-      'Código bonito é código que funciona 💅',
-      'Compilando... se der erro eu finjo que não vi 🙈',
-      'Prontinho! 🎉'
+      'Digitando na velocidade da luz!',
+      'Código bonito é código que funciona',
+      'Compilando... se der erro eu finjo que não vi',
+      'Prontinho!'
     ],
     error: [
-      'Ops! Algo deu errado... 😰',
-      'Vamos tentar de novo? 🤞',
-      'Erro é só oportunidade de debugar! 🐛'
+      'Ops! Algo deu errado...',
+      'Vamos tentar de novo?',
+      'Erro é só oportunidade de debugar!'
     ]
   };
 
   const CLICK_REACTIONS = [
-    'Hehe! Faz cócegas! 😄',
-    'Opa! Cuidado! 🌙',
-    'Você é curioso! 🤔',
-    'Pronta pra ajudar! 💪',
-    'Ei! Tô trabalhando aqui! 😤'
+    'Hehe! Faz cócegas!',
+    'Opa! Cuidado!',
+    'Você é curioso!',
+    'Pronta pra ajudar!',
+    'Ei! Tô trabalhando aqui!'
   ];
 
   // ========== EYE TRACKING ==========
@@ -124,7 +124,7 @@
     container.style.top = `${endY - rect.height}px`;
 
     // Mostra mensagem de caminhada
-    showMessage('Indo até aí! 🚶‍♀️');
+    showMessage('Indo até aí!');
 
     clearTimeout(walkTimer);
     walkTimer = setTimeout(() => {
@@ -136,7 +136,7 @@
   // ========== HOVER / CLICK ==========
   function handleMouseEnter() {
     isHovering = true;
-    if (!isWalking) showMessage('Oi! Precisa de ajuda? 👋');
+    if (!isWalking) showMessage('Oi! Precisa de ajuda?');
     spawnHeartParticles();
   }
   function handleMouseLeave() {
@@ -215,7 +215,7 @@
     const cx = canvas.width / 2, cy = canvas.height / 2;
     for (let i = 0; i < 5; i++) {
       setTimeout(() => {
-        particles.push({ x: cx, y: cy, vx: (Math.random()-0.5)*3, vy: -2-Math.random()*2, life: 1, size: 8+Math.random()*8, update() { this.x+=this.vx; this.y+=this.vy; this.vy+=0.05; this.life-=0.015; }, draw(c) { c.save(); c.globalAlpha=this.life; c.fillStyle='#FF6B9D'; c.font=`${this.size}px sans-serif`; c.fillText('❤',this.x,this.y); c.restore(); } });
+        particles.push({ x: cx, y: cy, vx: (Math.random()-0.5)*3, vy: -2-Math.random()*2, life: 1, size: 8+Math.random()*8, update() { this.x+=this.vx; this.y+=this.vy; this.vy+=0.05; this.life-=0.015; }, draw(c) { c.save(); c.globalAlpha=this.life; c.fillStyle='#FF6B9D'; c.font=`${this.size}px sans-serif`; c.fillText('♥',this.x,this.y); c.restore(); } });
       }, i * 100);
     }
   }

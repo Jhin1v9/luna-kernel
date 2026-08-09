@@ -33,6 +33,7 @@ const { checkPathWithinRoots, PATH_PARAM_KEYS } = require('./lib/path-guard.cjs'
 const { makeProgressEvent } = require('./lib/progress-event.cjs');
 const { onContextLimit, shouldForceNewChat } = require('./lib/auto-compact-policy.cjs');
 const { parseToolJson } = require('./lib/tool-json-parser.cjs'); // v12.0: unified tolerant parser
+const { normalizeParams } = require('./lib/tool-dedup-key.cjs'); // v12.6: deterministic tool identity for per-turn dedup
 const lunaConfig = require('./config/luna-config');
 const {
   checkJsxBalanced,
@@ -2679,11 +2680,9 @@ class LunaSoul extends EventEmitter {
       let canSteer = false;
 
       // Accumulate DOM-extracted action results for auto-continue
-      const domActionResults = [];
-      // v10.13: Background action promises for non-blocking execution
-      const domActionPromises = [];
-      // v10.13: EventBus for async tool results during stream consumption
-      const eventBus = new EventBus();
+      const domActionResults = [];      // v10.13: Background action promises for non-blocking execution
+      const domActionPromises = [];      // v10.13: EventBus for async tool results during stream consumption
+      const eventBus = new EventBus();      // v12.6-fix: per-turn dedup — the bridge may deliver the same logical tool      // from multiple detection sources (network interceptor, DOM structure,      // extension). Only the first detection starts a card/execution; later ones      // are silently ignored so 1 Kimi tool always maps to 1 Luna card.      const startedToolHashes = new Set();
 
       yield { type: 'thinking_start', sessionId };
 
@@ -2789,8 +2788,17 @@ class LunaSoul extends EventEmitter {
                 const { tool, type, ...rest } = event.action;
                 event.action.params = Object.keys(rest).length > 0 ? rest : {};
               }
-              const toolKey = `${event.action?.tool || event.action?.type || 'unknown'}:${JSON.stringify(event.action?.params || event.action || {})}`;
+              const parsedActionTool = event.action?.tool || event.action?.type || 'unknown';
+              const parsedActionParams = event.action?.params || event.action || {};
+              // v12.6-fix: per-turn dedup. Multiple bridge sources can detect the same
+              // logical tool with slightly different params; normalize and drop duplicates.
+              const toolKey = `${parsedActionTool}:${JSON.stringify(normalizeParams(parsedActionTool, parsedActionParams))}`;
               const toolHash = require('crypto').createHash('sha256').update(toolKey).digest('hex').slice(0, 16);
+              if (startedToolHashes.has(toolHash)) {
+                console.log(`[LUNA-SOUL] Duplicate action_detected dropped within turn: ${parsedActionTool}`);
+                break;
+              }
+              startedToolHashes.add(toolHash);
               const toolInstanceId = nextToolEventId();              const parsedAction = {
                 mode: 'ACTION',
                 tool: event.action?.tool || event.action?.type,
@@ -3226,6 +3234,12 @@ class LunaSoul extends EventEmitter {
         });
         // Always use mini-reminder for tool results (thread already has full prompt)
         loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
+        // v12.6-fix: DOM action results have been folded into loopInput; do not
+        // carry them into the next iteration. Otherwise the next CHAT response is
+        // treated as non-pure-chat (domActionResults.length > 0) and becomes
+        // subject to auto-continue, which makes Kimi re-emit the same tool and
+        // creates duplicate tool cards.
+        domActionResults.length = 0;
         // Continue loop — send result back to Kimi
         continue;
       }
@@ -3290,6 +3304,8 @@ class LunaSoul extends EventEmitter {
         const domActionResults = [];
         const domActionPromises = [];
         const eventBus = new EventBus();
+        // v12.6-fix: per-turn dedup in plan mode too.
+        const startedToolHashes = new Set();
 
         console.log(`[PLAN MODE] Turn ${turn + 1}/${MAX_TURNS} starting (toolsSoFar=${totalToolCalls}, promptLen=${turnPrompt.length})`);
 
@@ -3342,8 +3358,14 @@ class LunaSoul extends EventEmitter {
                 tool: event.action?.tool || event.action?.type,
                 params: event.action?.params || event.action,
               };
-              const toolKey = `${parsedAction.tool}:${JSON.stringify(parsedAction.params)}`;
+              // v12.6-fix: per-turn dedup using normalized params.
+              const toolKey = `${parsedAction.tool}:${JSON.stringify(normalizeParams(parsedAction.tool, parsedAction.params))}`;
               const toolHash = crypto.createHash('sha256').update(toolKey).digest('hex').slice(0, 16);
+              if (startedToolHashes.has(toolHash)) {
+                console.log(`[LUNA-SOUL] Duplicate action_detected dropped within plan turn: ${parsedAction.tool}`);
+                break;
+              }
+              startedToolHashes.add(toolHash);
               const toolInstanceId = nextToolEventId();
 
               // v10.24-fix: Deduplicate plan-mode actions too.
@@ -3846,8 +3868,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         const cachedResult = this._getRecentActionResult(sessionId, _toolHash);
         if (cachedResult) {
           console.log(`[v9.5] Replaying recently executed ACTION result: ${parsed.tool}`);
-          events.push({ type: 'action_start', tool: parsed.tool, params: parsed.params, sessionId });
-          events.push({ type: 'action_end', tool: parsed.tool, result: cachedResult, sessionId });
+          // v12.6-fix: a cached result means the tool was already executed and its
+          // action_start/action_end events were already emitted (either during the
+          // streaming action_detected path or by the first execution below). Do NOT
+          // emit a second pair of UI events, otherwise the frontend renders a
+          // duplicate tool card for the same logical Kimi tool.
           const actionOutput = cachedResult.result?.friendlyMessage || cachedResult.result?.stdout || cachedResult.result?.output || cachedResult.result?.text || '[Resultado da ferramenta não possui saída legível]';
           output = actionOutput;
           break;
@@ -4380,8 +4405,16 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     switch (tool) {
       case 'writeFile':
         return `✅ Pronto, Abner! Criei o arquivo em \`${p.path || p.filePath}\`. Precisa de mais alguma coisa?`;
-      case 'readFile':
-        return `📖 Li o arquivo. Dá uma olhada no conteúdo acima. Quer que eu edite algo?`;
+      case 'readFile': {
+        // v12.4-fix: surface the file content in the card so the user sees what was read.
+        const content = result?.content || result?.result?.content || '';
+        const path = p.path || p.filePath || result?.path || result?.result?.path || '(desconhecido)';
+        if (content && content.length > 0) {
+          const snippet = content.length > 400 ? content.slice(0, 400) + '\n...' : content;
+          return `📖 Conteúdo de \`${path}\`:\n\`\`\`\n${snippet}\n\`\`\``;
+        }
+        return `📖 Li o arquivo \`${path}\`. Nenhum conteúdo legível.`;
+      }
       case 'replaceInFile':
         return `✏️ Feito! Substitui \`${p.old || p.oldStr}\` por \`${p.new || p.newStr}\` no arquivo.`;
       case 'appendFile':

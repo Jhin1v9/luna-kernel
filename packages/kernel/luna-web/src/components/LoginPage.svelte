@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { Moon, User, Lock } from 'lucide-svelte';
   import { login } from '../api.js';
   import { user } from '../stores.js';
   import OrbBackground from './OrbBackground.svelte';
@@ -12,11 +13,11 @@
   let mascotText = '';
   let mascotTexts = [
     "E aí? Vamos fazer algo incrível?",
-    "Tô de olho em você! 👁️",
+    "Tô de olho em você!",
     "*assobia* ...tô entediada, manda algo!",
     "Zzz... sonhando com código limpo...",
-    "Deixa eu pensar... 🤔",
-    "Pronta pra ação! 🚀",
+    "Deixa eu pensar...",
+    "Pronta pra ação!",
     "Digita aí, tô esperando...",
   ];
   let textIndex = 0;
@@ -63,13 +64,13 @@
     if (mascotState === 'sleeping') mascotState = 'idle';
     sleepTimeout = setTimeout(() => {
       mascotState = 'sleeping';
-      mascotText = 'Zzz... sonhando com código limpo... 😴';
+      mascotText = 'Zzz... sonhando com código limpo...';
     }, 30000);
   }
 
   function handleInputFocus() {
     mascotState = 'thinking';
-    mascotText = 'Deixa eu pensar... 🤔';
+    mascotText = 'Deixa eu pensar...';
     resetSleep();
   }
 
@@ -80,7 +81,7 @@
 
   function handleTyping() {
     mascotState = 'happy';
-    mascotText = 'Isso aí! Quase lá... ✨';
+    mascotText = 'Isso aí! Quase lá...';
     resetSleep();
   }
 
@@ -99,7 +100,7 @@
       } else {
         error = res.error || 'Credenciais inválidas';
         mascotState = 'thinking';
-        mascotText = 'Hmm... não reconheço essas credenciais 🤔';
+        mascotText = 'Hmm... não reconheço essas credenciais';
       }
     } catch (e) {
       error = 'Erro de conexão';
@@ -121,7 +122,7 @@
     <div class="mascot-container">
       <div class="mascot-glow"></div>
       <div class="mascot-orb" class:sleeping={mascotState === 'sleeping'} class:thinking={mascotState === 'thinking'} class:happy={mascotState === 'happy'}>
-        🌙
+        <Moon size={24} />
       </div>
       <div class="mascot-eyes" class:thinking={mascotState === 'thinking'} class:sleeping={mascotState === 'sleeping'} class:happy={mascotState === 'happy'}>
         <span class="eye left"></span>
@@ -146,7 +147,7 @@
       <div class="scan-line"></div>
       
       <div class="card-header">
-        <div class="logo-icon">🌙</div>
+        <div class="logo-icon"><Moon size={24} /></div>
         <h2 class="card-title">Bem-vindo de volta</h2>
         <p class="card-desc">Entre com suas credenciais do NEXO</p>
       </div>
@@ -158,7 +159,7 @@
       <div class="form-group">
         <label>Usuário</label>
         <div class="input-wrap">
-          <span class="input-icon">👤</span>
+          <span class="input-icon"><User size={16} /></span>
           <input
             type="text"
             placeholder="Digite seu usuário"
@@ -174,7 +175,7 @@
       <div class="form-group">
         <label>Senha</label>
         <div class="input-wrap">
-          <span class="input-icon">🔒</span>
+          <span class="input-icon"><Lock size={16} /></span>
           <input
             type="password"
             placeholder="••••"

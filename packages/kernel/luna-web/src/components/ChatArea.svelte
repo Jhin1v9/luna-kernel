@@ -896,7 +896,7 @@
         messages.update(msgs => [...msgs, {
           id: 'login-' + Date.now(),
           type: 'login_required',
-          content: event.message || '🔐 Você precisa logar primeiro no Kimi Web.',
+          content: event.message || 'Você precisa logar primeiro no Kimi Web.',
           timestamp: new Date().toISOString()
         }]);
         isStreaming.set(false);
@@ -943,14 +943,14 @@
         compactState.set({
           active: true,
           phase: 0,
-          message: event.message || '📦 Compactando contexto...',
-          steps: [event.message || '📦 Compactando contexto...']
+          message: event.message || 'Compactando contexto...',
+          steps: [event.message || 'Compactando contexto...']
         });
         // Also add a persistent system message
         messages.update(msgs => [...msgs, {
           id: 'compact-start-' + Date.now(),
           type: 'system',
-          content: event.message || '📦 Compactando contexto...',
+          content: event.message || 'Compactando contexto...',
           timestamp: new Date().toISOString()
         }]);
         break;
@@ -970,7 +970,7 @@
         messages.update(msgs => [...msgs, {
           id: 'compact-end-' + Date.now(),
           type: 'system',
-          content: event.message || '✅ Contexto compactado',
+          content: event.message || 'Contexto compactado',
           timestamp: new Date().toISOString()
         }]);
         break;
@@ -980,7 +980,7 @@
         messages.update(msgs => [...msgs, {
           id: 'compact-err-' + Date.now(),
           type: 'error',
-          content: event.message || '❌ Erro na compactação',
+          content: event.message || 'Erro na compactação',
           timestamp: new Date().toISOString()
         }]);
         break;
@@ -1320,14 +1320,14 @@
         return copy;
       });
     };
-    setDiag('🔍 Diagnosticando conexões (servidor, Soul, Bridge)…');
+    setDiag('Diagnosticando conexões (servidor, Soul, Bridge)…');
 
     // 2) diagnose backend health
     let health = null;
     try { health = await systemHealth(); } catch { health = null; }
 
     if (!health || !health.status) {
-      setDiag('❌ Servidor Luna (API) não responde.\nA página será recarregada em 10s para reconectar tudo…');
+      setDiag('Servidor Luna (API) não responde.\nA página será recarregada em 10s para reconectar tudo…');
       setTimeout(() => window.location.reload(), 10000);
       return;
     }
@@ -1351,7 +1351,7 @@
     };
 
     if (broken.length > 0) {
-      setDiag(`⚠️ Problemas detectados:\n${broken.map(b => '• ' + b).join('\n')}\n🛠️ Reiniciando serviços afetados…`);
+      setDiag(`Problemas detectados:\n${broken.map(b => '• ' + b).join('\n')}\nReiniciando serviços afetados...`);
       try {
         await selfhealServices([...new Set(services)]);
       } catch { /* the server may restart itself mid-call — expected */ }
@@ -1372,14 +1372,14 @@
       await forceReconnect();
 
       if (!recovered) {
-        setDiag('⚠️ Reinício solicitado, mas a saúde ainda não estabilizou.\nA página será recarregada em 10s para uma reconexão limpa…');
+        setDiag('Reinício solicitado, mas a saúde ainda não estabilizou.\nA página será recarregada em 10s para uma reconexão limpa…');
         setTimeout(() => window.location.reload(), 10000);
         return;
       }
-      setDiag(`✅ Recuperado — Soul pronta e Bridge conectado.\nServiços reiniciados: ${[...new Set(services)].join(', ')}. SSE reconectado.`);
+      setDiag(`Recuperado — Soul pronta e Bridge conectado.\nServiços reiniciados: ${[...new Set(services)].join(', ')}. SSE reconectado.`);
     } else {
       await forceReconnect();
-      setDiag('✅ Tudo saudável — Soul pronta, Bridge conectado.\nEstado limpo e SSE reconectado à força.');
+      setDiag('Tudo saudável — Soul pronta, Bridge conectado.\nEstado limpo e SSE reconectado à força.');
     }
 
     // 5) fullRefresh: resume pending work from history
@@ -1534,7 +1534,7 @@
           messages.update(msgs => [...msgs, {
             id: 'sys-' + Date.now(),
             type: 'system',
-            content: `❌ Comando desconhecido: ${cmd}. Digite / para ver os comandos disponiveis.`,
+            content: `Comando desconhecido: ${cmd}. Digite / para ver os comandos disponiveis.`,
             timestamp: new Date().toISOString()
           }]);
           return;
@@ -1555,7 +1555,7 @@
               result = await agentStatus();
               if (result.ok && result.agent) {
                 const a = result.agent;
-                const statusEmoji = a.state === 'online' ? '🟢' : a.state === 'degraded' ? '🟡' : a.state === 'starting' ? '⏳' : '🔴';
+                const statusEmoji = a.state === 'online' ? 'online' : a.state === 'degraded' ? 'degradado' : a.state === 'starting' ? 'iniciando' : 'offline';
                 messages.update(msgs => [...msgs, {
                   id: 'sys-' + Date.now(),
                   type: 'system',
@@ -1566,7 +1566,7 @@
                 messages.update(msgs => [...msgs, {
                   id: 'sys-' + Date.now(),
                   type: 'system',
-                  content: '❌ Não foi possível obter o status do agente.',
+                  content: 'Não foi possível obter o status do agente.',
                   timestamp: new Date().toISOString()
                 }]);
               }
@@ -1578,7 +1578,7 @@
               messages.update(msgs => [...msgs, {
                 id: 'sys-' + Date.now(),
                 type: 'system',
-                content: result.ok ? result.message : '❌ Erro: ' + result.error,
+                content: result.ok ? result.message : 'Erro: ' + result.error,
                 timestamp: new Date().toISOString()
               }]);
               isStreaming.set(false);
@@ -1589,7 +1589,7 @@
               messages.update(msgs => [...msgs, {
                 id: 'sys-' + Date.now(),
                 type: 'system',
-                content: result.ok ? result.message : '❌ Erro: ' + result.error,
+                content: result.ok ? result.message : 'Erro: ' + result.error,
                 timestamp: new Date().toISOString()
               }]);
               isStreaming.set(false);
@@ -1598,7 +1598,7 @@
             case 'turnOffAgent':
               result = await turnOffAgent('web-' + sessionId);
               mascotState.set('sleep');
-              mascotMessage.set('🌙 Luna dormindo. Envie uma mensagem para acordar.');
+              mascotMessage.set('Luna dormindo. Envie uma mensagem para acordar.');
               break;
             case 'refreshAgent': {
               await runAgentRefresh({ resume: false });
@@ -1625,7 +1625,7 @@
             messages.update(msgs => [...msgs, {
               id: 'sys-' + Date.now(),
               type: 'system',
-              content: '⚠️ Nenhuma sessão ativa para compactar.',
+              content: 'Nenhuma sessão ativa para compactar.',
               timestamp: new Date().toISOString()
             }]);
             return;
@@ -1654,7 +1654,7 @@
           messages.update(msgs => [...msgs, {
             id: 'sys-' + Date.now(),
             type: 'system',
-            content: '📖 Comandos disponiveis:\n\n' + helpText,
+            content: 'Comandos disponiveis:\n\n' + helpText,
             timestamp: new Date().toISOString()
           }]);
           return;
@@ -1667,14 +1667,14 @@
             messages.update(msgs => [...msgs, {
               id: 'sys-' + Date.now(),
               type: 'system',
-              content: `⚡ Modo alterado para: ${mode}`,
+              content: `Modo alterado para: ${mode}`,
               timestamp: new Date().toISOString()
             }]);
           } else {
             messages.update(msgs => [...msgs, {
               id: 'sys-' + Date.now(),
               type: 'system',
-              content: '⚡ Modos disponiveis: instant (⭐ Recomendado), thinking',
+              content: 'Modos disponiveis: instant (Recomendado), thinking',
               timestamp: new Date().toISOString()
             }]);
           }
@@ -1687,7 +1687,7 @@
           messages.update(msgs => [...msgs, {
             id: 'sys-' + Date.now(),
             type: 'system',
-            content: `📊 Abrindo ${slashDef.modal}...`,
+            content: `Abrindo ${slashDef.modal}...`,
             timestamp: new Date().toISOString()
           }]);
           return;
@@ -1800,7 +1800,7 @@
     messages.update(msgs => [...msgs, {
       id: 'sys-' + Date.now(),
       type: 'system',
-      content: '⚠️ ' + msg,
+      content: 'Aviso: ' + msg,
       timestamp: new Date().toISOString()
     }]);
   }
@@ -1848,7 +1848,7 @@
       }
       planModeState.update(s => ({ ...s, active: false, status: 'idle', plan: null }));
       // Approval actually executes: ask the model to run the plan in this chat.
-      await sendPlanFollowUp('✅ Plano aprovado. Execute agora o plano acima, passo a passo, nesta mesma conversa.');
+      await sendPlanFollowUp('Plano aprovado. Execute agora o plano acima, passo a passo, nesta mesma conversa.');
     } catch (e) {
       console.error('Approve plan error:', e);
       showPlanError('Falha ao aprovar o plano: ' + e.message);
@@ -1887,7 +1887,7 @@
         return;
       }
       // The model must SEE the revision: send it as a normal message in this chat.
-      await sendPlanFollowUp('📝 Plano revisado pelo usuário:\n\n' + revisedPlan);
+      await sendPlanFollowUp('Plano revisado pelo usuário:\n\n' + revisedPlan);
     } catch (e) {
       console.error('Revise plan error:', e);
       showPlanError('Falha ao revisar o plano: ' + e.message);
