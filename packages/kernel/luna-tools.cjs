@@ -626,6 +626,14 @@ function viewDirectory(dirPath, opts = {}) {
     }
     const tree = buildTree(resolved, 0);
     const output = { path: resolved, entries: tree, total: itemsCount, truncated };
+    // v13.0 (F2.2): readable tree text — primary feedback channel (frontend and
+    // model no longer need to know the entries structure).
+    const renderLines = (items) => items.flatMap(it => it.type === 'dir'
+      ? [`${it.prefix}${it.name}/`, ...renderLines(it.children || [])]
+      : [`${it.prefix}${it.name}`]);
+    output.text = itemsCount === 0
+      ? `Diretório ${resolved} está vazio.`
+      : `${resolved} (${itemsCount} itens):\n${renderLines(tree).join('\n')}`;
     if (truncated) {
       output.warning = `Diretório muito grande. Mostrando ${MAX_ITEMS} itens. Use grep ou searchFiles para encontrar arquivos específicos.`;
     }
@@ -673,15 +681,18 @@ function searchFiles(pattern, opts = {}) {
     }
     const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
-      if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [] });
+      if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [], text: `Nenhum resultado para "${pattern}" em ${cwd}.` });
       return err(result.error || result.stderr);
     }
     const lines = result.stdout.trim().split('\n').filter(Boolean);
+    const shown = lines.slice(0, opts.limit || opts.head_limit || 100);
     return ok({
       pattern,
       matches: lines.length,
-      results: lines.slice(0, opts.limit || opts.head_limit || 100),
+      results: shown,
       truncated: lines.length > (opts.limit || 100),
+      // v13.0 (F2.2): unified readable text — primary feedback channel
+      text: `Encontrados ${lines.length} resultado(s) para "${pattern}" em ${cwd}:\n${shown.join('\n')}${lines.length > shown.length ? `\n... +${lines.length - shown.length} (truncado)` : ''}`,
     });
   } catch (e) {
     return err(e.message);
@@ -704,15 +715,18 @@ function grep(pattern, opts = {}) {
     }
     const result = safeExec(cmd, { timeout: opts.timeout });
     if (!result.success) {
-      if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [] });
+      if (result.exitCode === 1) return ok({ pattern, matches: 0, results: [], text: `Nenhum resultado para "${pattern}" em ${cwd}.` });
       return err(result.error || result.stderr);
     }
     const lines = result.stdout.trim().split('\n').filter(Boolean);
+    const shown = lines.slice(0, headLimit);
     return ok({
       pattern,
       matches: lines.length,
-      results: lines.slice(0, headLimit),
+      results: shown,
       truncated: lines.length > headLimit,
+      // v13.0 (F2.2): unified readable text — primary feedback channel
+      text: `Encontrados ${lines.length} resultado(s) para "${pattern}" em ${cwd}:\n${shown.join('\n')}${lines.length > shown.length ? `\n... +${lines.length - shown.length} (truncado)` : ''}`,
     });
   } catch (e) {
     return err(e.message);
@@ -1284,14 +1298,25 @@ function gitStatus(opts = {}) {
   const cwd = resolvePath(opts.cwd || '.');
   const result = safeExec('git status -s', { cwd });
   if (!result.success) return err(result.error || 'Não é um repositório git');
+  const branchResult = safeExec('git branch --show-current', { cwd });
+  const branch = branchResult.success ? branchResult.stdout.trim() : '';
   const lines = result.stdout.trim().split('\n').filter(Boolean);
+  const modified = lines.filter(l => l.startsWith(' M') || l.startsWith('M ')).length;
+  const untracked = lines.filter(l => l.startsWith('??')).length;
+  const added = lines.filter(l => l.startsWith('A ')).length;
+  const deleted = lines.filter(l => l.startsWith(' D') || l.startsWith('D ')).length;
   return ok({
     cwd,
-    modified: lines.filter(l => l.startsWith(' M') || l.startsWith('M ')).length,
-    untracked: lines.filter(l => l.startsWith('??')).length,
-    added: lines.filter(l => l.startsWith('A ')).length,
-    deleted: lines.filter(l => l.startsWith(' D') || l.startsWith('D ')).length,
+    branch,
+    modified,
+    untracked,
+    added,
+    deleted,
     files: lines,
+    // v13.0 (F2.2): unified readable text — fixes the gitStatus black hole
+    text: lines.length === 0
+      ? `git status (${branch || 'sem branch'}) em ${cwd}: working tree limpa, nada a commitar.`
+      : `git status (${branch || 'sem branch'}) em ${cwd}: ${modified} modificado(s), ${added} adicionado(s), ${deleted} deletado(s), ${untracked} não rastreado(s).\n${lines.join('\n')}`,
   });
 }
 

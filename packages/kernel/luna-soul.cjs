@@ -4480,11 +4480,17 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       }
       case 'searchFiles':
       case 'grep': {
-        const matches = result.matches || [];
-        return `🔍 Encontrei ${matches.length} resultado(s).`;
+        // v13.0 (F2.2): result.matches is a NUMBER (the array lives in
+        // result.results) — reading .length off it printed 'undefined'.
+        const matchCount = typeof result.matches === 'number' ? result.matches : (result.results || []).length;
+        return `🔍 Encontrei ${matchCount} resultado(s).`;
       }
-      case 'gitStatus':
+      case 'gitStatus': {
+        // v13.0 (F2.2): surface the actual status, not a content-free placeholder.
+        const gsText = result.text || result.result?.text;
+        if (gsText) return `🌿 ${gsText.length > 500 ? gsText.slice(0, 500) + '\n...' : gsText}`;
         return `🌿 Status do git verificado.`;
+      }
       case 'gitCommit':
         return `💾 Commit feito: \`${p.message || ''}\``;
       case 'gitDiff':
