@@ -343,10 +343,13 @@ function extractWriteFileFromText(text) {
   if (!path || content === null) return null;
   const params = { path, content };
   if (tool === 'replaceInFile') {
-    const oldStr = extractStringValue('oldString') || extractStringValue('old_string') || extractStringValue('old');
-    const newStr = extractStringValue('newString') || extractStringValue('new_string') || extractStringValue('new');
-    if (oldStr !== null) params.oldString = oldStr;
-    if (newStr !== null) params.newString = newStr;
+    // v13.0 (F3.3): emit the CANONICAL schema names (old/new). The old code
+    // renamed to oldString/newString — a name no downstream layer accepted,
+    // so every recovered replaceInFile died in schema validation.
+    const oldStr = extractStringValue('old') || extractStringValue('oldStr') || extractStringValue('oldString') || extractStringValue('old_string') || extractStringValue('oldText');
+    const newStr = extractStringValue('new') || extractStringValue('newStr') || extractStringValue('newString') || extractStringValue('new_string') || extractStringValue('newText');
+    if (oldStr !== null) params.old = oldStr;
+    if (newStr !== null) params.new = newStr;
   }
   return { type: 'tool', tool, params };
 }
@@ -3003,10 +3006,11 @@ class KimiBridge {
         if (!path || content === null) return null;
         const params = { path, content };
         if (tool === 'replaceInFile') {
-          const oldStr = extractStringValue('oldString') || extractStringValue('old_string') || extractStringValue('old');
-          const newStr = extractStringValue('newString') || extractStringValue('new_string') || extractStringValue('new');
-          if (oldStr !== null) params.oldString = oldStr;
-          if (newStr !== null) params.newString = newStr;
+          // v13.0 (F3.3): canonical names (old/new) — see the twin site above.
+          const oldStr = extractStringValue('old') || extractStringValue('oldStr') || extractStringValue('oldString') || extractStringValue('old_string') || extractStringValue('oldText');
+          const newStr = extractStringValue('new') || extractStringValue('newStr') || extractStringValue('newString') || extractStringValue('new_string') || extractStringValue('newText');
+          if (oldStr !== null) params.old = oldStr;
+          if (newStr !== null) params.new = newStr;
         }
         return { tool, params };
       }

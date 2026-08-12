@@ -4447,7 +4447,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         return `📖 Li o arquivo \`${path}\`. Nenhum conteúdo legível.`;
       }
       case 'replaceInFile':
-        return `✏️ Feito! Substitui \`${p.old || p.oldStr}\` por \`${p.new || p.newStr}\` no arquivo.`;
+        return `✏️ Feito! Substitui \`${p.old ?? p.oldStr ?? p.oldString ?? p.old_string}\` por \`${p.new ?? p.newStr ?? p.newString ?? p.new_string}\` no arquivo.`; // v13.0 (F3.3)
       case 'appendFile':
         return `📝 Adicionei o texto no final do arquivo \`${p.path || p.filePath}\`.`;
       case 'deleteFile':
@@ -4877,7 +4877,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'readFile': return lunaTools.readFile(p.path || p.file, { offset: p.offset || p.line_offset, limit: p.limit || p.n_lines });
               case 'writeFile': return lunaTools.writeFile(p.path || p.filePath, p.content, { encoding: p.encoding });
               case 'appendFile': return lunaTools.appendFile(p.path || p.filePath, p.content);
-              case 'replaceInFile': return lunaTools.replaceInFile(p.path || p.filePath, p.old || p.oldStr, p.new || p.newStr, { replaceAll: p.replaceAll, edit: p.edit });
+              case 'replaceInFile': return lunaTools.replaceInFile(p.path || p.filePath, p.old ?? p.oldStr ?? p.oldString ?? p.old_string ?? p.oldText, p.new ?? p.newStr ?? p.newString ?? p.new_string ?? p.newText, { replaceAll: p.replaceAll, edit: p.edit }); // v13.0 (F3.3): full alias set (guard normalizes in place; this is belt-and-braces)
               case 'deleteFile': return lunaTools.deleteFile(p.path || p.filePath);
               case 'moveFile': return lunaTools.moveFile(p.source || p.from, p.destination || p.to);
               case 'copyFile': return lunaTools.copyFile(p.source || p.from, p.destination || p.to);

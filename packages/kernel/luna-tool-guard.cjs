@@ -162,6 +162,33 @@ const TOOL_SCHEMAS = buildToolSchemas();
 // seguem no fail-open até ganharem schemas no registry.
 const DEFAULT_SCHEMA = { required: [], types: {} };
 
+// v13.0 (F3.3): single alias normalizer — every known alias resolves to the
+// canonical schema field. Applied IN PLACE at the execution entry point so
+// validation, dispatch and execution all see the same names (the old code
+// normalized a validation-only copy and only knew oldStr/newStr, so
+// old_string/oldString died in validation or dispatch).
+const PARAM_ALIASES = {
+  replaceInFile: {
+    old: ['oldStr', 'oldString', 'old_string', 'oldText'],
+    new: ['newStr', 'newString', 'new_string', 'newText'],
+  },
+};
+
+function normalizeToolParams(toolName, params) {
+  const aliases = PARAM_ALIASES[toolName];
+  if (!aliases || !params) return params;
+  for (const [canonical, names] of Object.entries(aliases)) {
+    if (params[canonical] !== undefined && params[canonical] !== null) continue;
+    for (const name of names) {
+      if (params[name] !== undefined && params[name] !== null) {
+        params[canonical] = params[name];
+        break;
+      }
+    }
+  }
+  return params;
+}
+
 function validateToolCall(toolName, params) {
   let schema = TOOL_SCHEMAS[toolName];
   if (!schema) {
@@ -179,12 +206,10 @@ function validateToolCall(toolName, params) {
     if (p.filePath !== undefined && p.filePath !== null) p.path = p.filePath;
     else if (p.file !== undefined && p.file !== null) p.path = p.file;
   }
-  // Wave 5 (5c): replaceInFile dispatch accepts oldStr/newStr aliases
-  // (luna-soul.cjs: p.old || p.oldStr, p.new || p.newStr) — normalize before
-  // the required/type checks so the schema and the dispatch agree.
+  // v13.0 (F3.3): full alias set via the central normalizer (copy-based here;
+  // execute() normalizes the real params in place before calling us).
   if (toolName === 'replaceInFile') {
-    if (p.old === undefined && p.oldStr !== undefined) p.old = p.oldStr;
-    if (p.new === undefined && p.newStr !== undefined) p.new = p.newStr;
+    normalizeToolParams(toolName, p);
   }
   const pathValue = p.path || p.filePath || p.source || p.from;
 
@@ -442,6 +467,9 @@ class ToolGuard {
     const label = `${toolName}(${JSON.stringify(params).slice(0, 80)})`;
 
     // 4. Schema validation
+    // v13.0 (F3.3): normalize parameter aliases IN PLACE first, so validation,
+    // the soul dispatch closure and the tool itself all see canonical names.
+    normalizeToolParams(toolName, params);
     validateToolCall(toolName, params);
 
     // 5. Timeout budget — computed BEFORE the circuit check because the
@@ -557,4 +585,7 @@ module.exports = {
   TOOL_SCHEMAS,
   validatePythonCode,
   checkDestructivePattern,
+  isMutatingToolCall,
+  IDEMPOTENCY_TTL_MS,
+  normalizeToolParams,
 };
