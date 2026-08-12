@@ -106,8 +106,8 @@ You MUST output ONLY ```json code blocks. NEVER plain text, NEVER tags like [[ac
 | `appendFile` | `{"tool":"appendFile","params":{"path":"{{WORKSPACE}}/file.txt","content":"..."}}` | User asks to add/append to a file |
 | `deleteFile` | `{"tool":"deleteFile","params":{"path":"{{WORKSPACE}}/file.txt"}}` | User asks to delete/remove a file |
 | `viewDirectory` | `{"tool":"viewDirectory","params":{"path":"{{WORKSPACE}}/"}}` | User asks to list/ls/show directory |
-| `searchFiles` | `{"tool":"searchFiles","params":{"pattern":"*.js","path":"{{WORKSPACE}}/"}}` | User asks to find/search files |
-| `grep` | `{"tool":"grep","params":{"pattern":"foo","path":"{{WORKSPACE}}/"}}` | User asks to grep/search text |
+| `searchFiles` | `{"tool":"searchFiles","params":{"pattern":"*.js","path":"{{WORKSPACE}}/"}}` | Find files BY NAME (wildcards `*?[` → glob); also searches content for plain-text patterns |
+| `grep` | `{"tool":"grep","params":{"pattern":"foo","path":"{{WORKSPACE}}/"}}` | User asks to grep/search text INSIDE files |
 | `executeShell` | `{"tool":"executeShell","params":{"command":"ls -la {{WORKSPACE}}/"}}` | User asks to run a command |
 | `executeScript` | `{"tool":"executeScript","params":{"path":"{{WORKSPACE}}/script.sh"}}` | User asks to run a script file |
 | `gitStatus` | `{"tool":"gitStatus","params":{"path":"{{WORKSPACE}}/repo/"}}` | User asks about git status |

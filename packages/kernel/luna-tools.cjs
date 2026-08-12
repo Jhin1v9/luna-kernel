@@ -671,6 +671,23 @@ function removeDirectory(dirPath) {
 function searchFiles(pattern, opts = {}) {
   try {
     const cwd = resolvePath(opts.cwd || opts.path || '.');
+    // v13.0 (F3.5): a pattern with glob metacharacters is a FILE-NAME search,
+    // not a content regex — rg treats '*.txt' as a nonsense positional regex
+    // and finds nothing. Route wildcard patterns to glob-by-name instead.
+    if (/[*?\\[]/.test(pattern || '')) {
+      const g = glob(pattern, { cwd, dot: opts.dot, ignore: opts.ignore, absolute: opts.absolute, limit: opts.limit || opts.head_limit });
+      if (!g.success) return g;
+      const files = g.files || [];
+      return ok({
+        pattern,
+        matches: g.count ?? files.length,
+        results: files,
+        truncated: (g.count || 0) > files.length,
+        text: files.length === 0
+          ? `Nenhum arquivo correspondente a "${pattern}" em ${cwd}.`
+          : `Encontrados ${g.count ?? files.length} arquivo(s) correspondentes a "${pattern}" em ${cwd}:\n${files.join('\n')}`,
+      });
+    }
     // Prefer ripgrep if available
     const hasRg = (() => { try { execSync('which rg', { stdio: 'ignore' }); return true; } catch { return false; } })();
     let cmd;
