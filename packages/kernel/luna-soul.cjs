@@ -25,7 +25,7 @@ const lunaTools = require('./luna-tools.cjs');
 const { workspaceManager } = require('./luna-workspace.cjs');
 const { LunaGit } = require('./luna-git.cjs');
 const { loadBrainContext } = require('./brain-loader.cjs');
-const { ToolGuard, validatePythonCode, checkDestructivePattern } = require('./luna-tool-guard.cjs');
+const { ToolGuard, validatePythonCode, checkDestructivePattern, isMutatingToolCall } = require('./luna-tool-guard.cjs');
 const { ResponseStreamParser, safeJsonParse, isBalancedBraces } = require('./response-stream-parser.cjs');
 const { MetaExecutorSecure, PathValidator } = require('./meta-executor-secure.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
@@ -2821,7 +2821,7 @@ class LunaSoul extends EventEmitter {
 
               // v10.24-fix: If this exact action was already executed recently,
               // replay the cached result instead of running again.
-              const cachedResult = this._getRecentActionResult(sessionId, toolHash);
+              const cachedResult = isMutatingToolCall(parsedAction.tool, parsedAction.params) ? this._getRecentActionResult(sessionId, toolHash) : null; // v13.0 (F3.2): read-only tools never replay cache
               if (cachedResult) {
                 console.log(`[LUNA] Skipping duplicate action (cached): ${parsedAction.tool}`);
                 yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId, cached: true };
@@ -3383,7 +3383,7 @@ class LunaSoul extends EventEmitter {
               const toolInstanceId = nextToolEventId();
 
               // v10.24-fix: Deduplicate plan-mode actions too.
-              const cachedResult = this._getRecentActionResult(sessionId, toolHash);
+              const cachedResult = isMutatingToolCall(parsedAction.tool, parsedAction.params) ? this._getRecentActionResult(sessionId, toolHash) : null; // v13.0 (F3.2): read-only tools never replay cache
               if (cachedResult) {
                 yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: event.source || 'dom_mirror', sessionId, cached: true };
                 eventBus.push({ type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: cachedResult, source: event.source || 'dom_mirror', sessionId, cached: true });
@@ -3879,7 +3879,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         const _toolHash = require('crypto').createHash('sha256').update(_toolKey).digest('hex').slice(0, 16);        // v9.5-fix: Check for recently executed action. If found, replay the stored result
         // instead of skipping silently — this prevents infinite loops where Kimi re-sends
         // the same tool because it never received the result.
-        const cachedResult = this._getRecentActionResult(sessionId, _toolHash);
+        const cachedResult = isMutatingToolCall(parsed.tool, parsed.params) ? this._getRecentActionResult(sessionId, _toolHash) : null; // v13.0 (F3.2): read-only tools never replay cache
         if (cachedResult) {
           console.log(`[v9.5] Replaying recently executed ACTION result: ${parsed.tool}`);
           // v12.6-fix: a cached result means the tool was already executed and its

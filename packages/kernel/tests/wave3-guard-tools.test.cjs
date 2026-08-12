@@ -22,7 +22,7 @@ const path = require('node:path');
 const { looksBinary } = require('../lib/text-file.cjs');
 const { atomicWriteFileSync } = require('../lib/atomic-write.cjs');
 const { readFile, writeFile, replaceInFile, executeScript } = require('../luna-tools.cjs');
-const { ToolGuard, IdempotencyStore, validateToolCall } = require('../luna-tool-guard.cjs');
+const { ToolGuard, IdempotencyStore, validateToolCall, IDEMPOTENCY_TTL_MS } = require('../luna-tool-guard.cjs');
 
 // ── Fix A1: looksBinary (pure unit tests) ────────────────────────────────────
 
@@ -244,7 +244,7 @@ test('B4b: atomicWriteFileSync on a new file uses default mode', () => {
 
 // ── Fix C: IdempotencyStore TTL + mark-on-success + skip result shape ────────
 
-const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+// v13.0 (F3.2): TTL vem do guard (60s p/ mutantes) — política única, sem cópia local.
 
 test('C1: IdempotencyStore expires entries after the TTL (injected clock)', () => {
   let now = 1000;
@@ -282,14 +282,27 @@ test('C3: ToolGuard.execute skips a duplicate SUCCESS with success:true on the s
   let calls = 0;
   const toolFn = async () => { calls++; return { success: true, output: 'done' }; };
 
-  const first = await guard.execute('executeShell', { command: 'echo ok' }, toolFn);
-  const second = await guard.execute('executeShell', { command: 'echo ok' }, toolFn);
+  // v13.0 (F3.2): 'touch' is a MUTATING command — idempotency applies.
+  const first = await guard.execute('executeShell', { command: 'touch /tmp/luna-wave3-c3' }, toolFn);
+  const second = await guard.execute('executeShell', { command: 'touch /tmp/luna-wave3-c3' }, toolFn);
 
-  assert.strictEqual(calls, 1, 'successful toolFn must execute only once');
+  assert.strictEqual(calls, 1, 'successful mutating toolFn must execute only once');
   assert.strictEqual(first.success, true);
   assert.strictEqual(second.skipped, true, 'duplicate success must be idempotency-skipped');
   assert.strictEqual(second.success, true, 'skip result must carry success:true (a no-op success, not a failure)');
   assert.strictEqual(second.reason, 'already processed');
+});
+
+test('C3b (v13.0 F3.2): read-only shell commands are NEVER idempotency-skipped', async () => {
+  const guard = new ToolGuard(process.cwd());
+  let calls = 0;
+  const toolFn = async () => { calls++; return { success: true, output: 'done' }; };
+
+  for (const cmd of ['echo ok', 'cat /etc/hostname', 'git status']) {
+    await guard.execute('executeShell', { command: cmd }, toolFn);
+    await guard.execute('executeShell', { command: cmd }, toolFn);
+  }
+  assert.strictEqual(calls, 6, 'read-only commands must always re-execute (no skip)');
 });
 
 // C4: auto-commit gate must not fire for idempotency-skipped results —

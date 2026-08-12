@@ -114,7 +114,9 @@ class CircuitBreaker {
 }
 
 // ── 3. Idempotency Keys ──
-const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+// v13.0 (F3.2): 60s is enough to break an LLM retry loop; the old 10-minute
+// window silently skipped legitimate intentional re-executions.
+const IDEMPOTENCY_TTL_MS = 60 * 1000;
 
 class IdempotencyStore {
   constructor(nowFn = Date.now) {
@@ -398,9 +400,34 @@ class StepCheckpoint {
 }
 
 // ── Guard Wrapper — Combina TUDO ──
-// Wave 3 (Fix H3): idempotency só se aplica a tools que mutam estado.
-// Reads (dashboardList*, readFile, grep...) devem ser livremente repetíveis.
-const MUTATING_TOOL_RE = /^(writeFile|appendFile|replaceInFile|deleteFile|moveFile|copyFile|gitCommit|applyPatch|installPackages|clipboardWrite|executeScript|executeShell|dashboard(Create|Update|Delete|Complete|Pay|Receive|Add|Send|Vote|Control|Enrich|Sync|Mark|Quick|Adjust|Reconcile))/;
+// v13.0 (F3.2): idempotency classification is SEMANTIC, not name-regex-based.
+// The old MUTATING_TOOL_RE classified executeShell/executeScript as always
+// mutating, so read-only commands (`cat`, `ls`, `git status`...) were skipped
+// as "already processed" on any identical re-run. Now shell commands are
+// classified by analyzing the command itself against a read-only whitelist.
+const READONLY_TOOLS = new Set([
+  'readFile', 'viewDirectory', 'listFiles', 'getFileInfo', 'searchFiles', 'grep',
+  'glob', 'gitStatus', 'gitDiff', 'gitLog', 'getCurrentDirectory', 'searchWeb',
+  'fetchURL', 'clipboardRead',
+]);
+const MUTATING_TOOLS = new Set([
+  'writeFile', 'appendFile', 'replaceInFile', 'deleteFile', 'moveFile',
+  'copyFile', 'gitCommit', 'applyPatch', 'installPackages', 'clipboardWrite',
+]);
+const READONLY_COMMAND_RE = /^\s*(?:cat|ls|ll|grep|find|head|tail|wc|which|echo|pwd|env|printenv|date|uname|whoami|hostname|df|du|free|uptime|file|stat|readlink|realpath|basename|dirname|rg|git\s+(?:status|log|diff|branch|remote|show|describe|rev-parse|ls-files|blame|shortlog|config\s+--(?:get|list|local --list))\b|node\s+--version|npm\s+--version|pnpm\s+--version|python3?\s+--version)\b/;
+
+function isMutatingToolCall(toolName, params = {}) {
+  if (READONLY_TOOLS.has(toolName)) return false;
+  if (MUTATING_TOOLS.has(toolName)) return true;
+  if (toolName === 'executeShell' || toolName === 'executeScript') {
+    const cmd = String(params.command || params.code || params.script || '');
+    return !READONLY_COMMAND_RE.test(cmd);
+  }
+  if (/^dashboard(?:Create|Update|Delete|Complete|Pay|Receive|Add|Send|Vote|Control|Enrich|Sync|Mark|Quick|Adjust|Reconcile)/.test(toolName)) return true;
+  // Unknown tools (incl. dashboard reads): never idempotency-skipped — reads
+  // are freely repeatable (Wave 3 H3 intent preserved).
+  return false;
+}
 
 class ToolGuard {
   constructor(workspacePath) {
@@ -439,11 +466,11 @@ class ToolGuard {
     // 2. Circuit breaker check
     this.circuit.check(toolName, params);
 
-    // 3. Idempotency check — Wave 3 (Fix H3): escopado a tools MUTATING.
-    // Com o guard agora ativo em sessões web/Telegram, deduplicar reads
-    // (dashboardList* etc.) devolveria skips obsoletos.
+    // 3. Idempotency check — v13.0 (F3.2): SEMANTIC classification. Read-only
+    // tools (and read-only shell commands) are never skipped; mutating tools
+    // dedupe for 60s, enough to break LLM retry loops.
     const idemKey = this.idempotency.generateKey(toolName, params);
-    const isMutating = MUTATING_TOOL_RE.test(toolName);
+    const isMutating = isMutatingToolCall(toolName, params);
     if (isMutating && this.idempotency.isProcessed(idemKey) && options.idempotent !== false) {
       console.log(`[tool-guard] Idempotency: skipping duplicate ${label}`);
       // Wave 3 (review I1): skipped duplicates still feed the circuit breaker —
