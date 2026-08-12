@@ -9374,7 +9374,19 @@ class KimiBridge {
       let finalResponse = '';
       let extractionSource = 'none';
 
-      try {
+      // v13.0 (F1.2): the stream cursor is the PRIMARY source of truth for the
+      // final text — it holds exactly what was emitted to the frontend during
+      // this turn. DOM re-reads (snapshot-diff / _extractResponse) and the
+      // network interceptor are FALLBACKS only: they are the stale-text
+      // vectors (snapshot-diff can return the previous bubble's grown tail).
+      const committedText = (responseCursor.committed || '').trim();
+      if (committedText) {
+        finalResponse = committedText;
+        extractionSource = 'cursor-committed';
+        log.info(`[sendMessageStream] final response from cursor.committed: ${finalResponse.length} chars`);
+      }
+
+      if (!finalResponse) try {
         const extracted = await this._extractResponseDiff(page, preSendSnapshot, resolvedProvider);
         if (extracted && extracted.trim().length > 0) {
           finalResponse = extracted.trim();
