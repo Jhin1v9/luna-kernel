@@ -53,7 +53,37 @@
 
   // v12.4-fix: readFile places file content in result.result.content; include it
   // in the output scan so the frontend actually shows what was read.
-  $: rawResultOutput = result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.result?.stdout !== undefined ? result.result.stdout : result?.result?.output !== undefined ? result.result.output : result?.content !== undefined ? result.content : result?.result?.content !== undefined ? result.result.content : '';
+  // v13.0 (F3.1): field-contract rendering — any result with at least one known
+  // field produces a card body, so new/structured tools never render empty.
+  // Priority: unified text (F2.2) → output/stdout/content → structured
+  // (entries / git status / search results) → JSON dump of the inner result.
+  function renderEntries(entries) {
+    if (!Array.isArray(entries)) return '';
+    const lines = [];
+    const walk = (items) => {
+      for (const it of items) {
+        lines.push((it.prefix || '') + it.name + (it.type === 'dir' ? '/' : ''));
+        if (it.children) walk(it.children);
+      }
+    };
+    walk(entries);
+    return lines.join('\n');
+  }
+  function renderGitStatus(r) {
+    const files = Array.isArray(r.files) ? r.files.join('\n') : '';
+    return `Branch: ${r.branch || '?'}\nModificados: ${r.modified ?? 0} | Adicionados: ${r.added ?? 0} | Deletados: ${r.deleted ?? 0} | Não rastreados: ${r.untracked ?? 0}${files ? '\n' + files : ''}`;
+  }
+  function renderSearchResults(results) {
+    if (!Array.isArray(results)) return '';
+    return results.map(r => (typeof r === 'string' ? r : JSON.stringify(r))).join('\n');
+  }
+  $: inner = result?.result !== undefined ? result.result : result;
+  $: structuredOutput =
+    inner?.entries ? renderEntries(inner.entries)
+    : inner?.modified !== undefined ? renderGitStatus(inner)
+    : inner?.results ? renderSearchResults(inner.results)
+    : '';
+  $: rawResultOutput = inner?.text !== undefined ? inner.text : result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.result?.stdout !== undefined ? result.result.stdout : result?.result?.output !== undefined ? result.result.output : result?.content !== undefined ? result.content : result?.result?.content !== undefined ? result.result.content : structuredOutput || (inner && typeof inner === 'object' && Object.keys(inner).length > 0 ? JSON.stringify(inner, null, 2) : '');
   $: resultOutput = cleanCodeFences(rawResultOutput);
   $: truncatedOutput = resultOutput
     ? resultOutput.length > 500
