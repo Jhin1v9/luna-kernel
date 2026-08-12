@@ -137,6 +137,20 @@ _handleAction detects destructive tool
 - `autoConfirmDestructive: true` disables the gate entirely.
 - The `action_start` event carries `toolInstanceId`; `confirmation_required` uses the same
   id so the frontend maps the confirmation to the correct card.
+- **v13.0 (F2.3):** the frontend treats confirmation as a state machine — `action_end`
+  clears the confirmation state and records the id in `completedToolInstanceIds`; a
+  replayed/reconnect `confirmation_required` for a completed id is rejected as stale
+  (no more ghost Confirm/Cancel cards).
+
+## Tool-result feedback invariant (v13.0)
+
+A tool that EXECUTED always gets its result fed back to Kimi — the wave1-A3 wrapper
+oracle that discarded executed results was removed (LB2), and structured results
+serialize through `LunaSoul._serializeToolResultForFeedback`
+(`stdout|output|text|content` → filtered `JSON.stringify`) so tools like `gitStatus`
+no longer fall into a black hole. Truncated tool JSON is never executed AND never
+swallowed as chat: the soul asks Kimi to re-emit it complete ([CHECK] with the raw
+excerpt, max 3 retries — LB1).
 
 ## Compaction
 

@@ -16,6 +16,29 @@ Luna is an autonomous "mirror" agent: reasoning happens inside the Kimi or DeepS
 - **Dashboard audit log + trash** — commit c51561e: `/api/audit-log`, `/audit-log/trash`, `/audit-log/undo-last`, `/audit-log/restore/:id`, with undo/restore available from Telegram.
 - **Living-memory automation** — `.githooks/post-commit` queues every commit and kicks `scripts/luna-brain-sync.sh` detached in the background (flock-serialized); the sync drains the queue via `kimi -p`, updates `.brain/` and auto-commits with the `[brain-sync]` marker, which the hook skips (anti-loop). (commits 71a5740, hardened 81d0158, auto-drain added 2026-07-13)
 
+## v13.0 — Correção arquitetural do stream pipeline (2026-08-12, Fases 1–3 + loop fix)
+
+Plano de correção arquitetural (prompt owner v3 + diagnóstico forense verificado no código). Sem remendos: cada item elimina uma causa-raiz. **Fase 1 commitada (c4c96db..baee2dc).**
+
+### Fase 2 — Robustez
+- **F2.1 Fallback universal de serialização** (`luna-soul.cjs::_serializeToolResultForFeedback`): `stdout||output||text||content||JSON.stringify(filtrado)` nos 3 builders de feedback + serializer do histórico. **Mata o buraco negro do gitStatus.**
+- **F2.2 Campo `text` unificado** (`luna-tools.cjs`): grep, searchFiles, viewDirectory e gitStatus agora retornam `text` legível (gitStatus inclui `branch`). Friendly do grep lê `matches` como número — fim do "undefined resultado(s)".
+- **F2.3 FSM de confirmação** (`ChatArea.svelte`): `action_end` live limpa `confirmationId`/`confirmationMessage`; `completedToolInstanceIds` rejeita `confirmation_required` stale de replay/reconnect — fim do card fantasma do deleteFile.
+
+### Fase 3 — Polimento
+- **F3.1 ToolCard por contrato de campos**: prioridade `text` → `output/stdout/content` → estruturado (`entries`/git/`results`) → JSON. viewDirectory renderiza.
+- **F3.2 Idempotência semântica** (`luna-tool-guard.cjs::isMutatingToolCall`): shell classificado por comando (whitelist read-only: cat/ls/grep/git status/echo...); TTL 10min→60s; read-only nunca é pulado (guard + cache da soul). Testes C1/C3 atualizados + novo C3b.
+- **F3.3 Aliases centralizados** (`normalizeToolParams` no guard, in-place): `old|oldStr|oldString|old_string|oldText` (idem `new*`); bridge emite `old`/`new` canônicos nos 2 rescue paths (antes renomeava para `oldString`/`newString`, que ninguém aceitava).
+- **F3.4 Dedup de mensagem por clientId**: `currentMessageId` persistido na msg de usuário (`luna-chat-routes.js`), ecoado no SSE, dedup por `clientId` no frontend (fallback conteúdo+5s para msgs antigas).
+- **F3.5 searchFiles com glob**: pattern com `*?[` roteia para busca por nome (glob); texto plano segue como regex de conteúdo. Master prompt corrigido.
+
+### Loop de tools (bug reportado ao vivo: "executou mas o resultado não volta pra Kimi")
+- **LB2 — Invariante de feedback**: removido o oráculo wave1-A3 que DESCARTAVA resultados executados quando o texto do turno parseava como wrapper `{"response"}` (modelo escrevendo prosa + tool na mesma mensagem → resultado real jogado fora → loop morto). Resultado de tool executada SEMPRE volta para a Kimi.
+- **LB1 — Reemissão de JSON truncado**: parse que falha com `truncated` em kind tool/script não vira mais chat silencioso — a soul envia `[CHECK]` com o trecho bruto pedindo reemissão completa (máx 3 tentativas), auto-curando o loop.
+
+### Fase 1 (já documentada abaixo) — lembrete operacional
+**Extensão v2.8.0 precisa de RELOAD em chrome://extensions** (F1.3/F1.5′ dependem dela).
+
 ## v13.0 — Correção arquitetural do stream pipeline (2026-08-12, Fase 1)
 
 Fase 1 do plano de correção arquitetural (prompt owner v3 + diagnóstico forense verificado no código). Sem remendos: cada item elimina uma causa-raiz.

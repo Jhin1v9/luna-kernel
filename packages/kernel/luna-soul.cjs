@@ -2647,6 +2647,7 @@ class LunaSoul extends EventEmitter {
     // Auto-continue loop: Kimi decides → Luna executes → result goes back to Kimi → Kimi responds
     let loopInput = messageInput;
     let checkAlreadySent = false; // v12.0-fix: single reformat retry (the old string-compare broke once the message carried the raw excerpt)
+    let truncatedToolRetries = 0; // v13.0 (LB1): bounded re-emission requests for truncated tool JSON
 
     // Detect if this is the FIRST message in a new thread.
     // We check if the session has any prior assistant/tool events.
@@ -3100,6 +3101,23 @@ class LunaSoul extends EventEmitter {
       // case; parseTagResponse's final fallback also returns CHAT for plain text,
       // so tag-parsed CHAT results are verified lazily at the guard below.
       const parsedFromJsonParser = !tagParsed && parsed !== null;
+      // v13.0 (LB1): a TRUNCATED tool/script JSON must NOT be swallowed as
+      // chat. The model's action never executed, and silently ending the turn
+      // as CHAT killed the tool loop. Ask Kimi to re-emit the SAME tool as one
+    // complete JSON block (bounded retries, then fall through to chat).
+      if (!parsed && truncatedToolRetries < 3) {
+        const probeText = (fullResponse || '').replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+        const probe = probeText ? parseToolJson(probeText) : null;
+        if (probe && probe.truncated && (probe.kind === 'tool' || probe.kind === 'script')) {
+          truncatedToolRetries++;
+          yield { type: 'warning', message: `⚠️ JSON da ferramenta chegou truncado e NÃO foi executado — pedindo reemissão completa (${truncatedToolRetries}/3)...`, sessionId };
+          const rawExcerpt = (fullResponse || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+          loopInput = '[CHECK] Seu bloco JSON de ferramenta chegou TRUNCADO e NÃO foi executado. Reemita a MESMA ferramenta como UM ÚNICO code block ```json completo e válido, sem nenhum texto fora do bloco.'
+            + (rawExcerpt ? `\n\n[TEXTO TRUNCADO RECEBIDO — complete-o]:\n${rawExcerpt}` : '');
+          loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+          continue;
+        }
+      }
       if (!parsed) {
         yield { type: 'warning', message: '⚠️ Resposta não reconhecida, tratando como chat', sessionId };
         parsed = { mode: 'CHAT', response: fullResponse };
@@ -3114,22 +3132,15 @@ class LunaSoul extends EventEmitter {
         parsed.response = fullResponse;
       }
 
-      // wave1-fix A3: a pure CHAT from a VALID {"response": ...} JSON wrapper never
-      // legitimately carries tools — the master prompt mandates ONE JSON per message.
-      // Fallback CHAT (unparsed plain text) is NOT a wrapper: its DOM tool results
-      // are legit and must be fed back to Kimi. The oracle runs only in this rare
-      // CHAT + DOM-tools combination — no double parse in the hot path.
-      // NOTE: jsonrepair can turn plain text into an array, so a valid wrapper
-      // requires a plain object with a string `response` field.
-      if (parsed.mode === 'CHAT' && domActionResults.length > 0) {
-        const wrapperObj = parsedFromJsonParser ? parsed : parseKimiResponse(fullResponse);
-        const fromValidWrapper = wrapperObj !== null && typeof wrapperObj === 'object' &&
-          !Array.isArray(wrapperObj) && typeof wrapperObj.response === 'string';
-        if (fromValidWrapper) {
-          console.log(`[soul] ignoring ${domActionResults.length} dom actions inside pure response`);
-          domActionResults.length = 0;
-        }
-      }
+      // v13.0 (LB2): INVARIANT — a tool that EXECUTED always gets its result
+      // fed back to Kimi. The wave1-A3 wrapper oracle used to discard executed
+      // results whenever the turn's text parsed as a {"response"} wrapper; when
+      // the model writes prose + a tool block in one message (one-JSON rule
+      // violation, common in K3), REAL executed tools had their results thrown
+      // away and the tool loop died — the user had to paste outputs into Kimi
+      // manually. Phantom suppression now lives upstream: the extension only
+      // emits complete post-stream_end JSON (F1.5'), the bridge drops rescued
+      // calls, and the cached-replay guard below stops pure replay turns.
 
       // W6-T7: defense in depth behind bridge turn-scoping (W6-T6). If every DOM
       // action result this turn is a cached replay (W6-T5 marks replays with
