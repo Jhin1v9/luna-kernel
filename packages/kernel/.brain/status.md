@@ -16,6 +16,17 @@ Luna is an autonomous "mirror" agent: reasoning happens inside the Kimi or DeepS
 - **Dashboard audit log + trash** — commit c51561e: `/api/audit-log`, `/audit-log/trash`, `/audit-log/undo-last`, `/audit-log/restore/:id`, with undo/restore available from Telegram.
 - **Living-memory automation** — `.githooks/post-commit` queues every commit and kicks `scripts/luna-brain-sync.sh` detached in the background (flock-serialized); the sync drains the queue via `kimi -p`, updates `.brain/` and auto-commits with the `[brain-sync]` marker, which the hook skips (anti-loop). (commits 71a5740, hardened 81d0158, auto-drain added 2026-07-13)
 
+## v13.0 — Correção arquitetural do stream pipeline (2026-08-12, Fase 1)
+
+Fase 1 do plano de correção arquitetural (prompt owner v3 + diagnóstico forense verificado no código). Sem remendos: cada item elimina uma causa-raiz.
+
+- **F1.1 Interceptor com isolamento de turno** (`ProviderNetworkInterceptor` em `kimi-bridge.cjs`): geração monotônica por turno — `reset()` incrementa `_generation`; o listener só faz `_parseSse` se a geração capturada no evento ainda for a atual após `await response.body()`. O corpo HTTP do turno N que terminava de chegar no turno N+1 (texto stale "um turno depois") é descartado. `completedGeneration`/`lastChatBodyCompletedAt` registram o fim real da resposta HTTP.
+- **F1.2 `cursor.committed` é a fonte primária do texto final** — antes o fechamento relia o DOM (snapshot-diff podia devolver o rabo crescido da bolha anterior). DOM/interceptor viraram fallback só quando o cursor está vazio. `done.response` já carrega esse texto (soul intocada).
+- **F1.3 Término de stream por consenso** — `stream_end` da extensão é rotulado (`signal: 'button'|'inactivity'`): o botão precisa persistir 500ms no estado novo (era hair-trigger de 80ms) e a inatividade subiu para 5s como fallback terciário. O bridge só aceita conclusão com: rede (body do chat deste turno completou) OU ≥2 sinais observacionais distintos (`button`/`inactivity`/`dom_vote`) OU `dom_vote` sustentado (≥2 emissões).
+- **F1.4 Fim do drain pós-conclusão** — deletado o drain de texto (anexava texto stale sem guards e continha o ReferenceError `sessionId` que matava o generator antes de persistir). Após o consenso só `action_detected` é processado (varredura final de tools); deltas de texto tardios são descartados com log debug.
+- **F1.5′ Nunca executar JSON reparado** — extensão: `allowRepair` desligado em TODAS as varreduras; `tool_call_detected` só é emitido após `stream_end` (`emitFinalToolCalls`, com flush também na troca de bolha). Bridge: descarta eventos `rescued:true` nas duas traduções. Soul: recusa ação `__rescued` ou com `code` desbalanceado (`isBalancedJson`). **Extensão bump v2.8.0 — RELOAD obrigatório em chrome://extensions.**
+- **Testes:** wave2-bridge 30/11 e wave1-soul 18/1 — falhas idênticas ao baseline HEAD (pré-existentes, assertions de padrão de código drifted).
+
 ## v12.0 — Robustez total do fluxo (2026-08-08)
 
 Sessão de correção dos 4 bugs relatados pelo dono + limpeza. Sem commit (working copy sem .git nesta máquina).

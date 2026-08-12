@@ -74,6 +74,20 @@ Three layers exist in `kimi-bridge.cjs` (Layers 2–4 were removed in v8.5):
   → `apps/dashboard/luna-extension-handler.cjs` buffers them in
   `global.__lunaExtensionEventBuffers` → the bridge consumes them via
   `_consumeExtensionEvents()` (kimi-bridge.cjs:5172).
+  **v13.0:** executable tool calls are emitted ONLY after `stream_end` (final scan,
+  `allowRepair` disabled — repaired JSON never becomes a tool call), and `stream_end`
+  carries a labeled consensus signal (`signal: 'button'|'inactivity'`).
+
+## Stream completion (v13.0)
+
+A turn ends by **consensus**, not by a single heuristic: the bridge accepts completion
+when the network source-of-truth fired (this turn's chat HTTP body fully arrived —
+`ProviderNetworkInterceptor.completedGeneration === _generation`, turn-isolated since
+F1.1), or ≥2 distinct observational signals (`button`, `inactivity`, `dom_vote`), or the
+DOM poller's composite vote sustained across ≥2 emissions. After acceptance the turn's
+TEXT is immutable (no post-completion drain); only the final `action_detected` scan is
+processed. The final response text comes primarily from `responseCursor.committed` —
+DOM re-reads and the interceptor are fallbacks only.
 - **Layer 1 — CDP network interceptor** (native Playwright request interception; marked
   PRIMARY in code comments for stream capture). Layer 1b (legacy JS-injected interceptor)
   is deprecated.

@@ -686,10 +686,30 @@
     _lastSentResponse = '';
     _thinkingStartedEmitted = false;
     _streamEndEmitted = false;
+    _pendingButtonEndAt = 0;
     _lastSeenThinkingContainer = null;
     _firstThinkingSnapshot = '';
     _lastChangeTime = Date.now();
     _lastChangeHash = '';
+  }
+
+  // v13.0 (F1.5'): emit the naturally-complete tool blocks of a FINISHED bubble.
+  // Called once stream_end is confirmed, when the bubble changes (node re-mount
+  // or new turn), and on the polls right after. Per-bubble dedup (v2.7.0) makes
+  // repeat calls harmless; a re-issue in a NEW bubble is still legitimate.
+  function emitFinalToolCalls(targetAssistant, preScannedBlocks) {
+    if (!targetAssistant) return;
+    try {
+      const blocks = preScannedBlocks || detectJsonBlocks(targetAssistant, findThinkingContainer(targetAssistant), /* allowRepair */ false);
+      for (const action of blocks.actions) {
+        const key = getToolKey(action.tool, action.params);
+        if (_detectedToolKeys.get(key) !== targetAssistant) {
+          _detectedToolKeys.set(key, targetAssistant);
+          queueEvent('tool_call_detected', { tool: action.tool, params: action.params, rescued: false });
+          queueEvent('json_block_added', { actions: [{ tool: action.tool, params: action.params, rescued: false }], responses: [] });
+        }
+      }
+    } catch (e) {}
   }
 
   function emitStreamState(thinking, response, isStreaming) {
@@ -729,6 +749,10 @@
         const oldClass = _currentAssistant ? className(_currentAssistant) : 'null';
         const newClass = assistant ? className(assistant) : 'null';
         console.log(`[LunaExt DEBUG] assistant changed: ${oldClass} -> ${newClass}`);
+        // v13.0 (F1.5'): the previous bubble is definitively finished — flush
+        // any complete tool blocks never emitted (e.g. the node re-mounted
+        // right after stream_end, before the post-stream_end poll ran).
+        if (_currentAssistant) emitFinalToolCalls(_currentAssistant);
         _currentAssistant = assistant;
         resetAssistantState();
         _resetPrimed = false;
@@ -810,20 +834,17 @@
       }
 
       // ── tools / responses ──
-      // v2.7.0: allowRepair only when NOT streaming — a mid-stream block is
-      // legitimately incomplete; auto-closing it would fire a premature tool.
-      const jsonBlocks = detectJsonBlocks(assistant, thinkingContainer, !nowStreaming);
-      for (const action of jsonBlocks.actions) {
-        const key = getToolKey(action.tool, action.params);
-        // v2.7.0-fix: dedup is scoped to the CURRENT assistant bubble. The same
-        // tool+params emitted in a NEW bubble is a legitimate re-issue (e.g.
-        // re-run `npm test` after a fix) and must be emitted — the old
-        // permanent Set suppressed it at the source and the tool "fell asleep".
-        if (_detectedToolKeys.get(key) !== assistant) {
-          _detectedToolKeys.set(key, assistant);
-          queueEvent('tool_call_detected', { tool: action.tool, params: action.params, rescued: action.rescued === true });
-          queueEvent('json_block_added', { actions: [{ tool: action.tool, params: action.params }], responses: [] });
-        }
+      // v13.0 (F1.5'): executable tool calls are NEVER emitted mid-stream.
+      // A mid-stream block is legitimately incomplete; auto-closing it with
+      // miniJsonRepair produced syntactically valid but semantically truncated
+      // params (the eager writeFile bug). Repair is disabled on every scan, and
+      // tool_call_detected/json_block_added actions are only emitted after
+      // stream_end — the model ends its turn right after writing the tool JSON
+      // (it needs the result), so the final block is naturally complete.
+      // {"response": ...} blocks are not executable and keep flowing mid-stream.
+      const jsonBlocks = detectJsonBlocks(assistant, thinkingContainer, /* allowRepair */ false);
+      if (_streamEndEmitted) {
+        emitFinalToolCalls(assistant, jsonBlocks);
       }
       for (const resp of jsonBlocks.responses) {
         const key = hashString(String(resp.response));

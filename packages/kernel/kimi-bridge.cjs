@@ -6211,6 +6211,11 @@ class KimiBridge {
             case 'json_block_added': {
               if (raw.data && raw.data.actions) {
                 for (const action of raw.data.actions) {
+                  // v13.0 (F1.5'): same rescued guard as tool_call_detected.
+                  if (action.rescued === true) {
+                    log.debug(`[ChromeExt] json_block_added action dropped — rescued JSON (repaired mid-stream)`);
+                    continue;
+                  }
                   allEvents.push({
                     type: 'action_detected',
                     action: { tool: action.tool, params: action.params || {} },

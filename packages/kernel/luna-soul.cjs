@@ -32,7 +32,7 @@ const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { checkPathWithinRoots, PATH_PARAM_KEYS } = require('./lib/path-guard.cjs');
 const { makeProgressEvent } = require('./lib/progress-event.cjs');
 const { onContextLimit, shouldForceNewChat } = require('./lib/auto-compact-policy.cjs');
-const { parseToolJson } = require('./lib/tool-json-parser.cjs'); // v12.0: unified tolerant parser
+const { parseToolJson, isBalancedJson } = require('./lib/tool-json-parser.cjs'); // v12.0: unified tolerant parser
 const { normalizeParams } = require('./lib/tool-dedup-key.cjs'); // v12.6: deterministic tool identity for per-turn dedup
 const lunaConfig = require('./config/luna-config');
 const {
@@ -2782,6 +2782,20 @@ class LunaSoul extends EventEmitter {
               const code = event.code || '';
               const kimiResult = event.kimiResult || '';
               const kimiImages = event.kimiImages || [];
+
+              // v13.0 (F1.5'): last line of defense — NEVER execute a tool call
+              // whose JSON was auto-closed by repair mid-stream (rescued) or
+              // whose raw source block fails the completeness check. The bridge
+              // already drops rescued events; this catches anything that slips
+              // through another detection path.
+              if (event.action?.__rescued === true || event.rescued === true) {
+                log.warn(`[LUNA-SOUL] Refusing rescued (repaired mid-stream) tool call: ${event.action?.tool || 'unknown'}`);
+                break;
+              }
+              if (code && code.includes('{') && !isBalancedJson(code)) {
+                log.warn(`[LUNA-SOUL] Refusing tool call with incomplete JSON block (${code.length} chars): ${event.action?.tool || 'unknown'}`);
+                break;
+              }
 
               // v8.5-fix: normalize flat JSON params into event.action.params
               if (event.action?.tool && !event.action?.params) {
