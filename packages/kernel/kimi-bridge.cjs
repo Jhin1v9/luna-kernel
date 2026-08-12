@@ -9313,51 +9313,30 @@ class KimiBridge {
         await new Promise(r => setTimeout(r, 100));
       }
 
-      // v11.9-fix: Drain any remaining events from the queue before finalizing.
-      // Extension events (thinking_update, response_delta) can arrive slightly
-      // after the completion candidate; without this drain the thinking bubble
-      // stays truncated and residual events leak into the next turn.
-      const drainStart = Date.now();
-      while (queue.lastReadIndex < queue.events.length && Date.now() - drainStart < 2000) {
+      // v13.0 (F1.4): strict turn close — the old post-completion drain is gone.
+      // It processed response_delta/thinking_update after stream_end with no
+      // timestamp/cursor/guard (stale text appended at turn end) and contained a
+      // ReferenceError (`sessionId` is not defined here) that killed the
+      // generator before persistence whenever a response_detected was queued.
+      // After consensus, the turn's TEXT is immutable. The only events still
+      // honored are action_detected, because the extension emits its final
+      // tool_call scan at stream_end (F1.5'). Anything else is dropped.
+      const toolDrainStart = Date.now();
+      while (queue.lastReadIndex < queue.events.length && Date.now() - toolDrainStart < 2000) {
         while (queue.lastReadIndex < queue.events.length) {
           const ev = queue.events[queue.lastReadIndex++];
-          switch (ev.type) {
-            case 'thinking_update': {
-              const fullText = ev.fullText || '';
-              if (fullText && fullText.length >= lastThinking.length) {
-                log.info(`[sendMessageStream] thinking_update from drain: ${fullText.length} chars`);
-                lastThinking = fullText;
-                yield { type: 'thinking_update', fullText, source: ev.source || 'drain' };
-              }
-              break;
+          if (ev.type === 'action_detected') {
+            const dedupKey = this._dedupKeyForAction(ev);
+            if (!emittedActionCodes.has(dedupKey)) {
+              emittedActionCodes.add(dedupKey);
+              domActionsCount++;
+              yield { type: 'action_detected', action: ev.action, source: ev.source, code: ev.code, kimiResult: ev.kimiResult, kimiImages: ev.kimiImages };
             }
-            case 'response_delta': {
-              const r = ev.fullResponse || ev.text || '';
-              if (r && r.length > lastResponse.length) {
-                const tail = r.slice(lastResponse.length); // v12.0-fix: slice BEFORE assigning — old order always produced '' and re-emitted the whole text
-                lastResponse = r;
-                yield { type: 'response_delta', text: tail, fullResponse: r };
-              }
-              break;
-            }
-            case 'response_detected': {
-              const respText = this._stripJsonResponseWrapper(ev.response || '');
-              if (respText) {
-                yield { type: 'response_detected', text: respText, sessionId };
-              }
-              break;
-            }
-            case 'action_detected': {
-              const dedupKey = this._dedupKeyForAction(ev);
-              if (!emittedActionCodes.has(dedupKey)) {
-                emittedActionCodes.add(dedupKey);
-                domActionsCount++;
-                yield { type: 'action_detected', action: ev.action, source: ev.source, code: ev.code, kimiResult: ev.kimiResult, kimiImages: ev.kimiImages };
-              }
-              break;
-            }
+          } else if (ev.type === 'response_delta' || ev.type === 'thinking_update' || ev.type === 'response_detected' || ev.type === 'state_change') {
+            log.debug(`[sendMessageStream] post-close ${ev.type} discarded (turn text is immutable)`);
           }
         }
+        if (queue.lastReadIndex < queue.events.length) continue;
         await new Promise(r => setTimeout(r, 100));
       }
 
