@@ -455,7 +455,10 @@
         messages.update(msgs => {
           // Avoid duplicates by ID
           if (msgs.some(m => m.id === event.id)) return msgs;
-          // Avoid duplicates by content (same message sent locally + via SSE)
+          // v13.0 (F3.4): UUID dedup — the server echoes the clientId generated
+          // in handleSend. Same clientId = same message, regardless of timing.
+          if (event.clientId && msgs.some(m => m.clientId === event.clientId)) return msgs;
+          // Fallback for old messages without clientId: content + 5s window
           const content = event.content || event.text || '';
           const recentDuplicate = msgs.some(m =>
             m.type === 'user' &&
@@ -468,6 +471,7 @@
             type: 'user',
             content: content,
             files: event.files || [],
+            clientId: event.clientId || null,
             timestamp: event.timestamp || new Date().toISOString()
           }];
         });
@@ -1533,6 +1537,7 @@
       type: 'user',
       content: msg,
       files: files || [],
+      clientId: currentMessageId, // v13.0 (F3.4): UUID dedup against the server echo
       timestamp: new Date().toISOString()
     };
     messages.update(msgs => [...msgs, userMsg]);

@@ -475,6 +475,7 @@ router.post('/api/chat', async (req, res) => {
     type: 'text',
     content: message, // original message in history
     files: finalFiles,
+    clientId: messageId, // v13.0 (F3.4): echo the client-generated id for UUID dedup
     timestamp: new Date().toISOString(),
   });
 
@@ -712,6 +713,7 @@ router.get('/api/chat/stream', async (req, res) => {
         if (msg.role === 'user') {
           eventData.content = msg.content;
           if (msg.files && msg.files.length > 0) eventData.files = msg.files;
+          if (msg.clientId) eventData.clientId = msg.clientId; // v13.0 (F3.4)
         }
         sendSSE(res, msg.type, eventData, { id: msg.id });
         replayedCount++;
@@ -766,6 +768,7 @@ router.get('/api/chat/stream', async (req, res) => {
       if (msg.role === 'user') {
         eventData.content = msg.content;
         if (msg.files && msg.files.length > 0) eventData.files = msg.files;
+        if (msg.clientId) eventData.clientId = msg.clientId; // v13.0 (F3.4)
       }
 
       sendSSE(res, msg.type, eventData, { id: msg.id });
