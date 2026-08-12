@@ -12,9 +12,14 @@
     return;
   }
 
-  const VERSION = '2.7.0';
+  const VERSION = '2.8.0';
   const POLL_MS = 80;           // read DOM every 80ms while generating
   const HEARTBEAT_MS = 600;     // full-state resync while streaming
+  // v13.0 (F1.3): stream-end consensus signals. The button transition must
+  // persist this long before it counts (React re-renders flicker it mid-stream);
+  // inactivity is only the tertiary fallback, so it waits longer.
+  const BUTTON_END_STABLE_MS = 500;
+  const INACTIVITY_END_MS = 5000;
   const BATCH_MS = 40;          // batch postMessage calls to content script
   const TOOL_DEDUP_TTL_MS = 120000;
 
@@ -616,6 +621,10 @@
   let _lastChangeTime = Date.now();
   let _lastChangeHash = '';
   let _streamEndEmitted = false;
+  // v13.0 (F1.3): pending Stop→Send transition timestamp. The button flickers
+  // during React re-renders mid-stream; stream_end (signal 'button') only fires
+  // after the not-streaming state persists for BUTTON_END_STABLE_MS.
+  let _pendingButtonEndAt = 0;
   // v2.6.11-fix: after a reset we prime the observer with the current DOM; while
   // primed, heartbeat forceResync must NOT re-emit the stale thinking/response
   // that is still on screen, otherwise the bridge seeds the new turn with it.
@@ -826,28 +835,45 @@
       }
 
       // ── stream end detection ──
-      if (_wasStreaming && !nowStreaming && !btnState.stopVisible) {
-        queueEvent('stream_end', {
-          finalTextLength: _lastSentResponse.length,
-          finalThinkingLength: _lastSentThinking.length
-        });
-        _streamEndEmitted = true;
+      // v13.0 (F1.3): consensus signals, no more hair trigger. The Stop button
+      // can disappear transiently during React re-renders mid-stream — the
+      // 'button' signal only fires after the not-streaming state persists for
+      // BUTTON_END_STABLE_MS. The bridge accepts completion only by consensus
+      // (network primary, or ≥2 independent signals).
+      if (nowStreaming) {
+        _pendingButtonEndAt = 0;
+      } else if (!_streamEndEmitted && (_wasStreaming || _pendingButtonEndAt)) {
+        if (!_pendingButtonEndAt) {
+          _pendingButtonEndAt = Date.now();
+        } else if (Date.now() - _pendingButtonEndAt >= BUTTON_END_STABLE_MS) {
+          queueEvent('stream_end', {
+            signal: 'button',
+            finalTextLength: _lastSentResponse.length,
+            finalThinkingLength: _lastSentThinking.length
+          });
+          _streamEndEmitted = true;
+          _pendingButtonEndAt = 0;
+          emitFinalToolCalls(assistant); // v13.0 (F1.5'): final scan, no repair
+        }
       }
       _wasStreaming = nowStreaming;
 
       // v2.6.4-fix: If real response text has appeared and the DOM stops changing
-      // for 3s, emit stream_end so the backend can finalize the turn. This covers
+      // for a while, emit stream_end so the backend can finalize the turn. This covers
       // Kimi variants where the stop button state is not reliably detected.
+      // v13.0 (F1.3): tertiary fallback signal — 5s (was 3s), labeled 'inactivity'.
       const stateHash = `${_lastSentThinking.length}|${_lastSentResponse.length}|${btnState.stopVisible}|${nowStreaming}`;
       if (stateHash !== _lastChangeHash) {
         _lastChangeHash = stateHash;
         _lastChangeTime = Date.now();
-      } else if (!_streamEndEmitted && (Date.now() - _lastChangeTime > 3000)) {
+      } else if (!_streamEndEmitted && (Date.now() - _lastChangeTime > INACTIVITY_END_MS)) {
         queueEvent('stream_end', {
+          signal: 'inactivity',
           finalTextLength: _lastSentResponse.length,
           finalThinkingLength: _lastSentThinking.length
         });
         _streamEndEmitted = true;
+        emitFinalToolCalls(assistant); // v13.0 (F1.5'): final scan, no repair
       }
 
       // ── button state changes ──

@@ -6164,12 +6164,21 @@ class KimiBridge {
               allEvents.push({
                 type: 'completion_candidate',
                 reason: 'stream_end',
+                // v13.0 (F1.3): labeled consensus signal ('button' | 'inactivity')
+                signal: (raw.data && raw.data.signal) || 'unknown',
                 timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
               });
               break;
             }
             case 'tool_call_detected': {
               if (raw.data && raw.data.tool) {
+                // v13.0 (F1.5'): a JSON block auto-closed by miniJsonRepair is
+                // syntactically valid but semantically INCOMPLETE (truncated
+                // script/content). Never forward it for execution.
+                if (raw.data.rescued === true) {
+                  log.debug(`[ChromeExt] tool_call_detected dropped — rescued JSON (repaired mid-stream), waiting for the final complete block`);
+                  break;
+                }
                 allEvents.push({
                   type: 'action_detected',
                   action: { tool: raw.data.tool, params: raw.data.params || {} },
@@ -6361,6 +6370,7 @@ class KimiBridge {
                   this._enqueueDomEvent(userId, {
                     type: 'completion_candidate',
                     reason: ev.reason || 'stream_end',
+                    signal: ev.signal || 'unknown', // v13.0 (F1.3): preserve consensus label
                     timestamp: ev.timestamp || Date.now(),
                   });
                   break;
@@ -6528,6 +6538,7 @@ class KimiBridge {
                   this._enqueueDomEvent(userId, {
                     type: 'completion_candidate',
                     reason: 'stream_end',
+                    signal: ev.signal || 'unknown', // v13.0 (F1.3): preserve consensus label
                     timestamp: ev.ts || Date.now(),
                   });
                   break;
@@ -6751,6 +6762,7 @@ class KimiBridge {
         this._enqueueDomEvent(userId, {
           type: 'completion_candidate',
           signals: { ...cs.signals },
+          signal: 'dom_vote', // v13.0 (F1.3): labeled consensus signal
           timestamp: now,
         });
         cs.candidateSince = 0; // Reset to avoid duplicate
@@ -8722,6 +8734,10 @@ class KimiBridge {
       // v7.0: Stream consumer — reads from event queue, NOT from DOM directly
       let lastThinking = '';
       let lastResponse = '';
+      // v13.0 (F1.3): per-turn consensus signals for stream end. A single
+      // observational signal is only a CANDIDATE — see the acceptance gate in
+      // the completion_candidate case below.
+      const turnEndSignalCounts = { button: 0, inactivity: 0, dom_vote: 0, unknown: 0 };
       // v2.6.13-fix: carry the previous turn's final answer across generators so we
       // can ignore DOM leftovers that still show the old response at the start of a
       // new turn. `lastResponse` is local to this generator and starts empty.
@@ -9263,6 +9279,24 @@ class KimiBridge {
                 log.info(`[sendMessageStream] Ignoring completion candidate — active loading/thinking indicators still visible`);
                 break;
               }
+              // v13.0 (F1.3): consensus-based acceptance. A lone observational
+              // signal (one button flicker, one inactivity timeout) is only a
+              // CANDIDATE. Completion requires the network source-of-truth
+              // (this turn's chat HTTP body fully arrived — F1.1 generation),
+              // or ≥2 independent observational signals, or the DOM poller's
+              // composite vote sustained across ≥2 emissions.
+              const networkDone = !!(interceptor && interceptor.completedGeneration === interceptor._generation);
+              const sig = turnEndSignalCounts[ev.signal] !== undefined ? ev.signal : 'unknown';
+              turnEndSignalCounts[sig]++;
+              const distinctSignals = ['button', 'inactivity', 'dom_vote'].filter(s => turnEndSignalCounts[s] > 0);
+              const consensusReached = networkDone
+                || distinctSignals.length >= 2
+                || turnEndSignalCounts.dom_vote >= 2;
+              if (!consensusReached) {
+                log.info(`[sendMessageStream] completion deferred — no consensus yet (network=${networkDone}, signals=${JSON.stringify(turnEndSignalCounts)})`);
+                break;
+              }
+              log.info(`[sendMessageStream] completion CONSENSUS (network=${networkDone}, signals=${JSON.stringify(turnEndSignalCounts)})`);
               isComplete = true;
               break;
             }
