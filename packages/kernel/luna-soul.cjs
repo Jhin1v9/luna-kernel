@@ -2948,7 +2948,7 @@ class LunaSoul extends EventEmitter {
             let outputText = '';
             for (const dar of domActionResults) {
               const innerResult = dar.result?.result;
-              let stdout = innerResult?.stdout || innerResult?.output || innerResult?.text || '';
+              let stdout = this._serializeToolResultForFeedback(innerResult); // v13.0 (F2.1)
               const stderr = innerResult?.stderr || '';
               const successMark = dar.result?.success ? '✅' : '❌';
               const msg = innerResult?.message || innerResult?.friendlyMessage || '';
@@ -3027,7 +3027,7 @@ class LunaSoul extends EventEmitter {
             let toolSummary = '';
             for (const dar of domActionResults) {
               const innerResult = dar.result?.result;
-              let out = innerResult?.stdout || innerResult?.output || innerResult?.text || '';
+              let out = this._serializeToolResultForFeedback(innerResult); // v13.0 (F2.1)
               const msg = innerResult?.message || innerResult?.friendlyMessage || '';
               if (!out && !msg) out = '[Resultado não possui saída legível]';
               toolSummary += `\n- ${dar.tool}: ${msg || out.slice(0, 200)}`;
@@ -3194,7 +3194,7 @@ class LunaSoul extends EventEmitter {
         if (domActionResults.length > 0) {
           for (const dar of domActionResults) {
             const innerResult = dar.result?.result;
-            let stdout = innerResult?.stdout || innerResult?.output || innerResult?.text || '';
+            let stdout = this._serializeToolResultForFeedback(innerResult); // v13.0 (F2.1)
             const stderr = innerResult?.stderr || '';
             const successMark = dar.result?.success ? '✅' : '❌';
             // If there's a friendly message (e.g., validation errors), include it prominently
@@ -4405,6 +4405,23 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
   /**
    * Generate a friendly Portuguese feedback message after tool execution.
    */
+  // v13.0 (F2.1): universal serialization fallback. Any tool returning a
+  // non-empty object produces readable feedback — structured results like
+  // gitStatus ({cwd, modified, untracked, ...}) no longer fall into the
+  // black hole of the stdout||output||text whitelist.
+  _serializeToolResultForFeedback(innerResult) {
+    if (innerResult === null || innerResult === undefined) return '';
+    if (typeof innerResult !== 'object') return String(innerResult);
+    const direct = innerResult.stdout || innerResult.output || innerResult.text || innerResult.content;
+    if (direct) return String(direct);
+    const SAFE_KEYS = ['cwd','branch','modified','untracked','added','deleted','files','entries','path','total','truncated','matches','results','count','success','error','data','message','friendlyMessage'];
+    try {
+      const hasContent = Object.keys(innerResult).some(k => innerResult[k] !== undefined && innerResult[k] !== null && innerResult[k] !== '');
+      if (!hasContent) return '';
+      return JSON.stringify(innerResult, SAFE_KEYS, 2);
+    } catch { return ''; }
+  }
+
   _makeFriendlyFeedback(tool, params, result) {
     const p = params || {};
     if (!result.success) {
@@ -5213,8 +5230,15 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     }
     else if (result.data !== undefined) rawOutput = typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2);
     else {
-      console.log('[LUNA] Storage fallback raw result (debug):', JSON.stringify(result).slice(0, 500));
-      rawOutput = '[Resultado da ferramenta não possui saída legível]';
+      // v13.0 (F2.1): structured results (gitStatus, viewDirectory, ...) still
+      // produce readable output instead of the blind placeholder.
+      const serialized = this._serializeToolResultForFeedback(result);
+      if (serialized) {
+        rawOutput = serialized;
+      } else {
+        console.log('[LUNA] Storage fallback raw result (debug):', JSON.stringify(result).slice(0, 500));
+        rawOutput = '[Resultado da ferramenta não possui saída legível]';
+      }
     }
     rawOutput = String(rawOutput).slice(0, 2000);
     const outputText = this._scrubSecrets(rawOutput);
