@@ -48,6 +48,11 @@
   // can't re-append the same chunks to the live tool output.
   const appliedChunkIds = new Set();
   let toolInstanceMap = new Map(); // backend toolInstanceId -> frontend message id
+  // v13.0 (F2.3): confirmation state machine — once a toolId reaches COMPLETED
+  // it can NEVER go back to CONFIRMATION_REQUIRED. Late/replayed
+  // confirmation_required events for completed ids are rejected as stale
+  // (this was the ghost Confirm/Cancel card after deleteFile + reconnect).
+  let completedToolInstanceIds = new Set();
   let toolCardSeq = 0; // Wave 10 T1 (H3): collision-free tool card ids
 
   // v8.2-fix: User explicitly disabled inactivity timeout — he waits for long operations.
@@ -679,6 +684,13 @@
       case 'confirmation_required': {
         mascotState.set('waiting');
         mascotMessage.set('Aguardando confirmação...');
+        // v13.0 (F2.3): a toolId that already reached COMPLETED never goes back
+        // to CONFIRMATION_REQUIRED — reject stale replays (ledger reconnect).
+        const evToolId = event.toolInstanceId || event.id;
+        if (evToolId && completedToolInstanceIds.has(evToolId)) {
+          console.warn('[ChatArea] stale confirmation_required rejected (tool already completed):', evToolId);
+          break;
+        }
         const targetToolId = event.toolInstanceId ? toolInstanceMap.get(event.toolInstanceId) : null;
         if (targetToolId) {
           toolTimers.stop(targetToolId); // pause watchdog — confirmation has its own 5-min timeout
@@ -732,6 +744,12 @@
         let lastTool = targetToolId ? msgs.find(m => m.id === targetToolId) : null;
         if (lastTool) {
           toolInstanceMap.delete(event.toolInstanceId || event.id);
+          // v13.0 (F2.3): mark as COMPLETED — terminal state, no way back to
+          // CONFIRMATION_REQUIRED (stale replay guard in the handler above).
+          if (event.toolInstanceId || event.id) {
+            completedToolInstanceIds.add(event.toolInstanceId || event.id);
+            evictOldestEntries(completedToolInstanceIds, 500);
+          }
         }
         // Fallback to old behavior if not found.
         // Wave 10 T1: never for cached replays — with the duplicate card
@@ -757,11 +775,15 @@
           // v10.24-fix: Update by matched toolInstanceId, not by tool name.
           const targetId = lastTool ? lastTool.id : null;
           if (targetId) {
-            return msgs.map(m =>
-              m.id === targetId
-                ? { ...m, result: event.result, duration: parseFloat(duration), status: isSuccess ? 'completed' : 'failed' }
-                : m
-            );
+            return msgs.map(m => {
+              if (m.id !== targetId) return m;
+              const updated = { ...m, result: event.result, duration: parseFloat(duration), status: isSuccess ? 'completed' : 'failed' };
+              // v13.0 (F2.3): a resolved confirmation must drop its Confirm/Cancel
+              // state on the live path too (only history-load did this before).
+              delete updated.confirmationId;
+              delete updated.confirmationMessage;
+              return updated;
+            });
           }
           return msgs;
         });
