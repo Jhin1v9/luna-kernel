@@ -873,6 +873,13 @@ class ProviderNetworkInterceptor {
     this._cdpSession = null;
     this._requestId = null;
     this._responseBuffer = '';
+    // v13.0 (F1.1): turn isolation via monotonic generation. reset() bumps the
+    // generation at the start of every turn; a response body that resolves
+    // late (previous turn's HTTP stream finishing mid-turn) is discarded
+    // instead of polluting the fresh turn's buffer.
+    this._generation = 0;
+    this.completedGeneration = -1;   // generation whose chat body fully arrived
+    this.lastChatBodyCompletedAt = 0; // timestamp of that completion (primary stream-end signal)
   }
 
   async start() {
@@ -891,11 +898,22 @@ class ProviderNetworkInterceptor {
       const url = response.url();
       log.info('[NetworkInterceptor] response url: ' + url);
       if (!this._isChatUrl(url)) return;
+      // v13.0 (F1.1): capture the turn generation at event time. The body of a
+      // PREVIOUS turn's chat response can resolve after reset() bumped the
+      // generation for the next turn — it must never be parsed into the fresh
+      // buffer (this was the "previous turn's text arrives one turn late" bug).
+      const gen = this._generation;
       this.lastActivity = Date.now();
       try {
         const body = await response.body();
         const text = body.toString('utf-8');
         log.info('[NetworkInterceptor] chat response body length=' + text.length + ' firstUrl=' + url);
+        if (gen !== this._generation) {
+          log.info('[NetworkInterceptor] discarding stale chat body from generation ' + gen + ' (current=' + this._generation + ', length=' + text.length + ')');
+          return;
+        }
+        this.completedGeneration = gen;
+        this.lastChatBodyCompletedAt = Date.now();
         this._parseSse(text);
       } catch (e) {}
     };
@@ -920,6 +938,7 @@ class ProviderNetworkInterceptor {
     this.content = [];
     this.toolCalls = [];
     this._responseBuffer = '';
+    this._generation++; // v13.0 (F1.1): new turn — in-flight bodies from older generations are stale
     this.lastActivity = Date.now();
   }
 
