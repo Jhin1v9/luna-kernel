@@ -64,3 +64,5 @@ The review reframed Luna as an "agent runtime" (kernel + pluggable providers) an
 - **Immediate ToolCard/ChatArea rewrites before bug fixes** — ordering matters: fix behavior first, pin with tests, then decompose.
 
 What the review got objectively right and we confirmed independently: LLM/execution separation is the project's strongest asset; transparency (visible command, timing, success border) is the differentiator worth doubling down on; both monoliths (ChatArea 53k chars, ToolCard 17k chars) are confirmed maintenance risks.
+
+- **2026-08-13 — Banner "monthly quota is used up" da Kimi é IRRELEVANTE para o chat instant (owner correction).** A quota esgotada só afeta os modos agents/swarm (modelos pagos extras) — o chat direto instant/thinking que a Luna usa NÃO é limitado por esse banner. Não investigar stalls como "quota wall"; procurar causa no pipeline (bridge/extensão/soul). Registrado pelo owner após um diagnóstico externo ter atribuído stalls à quota.
