@@ -285,6 +285,58 @@ function parseToolJson(rawText) {
   return detectIntent(cleaned);
 }
 
+/**
+ * v13.0 (P1): string-aware extraction of every balanced top-level JSON object
+ * in an arbitrary text. Fences (```), "JSON Copy" artifacts and prose are just
+ * noise to this scanner — a ``` INSIDE a JSON string no longer truncates the
+ * object (the non-greedy fence regex used to reject valid responses as
+ * "corrupted" and dump raw JSON into the chat).
+ * Quote heuristic matches isBalancedJson: a quote closes a string only when the
+ * next significant char is , : } ] or end-of-text (tolerates unescaped quotes
+ * inside values).
+ */
+function extractBalancedJsonObjects(text) {
+  const results = [];
+  if (!text) return results;
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    if (text[i] !== '{') { i++; continue; }
+    let depth = 0, inString = false, escape = false, j = i, closed = false;
+    for (; j < n; j++) {
+      const c = text[j];
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') {
+        if (inString) {
+          let k = j + 1;
+          while (k < n && /\s/.test(text[k])) k++;
+          if (k >= n || text[k] === ',' || text[k] === ':' || text[k] === '}' || text[k] === ']') {
+            inString = false;
+          }
+        } else {
+          inString = true;
+        }
+        continue;
+      }
+      if (!inString) {
+        if (c === '{') depth++;
+        else if (c === '}') {
+          depth--;
+          if (depth === 0) { closed = true; break; }
+        }
+      }
+    }
+    if (closed) {
+      results.push(text.slice(i, j + 1));
+      i = j + 1;
+    } else {
+      i++; // no balanced object starting here — keep scanning
+    }
+  }
+  return results;
+}
+
 module.exports = {
   parseToolJson,
   detectIntent,
@@ -292,4 +344,5 @@ module.exports = {
   extractStringField,
   rescueToolCall,
   isBalancedJson,
+  extractBalancedJsonObjects,
 };

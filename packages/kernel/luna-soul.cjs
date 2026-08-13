@@ -32,7 +32,7 @@ const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { checkPathWithinRoots, PATH_PARAM_KEYS } = require('./lib/path-guard.cjs');
 const { makeProgressEvent } = require('./lib/progress-event.cjs');
 const { onContextLimit, shouldForceNewChat } = require('./lib/auto-compact-policy.cjs');
-const { parseToolJson, isBalancedJson } = require('./lib/tool-json-parser.cjs'); // v12.0: unified tolerant parser
+const { parseToolJson, isBalancedJson, extractBalancedJsonObjects } = require('./lib/tool-json-parser.cjs'); // v12.0: unified tolerant parser
 const { normalizeParams } = require('./lib/tool-dedup-key.cjs'); // v12.6: deterministic tool identity for per-turn dedup
 const lunaConfig = require('./config/luna-config');
 const {
@@ -713,30 +713,18 @@ function parseTagResponse(text) {
   // Extract all properly closed [[action]] tags
   const actionMatches = trimmed.match(/\[\[action\]\]([\s\S]*?)\[\[\/action\]\]/g);
 
-  // v5.2: Extract ALL code blocks — responses AND actions
-  const codeBlockRegex = /```(?:json)?\s*\n?([\s\S]*?)```/g;
+  // v13.0 (P1): fence/regex extraction is GONE. The non-greedy ``` regex
+  // closed at the first fence INSIDE a JSON string (a valid
+  // {"response": "...```..."} was rejected as 'corrupted', raw JSON leaked
+  // into the chat), and the 'JSON Copy' regex broke on nested objects.
+  // Extraction is now brace-balance scanning — fences are decoration,
+  // never structure.
   const codeBlockActions = [];
   const codeBlockResponses = [];
-  let cbMatch;
-  while ((cbMatch = codeBlockRegex.exec(trimmed)) !== null) {
-    const inner = cbMatch[1].trim();
-    // Skip code blocks that already have [[action]] tags (those are captured by actionMatches)
+  for (const innerRaw of extractBalancedJsonObjects(trimmed)) {
+    const inner = innerRaw.trim();
+    // Skip code blocks that already have [[action]] tags (captured by actionMatches)
     if (/\[\[action\]\]/.test(inner)) continue;
-    // Check if it looks like an action (has tool and params)
-    if (/"tool"\s*:/.test(inner) && /"params"\s*:/.test(inner)) {
-      codeBlockActions.push(inner);
-    }
-    // v5.2: Also extract response blocks (even without tool/params)
-    else if (/"response"\s*:/.test(inner)) {
-      codeBlockResponses.push(inner);
-    }
-  }
-
-  // FIX: Also detect JSON in "JSON\nCopy\n{...}" or "JSON 复制{...}" format (Kimi Web innerText extraction)
-  const jsonCopyRegex = /JSON\s*(?:Copy|复制|複製)\s*(\{[\s\S]*?\})(?=\s*(?:JSON|Copy|复制|複製|\[\[|$))/gi;
-  let jcMatch;
-  while ((jcMatch = jsonCopyRegex.exec(trimmed)) !== null) {
-    const inner = jcMatch[1].trim();
     if (/"tool"\s*:/.test(inner) && /"params"\s*:/.test(inner)) {
       codeBlockActions.push(inner);
     } else if (/"response"\s*:/.test(inner)) {
@@ -901,6 +889,14 @@ function parseTagResponse(text) {
     // Combine with [[response]] tag content — code block has priority
     let combinedResponse = response || '';
     for (const respBlock of codeBlockResponses) {
+      // v13.0 (P1): tolerant parse first — literal newlines / escape quirks
+      // inside the JSON string no longer kill a valid response block (raw
+      // JSON.parse used to throw and the raw wrapper leaked into the chat).
+      const tolerant = parseToolJson(respBlock);
+      if (tolerant && tolerant.kind === 'response' && typeof tolerant.text === 'string') {
+        combinedResponse = tolerant.text;
+        break; // First response block wins
+      }
       try {
         const parsedResp = JSON.parse(respBlock.replace(/^JSON\s*(?:Copy|复制|複製)\s*/i, '').replace(/```json\s*/gi, '').replace(/```\s*$/gm, '').trim());
         if (parsedResp.response) {
