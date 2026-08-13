@@ -146,12 +146,16 @@ const sliceAround = (s, needle, span) => {
   return i === -1 ? '' : s.slice(Math.max(0, i - span / 2), i + span / 2);
 };
 
-test('W6-T4: MAX_LOOPS is a finite literal and exhaustion emits done', () => {
+test('W6-T4 (v13.0): no global tool-count ceiling; semantic guards bound the loop', () => {
+  // Owner directive 2026-08-13: Luna must execute as many tools as the model
+  // emits — the old MAX_LOOPS=50 ceiling silently killed long tool chains.
+  // Runaway protection is semantic: circuit breaker on identical repeats,
+  // cached-replay stop, bounded truncated-JSON retries.
   const src = fs.readFileSync(SOUL, 'utf8');
-  assert.ok(/MAX_LOOPS\s*=\s*50\b/.test(src), 'MAX_LOOPS must be a real ceiling (50)');
-  assert.ok(!src.includes('MAX_LOOPS = Number.MAX_SAFE_INTEGER'), 'unbounded ceiling must be gone');
-  const tail = sliceAround(src, 'Limite de iterações atingido', 900);
-  assert.ok(tail.includes("type: 'done'"), 'loop exhaustion must yield done');
+  assert.ok(!/MAX_LOOPS\s*=\s*\d/.test(src), 'numeric MAX_LOOPS ceiling must be gone');
+  assert.ok(src.includes('MAX_LOOPS = Number.POSITIVE_INFINITY'), 'loop ceiling must be unbounded');
+  const guard = fs.readFileSync(require('node:path').join(__dirname, '../luna-tool-guard.cjs'), 'utf8');
+  assert.ok(guard.includes('CIRCUIT_OPEN'), 'circuit breaker (identical-call loop protection) must exist');
 });
 
 test('W6-T4: retry-exhaustion error is followed by done', () => {

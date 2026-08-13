@@ -1861,7 +1861,13 @@ class LunaSoul extends EventEmitter {
   }
 
   /** Scrub secrets from tool output (API keys, tokens, passwords) */
+  // v13.0 (owner directive 2026-08-13): scrubbing DISABLED — identity function.
+  // The patterns below mangled legitimate content and are no longer applied.
   _scrubSecrets(text) {
+    return text;
+  }
+  // eslint-disable-next-line no-unused-vars
+  _scrubSecretsDisabled(text) {
     if (!text || typeof text !== 'string') return text;
     const patterns = [
       { regex: /sk-[a-zA-Z0-9]{48}/g, replacement: '[OPENAI_KEY_SCRUBBED]' },
@@ -2654,7 +2660,13 @@ class LunaSoul extends EventEmitter {
 
     let loopContext = await this._buildContext(sessionId, messageInput, { ...options, isFirstMessage });
     let safety = 0;
-    const MAX_LOOPS = 50; // W6-T4: teto real — o loop nunca pode rodar para sempre
+    // v13.0 (owner directive 2026-08-13): NO global cap on tool executions —
+    // Luna executes as many tools as the model emits, for as long as the loop
+    // produces new work. The old 50-iteration ceiling silently killed long
+    // tool chains mid-task. Runaway protection remains SEMANTIC, not numeric:
+    // the guard's circuit breaker trips on identical repeated calls, cached
+    // replays stop pure-replay turns, and truncated-JSON retries are bounded.
+    const MAX_LOOPS = Number.POSITIVE_INFINITY;
     // W10-T2: one-shot guard — at most ONE auto-compact per user message.
     // If the resent message hits the context limit again, the soul falls back
     // to the manual hint (system message + done) instead of compacting forever.
@@ -2961,11 +2973,7 @@ class LunaSoul extends EventEmitter {
               if (reason) outputText += `\n--- reason ---\n${reason}`;
               if (suggestion) outputText += `\n--- suggestion ---\n${suggestion}`;
             }
-            const MAX_TOOL_RESULT_CHARS = 4000; // v12.0: era 8000 — loop enxuto (Fase 4)
-            if (outputText.length > MAX_TOOL_RESULT_CHARS) {
-              outputText = outputText.slice(0, MAX_TOOL_RESULT_CHARS) +
-                `\n\n[... TRUNCADO: resultado excedeu ${MAX_TOOL_RESULT_CHARS} caracteres. Use grep/searchFiles/readFile para buscar informações específicas se necessário.]`;
-            }
+            // v13.0 (owner directive 2026-08-13): NO char cap — full output.
             const toolsUsed = domActionResults.map(d => d.tool).join(', ');
             const successCount = domActionResults.filter(d => d.result?.success).length;
             const totalCount = domActionResults.length;
@@ -3229,13 +3237,8 @@ class LunaSoul extends EventEmitter {
         const totalCount = domActionResults.length || (result.tool ? 1 : 0);
         const statusEmoji = successCount === totalCount ? '✅' : '⚠️';
 
-        // v6.2-fix: Truncate tool result to prevent context flood (node_modules, large files, etc.)
-        const MAX_TOOL_RESULT_CHARS = 4000; // v12.0: era 8000 — loop enxuto (Fase 4)
-        if (outputText.length > MAX_TOOL_RESULT_CHARS) {
-          outputText = outputText.slice(0, MAX_TOOL_RESULT_CHARS) +
-            `\n\n[... TRUNCADO: resultado excedeu ${MAX_TOOL_RESULT_CHARS} caracteres. ` +
-            `Use grep/searchFiles/readFile para buscar informações específicas se necessário.]`;
-        }
+        // v13.0 (owner directive 2026-08-13): NO char cap on tool results —
+        // the model receives the FULL output. Luna ilimitada.
 
         // v10.0-fix: Detecta se algum resultado precisa de correção (validationErrors/buildErrors)
         const needsFix = result.needsFix || domActionResults.some(d => d.result?.needsFix);
@@ -3724,10 +3727,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     } else {
       output += JSON.stringify(result, null, 2);
     }
-    const MAX = 2000;
-    if (output.length > MAX) {
-      output = output.slice(0, MAX) + `\n\n[... TRUNCADO: resultado excedeu ${MAX} caracteres.]`;
-    }
+    // v13.0 (owner directive 2026-08-13): NO char cap — full tool output.
     return `[LUNA-MIRROR] ${successMark} ${tool}(${JSON.stringify(params || {})}) executado no PC local:\n${output}`;
   }
 
@@ -4187,15 +4187,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         } else {
           resultOutput = raw || friendly;
         }
-        // v10.24-fix: readFile deve devolver o conteúdo real para a Kimi continuar.
-        // Só truncamos quando o contexto está próximo do limite, e sempre com aviso.
-        const READFILE_MAX_CHARS = 8000;
-        if (ev.tool === 'readFile' && resultOutput.length > READFILE_MAX_CHARS) {
-          resultOutput = resultOutput.slice(0, READFILE_MAX_CHARS) +
-            `\n\n[... TRUNCADO: arquivo excedeu ${READFILE_MAX_CHARS} caracteres. Peça linhas específicas com readFile offset/limit se necessário.]`;
-        } else {
-          resultOutput = resultOutput.slice(0, 3000);
-        }
+        // v13.0 (owner directive 2026-08-13): NO char cap — full tool output
+        // in the rebuilt context too.
         historyLines.push(`result: ${ev.success ? '✅' : '❌'} ${resultOutput}`);
       }
     }
@@ -5253,11 +5246,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         rawOutput = '[Resultado da ferramenta não possui saída legível]';
       }
     }
-    rawOutput = String(rawOutput).slice(0, 2000);
-    const outputText = this._scrubSecrets(rawOutput);
-    if (result.error) result.error = this._scrubSecrets(result.error);
-    if (result.stdout) result.stdout = this._scrubSecrets(result.stdout);
-    if (result.content) result.content = this._scrubSecrets(result.content);
+    // v13.0 (owner directive 2026-08-13): no 2000-char storage cap, no secret
+    // scrubbing — the generic base64 pattern mangled legitimate content (long
+    // paths/ids became [SECRET_SCRUBBED]). Full output is stored verbatim.
+    rawOutput = String(rawOutput);
+    const outputText = rawOutput;
 
     // Generate friendly feedback message
     const friendlyMessage = this._makeFriendlyFeedback(tool, params, result);

@@ -56,7 +56,8 @@ function withTmpDir(fn) {
   }
 }
 
-test('A2: readFile caps files over 2MB (truncatedBytes, no full read)', () => {
+test('A2 (v13.0): readFile returns the WHOLE file by default; opt-in maxBytes still caps', () => {
+  // Owner directive 2026-08-13: Luna reads full files — no default byte cap.
   withTmpDir((dir) => {
     const file = path.join(dir, 'big.log');
     // ~3MB of text: 30000 lines × (100 chars + \n)
@@ -67,12 +68,12 @@ test('A2: readFile caps files over 2MB (truncatedBytes, no full read)', () => {
 
     const result = readFile(file);
     assert.strictEqual(result.success, true);
-    assert.strictEqual(result.truncatedBytes, true, 'truncatedBytes must be true for files over the cap');
-    assert.ok(result.content.length < fileSize, 'returned content must be smaller than the file (no full read)');
-    assert.ok(
-      result.note && result.note.includes('executeShell') && result.note.includes('NÃO é acessível'),
-      'note must warn that the rest is unreachable via readFile and point to executeShell/grep'
-    );
+    assert.strictEqual(result.truncatedBytes, undefined, 'no default cap — nothing truncated');
+    assert.strictEqual(result.totalLines, 30001, 'all lines read by default (30000 + trailing empty)');
+
+    // Opt-in cap still works for callers that ask for it
+    const capped = readFile(file, { maxBytes: 1024 * 1024 });
+    assert.strictEqual(capped.truncatedBytes, true, 'explicit maxBytes must still cap');
   });
 });
 

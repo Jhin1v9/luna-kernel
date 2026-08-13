@@ -85,11 +85,9 @@
     : '';
   $: rawResultOutput = inner?.text !== undefined ? inner.text : result?.output !== undefined ? result.output : result?.stdout !== undefined ? result.stdout : result?.result?.stdout !== undefined ? result.result.stdout : result?.result?.output !== undefined ? result.result.output : result?.content !== undefined ? result.content : result?.result?.content !== undefined ? result.result.content : structuredOutput || (inner && typeof inner === 'object' && Object.keys(inner).length > 0 ? JSON.stringify(inner, null, 2) : '');
   $: resultOutput = cleanCodeFences(rawResultOutput);
-  $: truncatedOutput = resultOutput
-    ? resultOutput.length > 500
-      ? resultOutput.slice(0, 500) + '...'
-      : resultOutput
-    : '';
+  // v13.0 (owner directive 2026-08-13): no 500-char display cap — full output
+  // is shown (the block is already collapsible via <details>).
+  $: truncatedOutput = resultOutput || '';
 
   // Wave 8: the backend wraps results one level deeper
   // (action_end.result = {success, mode, tool, result: <inner>}) — read the

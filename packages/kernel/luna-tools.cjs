@@ -212,7 +212,8 @@ function safeExec(cmd, opts = {}) {
 // 1. FILE OPERATIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
-const READFILE_DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
+// v13.0 (owner directive 2026-08-13): readFile returns the WHOLE file by default.
+const READFILE_DEFAULT_MAX_BYTES = Number.POSITIVE_INFINITY;
 
 function readFile(filePath, opts = {}) {
   const resolved = resolvePath(filePath);
@@ -247,7 +248,7 @@ function readFile(filePath, opts = {}) {
     // content beyond maxBytes is unreachable via this tool (see note below).
     const totalLines = lines.length;
     let offset = (opts.offset || opts.line_offset || 1) - 1;
-    let limit = opts.limit || opts.n_lines || 1000;
+    let limit = opts.limit || opts.n_lines || totalLines; // v13.0: all lines by default
 
     // Support negative offset (read from end)
     if (offset < 0) {
@@ -544,7 +545,7 @@ function listFiles(pattern, opts = {}) {
       files = fs.readdirSync(dir).map(f => path.join(dir, f));
     }
 
-    const withStats = files.slice(0, opts.limit || 100).map(f => {
+    const withStats = files.slice(0, opts.limit || files.length).map(f => { // v13.0: no default cap
       try {
         const stat = fs.statSync(f);
         return { path: f, size: stat.size, isDir: stat.isDirectory(), modified: stat.mtime.toISOString() };
@@ -591,7 +592,7 @@ function viewDirectory(dirPath, opts = {}) {
   try {
     const maxDepth = opts.depth || 3;
     let itemsCount = 0;
-    const MAX_ITEMS = 200; // Hard cap on total items to prevent context flood
+    const MAX_ITEMS = opts.maxItems || Number.POSITIVE_INFINITY; // v13.0 (owner directive 2026-08-13): no item cap
     let truncated = false;
 
     function buildTree(dir, depth) {
@@ -702,12 +703,12 @@ function searchFiles(pattern, opts = {}) {
       return err(result.error || result.stderr);
     }
     const lines = result.stdout.trim().split('\n').filter(Boolean);
-    const shown = lines.slice(0, opts.limit || opts.head_limit || 100);
+    const shown = lines.slice(0, opts.limit || opts.head_limit || lines.length); // v13.0: no default cap
     return ok({
       pattern,
       matches: lines.length,
       results: shown,
-      truncated: lines.length > (opts.limit || 100),
+      truncated: lines.length > shown.length,
       // v13.0 (F2.2): unified readable text — primary feedback channel
       text: `Encontrados ${lines.length} resultado(s) para "${pattern}" em ${cwd}:\n${shown.join('\n')}${lines.length > shown.length ? `\n... +${lines.length - shown.length} (truncado)` : ''}`,
     });
@@ -722,7 +723,7 @@ function grep(pattern, opts = {}) {
     const hasRg = (() => { try { execSync('which rg', { stdio: 'ignore' }); return true; } catch { return false; } })();
     let cmd;
     const outputMode = opts.output_mode || 'content';
-    const headLimit = opts.head_limit || 100;
+    const headLimit = opts.head_limit || 0; // v13.0: 0 = no cap (resolved after exec)
     const includeGlob = opts.glob ? `--include=${shellQuote(opts.glob)}` : (opts.include ? `--include=${shellQuote(opts.include)}` : '');
     if (hasRg) {
       const rgGlob = opts.glob ? `-g ${shellQuote(opts.glob)}` : '';
@@ -736,12 +737,12 @@ function grep(pattern, opts = {}) {
       return err(result.error || result.stderr);
     }
     const lines = result.stdout.trim().split('\n').filter(Boolean);
-    const shown = lines.slice(0, headLimit);
+    const shown = lines.slice(0, headLimit > 0 ? headLimit : lines.length); // v13.0: no default cap
     return ok({
       pattern,
       matches: lines.length,
       results: shown,
-      truncated: lines.length > headLimit,
+      truncated: lines.length > shown.length,
       // v13.0 (F2.2): unified readable text — primary feedback channel
       text: `Encontrados ${lines.length} resultado(s) para "${pattern}" em ${cwd}:\n${shown.join('\n')}${lines.length > shown.length ? `\n... +${lines.length - shown.length} (truncado)` : ''}`,
     });
@@ -760,7 +761,7 @@ function glob(pattern, opts = {}) {
       ignore: opts.ignore || ['node_modules/**', '.git/**', 'dist/**', 'build/**'],
       absolute: opts.absolute !== false,
     });
-    return ok({ pattern, count: files.length, files: files.slice(0, opts.limit || 250) });
+    return ok({ pattern, count: files.length, files: files.slice(0, opts.limit || files.length) }); // v13.0: no default cap
   } catch (e) {
     return err(e.message);
   }
@@ -899,7 +900,7 @@ async function browser(url, opts = {}) {
       return ok({
         url,
         title,
-        content: content.slice(0, opts.limit || 30000),
+        content: opts.limit ? content.slice(0, opts.limit) : content, // v13.0: no default cap
         screenshot: screenshot ? `data:image/png;base64,${screenshot}` : null,
       });
     } finally {
@@ -943,7 +944,7 @@ function fetchURL(url, opts = {}) {
         if (received > maxBytes) { req.destroy(); return resolve(err('Resposta excede 5MB')); }
         data += chunk;
       });
-      res.on('end', () => resolve(ok({ url, status: res.statusCode, content: data.slice(0, opts.limit || 50000) })));
+      res.on('end', () => resolve(ok({ url, status: res.statusCode, content: opts.limit ? data.slice(0, opts.limit) : data }))); // v13.0: no default cap
     });
     req.on('error', (e) => resolve(err(e.message)));
     req.on('timeout', () => { req.destroy(); resolve(err('Timeout')); });
@@ -2403,7 +2404,7 @@ async function dashboardGetWhatsAppHistory(params) {
   if (!result_data.success) return result_data;
   const data = result_data.data;
   const items = data.history || data.messages || data || [];
-  const lines = items.slice(0, 10).map(m => `- [${m.author || '?'}]: ${(m.body || m.text || '(mídia)').slice(0, 80)}`).join('\n');
+  const lines = items.map(m => `- [${m.author || '?'}]: ${(m.body || m.text || '(mídia)')}`).join('\n'); // v13.0: no cap
   return ok({ stdout: `💬 ${items.length} mensagem(s):\n${lines || 'Vazio.'}` });
 }
 
@@ -2428,7 +2429,7 @@ async function dashboardGetWhatsAppClassifications(params) {
   if (!result_result_data.success) return result_result_data;
   const result_data = result_result_data.data;
   const data = result_data;
-  return ok({ stdout: `🏷️ Classificações: ${JSON.stringify(data, null, 2).slice(0, 400)}` });
+  return ok({ stdout: `🏷️ Classificações: ${JSON.stringify(data, null, 2)}` }); // v13.0: no cap
 }
 
 // ── SISTEMA ──
@@ -2613,7 +2614,7 @@ async function dashboardGetNexoState(params) {
   if (!result_result_data.success) return result_result_data;
   const result_data = result_result_data.data;
   const data = result_data;
-  return ok({ stdout: `🌐 NEXO State:\n${JSON.stringify(data, null, 2).slice(0, 500)}` });
+  return ok({ stdout: `🌐 NEXO State:\n${JSON.stringify(data, null, 2)}` }); // v13.0: no cap
 }
 
 async function dashboardGetConfig(params) {
@@ -2621,7 +2622,7 @@ async function dashboardGetConfig(params) {
   if (!result_result_data.success) return result_result_data;
   const result_data = result_result_data.data;
   const data = result_data;
-  return ok({ stdout: `⚙️ Config:\n${JSON.stringify(data, null, 2).slice(0, 500)}` });
+  return ok({ stdout: `⚙️ Config:\n${JSON.stringify(data, null, 2)}` }); // v13.0: no cap
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
