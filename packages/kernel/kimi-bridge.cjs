@@ -9658,6 +9658,19 @@ class KimiBridge {
         log.warn(`[sendMessageStream] anti-stale-final: response still equals pre-turn text — delivering blank`);
         finalResponse = '';
       }
+      // v13.0: persist the thread URL from the STREAMING path. After the first
+      // send, Kimi turns the landing URL into /chat/<id>; only the non-streaming
+      // (Telegram) and compaction paths captured it. With nothing persisted,
+      // any Chrome/server/page loss made the next message open a NEW chat
+      // instead of continuing this thread.
+      try {
+        const currentThreadUrl = page.url();
+        if (session && currentThreadUrl && currentThreadUrl.includes('/chat/') && session.chatUrl !== currentThreadUrl) {
+          session.chatUrl = currentThreadUrl;
+          this._saveChatUrl(userId, currentThreadUrl, { mode: session.mode, provider: resolvedProvider });
+          log.info(`[sendMessageStream] persisted thread URL: ${currentThreadUrl}`);
+        }
+      } catch {}
       if (isContextLimit) {
         log.warn(`[sendMessageStream] Context limit detected${pageContextLimit ? ' (page-level scanner)' : ''}`);
         yield { type: 'context_limit', response: pageContextLimit?.response || finalResponse, thinking: lastThinking };

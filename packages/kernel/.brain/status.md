@@ -16,6 +16,15 @@ Luna is an autonomous "mirror" agent: reasoning happens inside the Kimi or DeepS
 - **Dashboard audit log + trash** — commit c51561e: `/api/audit-log`, `/audit-log/trash`, `/audit-log/undo-last`, `/audit-log/restore/:id`, with undo/restore available from Telegram.
 - **Living-memory automation** — `.githooks/post-commit` queues every commit and kicks `scripts/luna-brain-sync.sh` detached in the background (flock-serialized); the sync drains the queue via `kimi -p`, updates `.brain/` and auto-commits with the `[brain-sync]` marker, which the hook skips (anti-loop). (commits 71a5740, hardened 81d0158, auto-drain added 2026-07-13)
 
+## v13.1 — Parser balanceado, zero limites, thread persistence (2026-08-13)
+
+Correções da sessão de testes ao vivo do owner (prints + relatos):
+
+- **P1 Parser por brace-balance** (`lib/tool-json-parser.cjs::extractBalancedJsonObjects` + `parseTagResponse`): o regex não-guloso de ``` fechava no primeiro fence DENTRO de uma string JSON — um `{"response": "...```..."}` válido era rejeitado como "ferramenta corrompida" e o JSON cru vazava pro chat. Fences agora são decoração, nunca estrutura. Response blocks parseiam via `parseToolJson` tolerante (newlines literais dentro de strings não matam mais o parse).
+- **Zero limites (diretriz explícita do owner)**: `MAX_LOOPS` 50 → sem teto (proteção anti-loop fica semântica: circuit breaker de chamadas idênticas + allCached + retries de truncado). Removidos TODOS os caps de chars: feedback de tool 4000, plan-mode 2000, rebuild 8000/3000, storage 2000, readFile 2MB/1000 linhas, viewDirectory 200 itens, limites default de listFiles/glob/grep/searchFiles, slices de download/fetchURL e displays de dashboard, cap de 500 chars do ToolCard. **Secret scrubbing DESLIGADO** (`_scrubSecrets` virou identidade — o regex base64 genérico mutilava paths longos virando `[SECRET_SCRUBBED]`). Limites continuam disponíveis só quando o caller passa explicitamente (offset/limit/maxBytes/head_limit).
+- **Thread persistence no caminho streaming** (`kimi-bridge.cjs::sendMessageStream`): o thread URL `/chat/<id>` agora é capturado e persistido ao fim de cada turno — antes só os caminhos Telegram/compaction capturavam, então qualquer perda de página/Chrome/servidor abria um chat NOVO em vez de continuar o thread existente.
+- **Testes atualizados** para as novas políticas: wave1 W6-T4 (sem teto numérico, guards semânticos) e wave3 A2 (readFile lê o arquivo inteiro por default; maxBytes opt-in continua).
+
 ## v13.0 — Correção arquitetural do stream pipeline (2026-08-12, Fases 1–3 + loop fix)
 
 Plano de correção arquitetural (prompt owner v3 + diagnóstico forense verificado no código). Sem remendos: cada item elimina uma causa-raiz. **Fase 1 commitada (c4c96db..baee2dc).**

@@ -88,6 +88,22 @@ DOM poller's composite vote sustained across ≥2 emissions. After acceptance th
 TEXT is immutable (no post-completion drain); only the final `action_detected` scan is
 processed. The final response text comes primarily from `responseCursor.committed` —
 DOM re-reads and the interceptor are fallbacks only.
+
+## Parsing, limits and thread persistence (v13.1)
+
+- JSON extraction is brace-balance scanning (`extractBalancedJsonObjects` in
+  `lib/tool-json-parser.cjs`): code fences are decoration, never structure — a fence
+  inside a JSON string no longer truncates the object (the non-greedy fence regex
+  rejected valid responses as "corrupted" and leaked raw JSON into the chat).
+- **No caps** (owner directive 2026-08-13): no char caps on tool results/feedback/
+  history/display, full-file `readFile` by default, no secret scrubbing
+  (`_scrubSecrets` is identity — its generic base64 pattern mangled real paths), and
+  **no global tool-count ceiling** (`MAX_LOOPS` removed; runaway protection is
+  semantic: circuit breaker on identical repeats, cached-replay stop, bounded
+  truncated-JSON retries). Limits apply only when the caller passes them explicitly.
+- The streaming path persists the Kimi thread URL (`/chat/<id>`) at the end of every
+  turn — page/Chrome/server loss now resumes the same thread instead of opening a
+  new chat.
 - **Layer 1 — CDP network interceptor** (native Playwright request interception; marked
   PRIMARY in code comments for stream capture). Layer 1b (legacy JS-injected interceptor)
   is deprecated.
