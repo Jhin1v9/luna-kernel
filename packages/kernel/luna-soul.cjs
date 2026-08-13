@@ -4471,7 +4471,16 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     // spreading the string produced garbage keys and no chunk field.
     const emitProgress = (chunk, stream) => eventBus.push(makeProgressEvent({ toolInstanceId, tool: parsedAction.tool, chunk, stream, sessionId }));
     try {
-      let actionResult = await this._handleAction(parsedAction, sessionId, options, emitProgress, eventBus, toolInstanceId);
+      // W6-T2 fix: bound the tool execution so a stuck tool (e.g. CDP call,
+      // blocking shell) never leaves the turn hanging in "Waiting for
+      // background action". Resolve with a visible failure after the timeout.
+      const toolTimeoutMs = this._toolTimeoutMs || 120 * 1000;
+      let actionResult = await Promise.race([
+        this._handleAction(parsedAction, sessionId, options, emitProgress, eventBus, toolInstanceId),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Tool ${parsedAction.tool} excedeu o tempo limite de ${toolTimeoutMs / 1000}s sem resposta.`)), toolTimeoutMs)
+        ),
+      ]);
 
       // ── FALLBACK: if local execution failed AND Kimi has a sandbox result, use it ──
       const localFailed = !actionResult?.success || actionResult?.result?.stderr;

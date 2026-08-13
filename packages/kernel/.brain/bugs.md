@@ -25,7 +25,7 @@
 
 ### Residuals aceitos (documentados, não bloqueantes)
 
-- W7-T4: janela estreita de re-submit (input retido pós-envio real + início de geração >10s) — sem guard de eco. **Mitigado em 2026-07-31 (v11.2):** `_submitWithVerification` agora tem recovery pass — se as 3 estratégias falharem, espera até 30s pela geração de Kimi assentar, re-fill e re-envia (Enter confiável → click no botão), além de log de estado pós-falha (`post-fail state`). Causa raiz: Luna re-envia tool result ~2s após o turno anterior, quando Kimi ainda está gerando/re-renderizando.
+- W7-T4: janela estreita de re-submit (input retido pós-envio real + início de geração >10s) — sem guard de eco.
 - W8-T2 (review): dupla detecção accumulator→late-action para tools LENTAS com conteúdo de braces desbalanceados (writeFile HTML/JS, executeScript longo) — cache da soul absorve tools rápidas; fix candidato conflita com a política de replay W6-T5.
 - Cards de plano não sobrevivem reload (history load ignora tipos `plan_*`); a mensagem do usuário persiste.
 - Build regex: falsos positivos aceitos em palavras citadas (`git commit -m "make x"` → 300s); falsos negativos aceitos (`npm i`, `yarn build`, `gradlew` → 60s).

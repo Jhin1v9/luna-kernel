@@ -105,6 +105,10 @@ class TelegramLunaAdapter {
 
     // ── Mensagens genéricas ──
     this.bot.on('message', async (msg) => {
+      if (!_isAllowedTelegramUser(msg.from?.id)) {
+        console.warn(`[TG] Denied message from unauthorized user ${msg.from?.id}`);
+        return;
+      }
       if (!msg.text || msg.text.startsWith('/')) return;
       if (!_isAllowedTelegramUser(msg.from?.id)) {
         console.warn(`[TG] Denied message from unauthorized user ${msg.from?.id}`);
@@ -131,6 +135,11 @@ class TelegramLunaAdapter {
   async _handleCallbackQuery(query) {
     const data = query.data || '';
     if (!data.startsWith('vote:')) return;
+
+    if (!_isAllowedTelegramUser(query.from.id)) {
+      console.warn(`[TG] Denied callback from unauthorized user ${query.from.id}`);
+      return;
+    }
 
     const parts = data.split(':');
     if (parts.length !== 3) return;

@@ -1,7 +1,7 @@
 {
   "name": "kimi",
   "displayName": "Kimi Web",
-  "baseUrl": "https://www.kimi.com",
+  "baseUrl": "https://www.kimi.com/chat",
   "modeUrls": {
     "instant": "https://www.kimi.com/en?chat_enter_method=new_chat",
     "thinking": "https://www.kimi.com/en?chat_enter_method=new_chat"

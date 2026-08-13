@@ -1,8 +1,0 @@
-    // v2.6.8-fix: use the whitespace-normalized message (preferring the tail)
-    // as the verification signature. A shared prefix between the previous and
-    // new message used to fool the bridge into thinking the new text was already
-    // in the input, causing the previous message to be re-sent.
-    const signature = (text || '').replace(/\s+/g, ' ').trim();
-    const normText = signature.length > 300 ? signature.slice(-300) : signature;
-    const readInput = async () => {
-      if (!normText) return '';
