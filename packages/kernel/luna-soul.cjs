@@ -531,7 +531,41 @@ function parseKimiResponse(text) {
     .replace(/\\\}/g, '}')
     .replace(/\\"/g, '"');       // LAST: \" → "  (after \\ → \ is done)
 
+  // v13.0 (P2): MINIMAL cleaning — only the outer fence and the 'JSON Copy'
+  // header are removed. The aggressive cleaning above strips fences even
+  // INSIDE string values and unescapes \\" → ", which mangles VALID JSON
+  // (e.g. shell commands with \\"quoted\\" args) into unparseable text that
+  // surfaced as 'comando em formato inválido'. The two first strategies run
+  // on the minimally-cleaned text so valid JSON never gets mutated.
+  const minimal = text
+    .replace(/^\s*```(?:json)?\s*\n?/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .replace(/^\s*JSON\s*(?:Copy|复制|複製)\s*/i, '')
+    .replace(/^\s*json\s*(?:Copy|复制|複製)\s*/i, '')
+    .trim();
+
   const strategies = [
+    // v13.0 (P2): direct parse of minimally-cleaned text (fast path for
+    // well-formed JSON — nothing mutated).
+    () => {
+      if (!minimal.startsWith('{')) throw new Error('not bare json');
+      const obj = JSON.parse(minimal);
+      if (obj && typeof obj.response === 'string' && !obj.mode && !obj.tool && !obj.script) {
+        return { mode: 'CHAT', response: obj.response };
+      }
+      return obj;
+    },
+    // v13.0 (P2): tolerant parse of minimally-cleaned text (literal newlines
+    // inside strings, markdown artifacts) via the unified parser.
+    () => {
+      if (!minimal.startsWith('{')) throw new Error('not bare json');
+      const t = parseToolJson(minimal);
+      if (!t || t.truncated) throw new Error('not parseable');
+      if (t.kind === 'response') return { mode: 'CHAT', response: t.text };
+      if (t.kind === 'tool') return { tool: t.tool, params: t.params };
+      if (t.kind === 'script') return { script: t.script, language: t.language };
+      throw new Error('no payload');
+    },
     // Strategy 2: Direct parse (text already has proper JSON escapes)
     () => JSON.parse(cleaned),
     // Strategy 2b: Direct parse with real newlines escaped (DOM returns real newlines inside strings)
@@ -3166,9 +3200,32 @@ class LunaSoul extends EventEmitter {
 
       yield { type: 'mode_detected', mode: parsed.mode, sessionId };
 
+      // v13.0 (FIX-DUP): one logical tool call = ONE execution per turn. The
+      // stream action_detected path already executed this turn's action(s);
+      // the mode-ACTION parse of fullResponse is a FALLBACK for when no stream
+      // detection fired. Without this gate the same tool ran TWICE (the user
+      // saw: 1st card silent, 2nd identical card, feedback only after both).
+      let skipModeExecution = false;
+      if ((parsed.mode === 'ACTION' || parsed.mode === 'SCRIPT') && domActionResults.length > 0) {
+        const dupTool = parsed.mode === 'SCRIPT' ? 'executeScript' : parsed.tool;
+        const dupParams = parsed.mode === 'SCRIPT' ? { code: parsed.script, language: parsed.language || 'bash' } : (parsed.params || {});
+        if (dupTool) {
+          const dupHash = require('crypto').createHash('sha256')
+            .update(`${dupTool}:${JSON.stringify(normalizeParams(dupTool, dupParams))}`)
+            .digest('hex').slice(0, 16);
+          skipModeExecution = startedToolHashes.has(dupHash);
+        }
+      }
+
       // v10.13: Execute tools and yield progress via EventBus (non-blocking)
       const modeResultEventBus = new EventBus();
-      const result = await this._processModeResult(parsed, sessionId, loopInput, options, modeResultEventBus);
+      let result;
+      if (skipModeExecution) {
+        log.info(`[LUNA-SOUL] ${parsed.mode} ${parsed.tool || 'executeScript'} already executed via the stream path — feeding back its result instead of re-executing`);
+        result = { events: [], output: '', pendingPromises: [], success: true, mode: parsed.mode };
+      } else {
+        result = await this._processModeResult(parsed, sessionId, loopInput, options, modeResultEventBus);
+      }
 
       // Yield events that were already emitted synchronously
       for (const ev of result.events) {
