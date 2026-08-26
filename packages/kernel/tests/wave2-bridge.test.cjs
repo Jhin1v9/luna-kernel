@@ -162,8 +162,8 @@ test.afterEach(() => {
 });
 
 test('C1a: two buffers — consuming for URL A returns only A\u2019s events, B\u2019s buffer untouched', () => {
-  const urlA = 'https://kimi.com/chat/thread-a';
-  const urlB = 'https://kimi.com/chat/thread-b';
+  const urlA = 'https://kimi.ai/chat/thread-a';
+  const urlB = 'https://kimi.ai/chat/thread-b';
   seedBuffers([
     ['ext-A', [streamStateEvent({ url: urlA, tabUrl: urlA }, 'A text')]],
     ['ext-B', [streamStateEvent({ url: urlB, tabUrl: urlB }, 'B text')]],
@@ -185,8 +185,8 @@ test('C1a: two buffers — consuming for URL A returns only A\u2019s events, B\u
 });
 
 test('C1b: tracking query string (?utm=...) still matches the same thread', () => {
-  const clean = 'https://kimi.com/chat/thread-x';
-  const dirty = 'https://kimi.com/chat/thread-x?utm_source=telegram&ref=abc#frag';
+  const clean = 'https://kimi.ai/chat/thread-x';
+  const dirty = 'https://kimi.ai/chat/thread-x?utm_source=telegram&ref=abc#frag';
   seedBuffers([
     ['ext-1', [streamStateEvent({ url: dirty, tabUrl: dirty + '/' }, 'tracked')]],
   ]);
@@ -203,7 +203,7 @@ test('C1c: no-url events + two buffers → none consumed (ownership unknown)', (
     ['ext-2', [streamStateEvent({}, 'orphan-2')]],
   ]);
 
-  const events = consume('https://kimi.com/chat/anything');
+  const events = consume('https://kimi.ai/chat/anything');
 
   assert.strictEqual(events.length, 0, 'no-url events must NOT be consumed when multiple buffers exist');
   assert.strictEqual(global.__lunaExtensionEventBuffers.get('ext-1').length, 1, 'buffer 1 untouched');
@@ -215,7 +215,7 @@ test('C1d: no-url events + exactly one buffer → consumed (single-user dev pres
     ['ext-1', [streamStateEvent({}, 'orphan')]],
   ]);
 
-  const events = consume('https://kimi.com/chat/anything');
+  const events = consume('https://kimi.ai/chat/anything');
 
   assert.strictEqual(events.length, 1, 'no-url events must be consumed when only one buffer exists');
   assert.strictEqual(events[0].response, 'orphan');

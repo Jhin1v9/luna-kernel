@@ -4,8 +4,8 @@
 
 const LUNA_SERVER_URL = 'http://localhost:3458';
 const PROVIDER_URL_PATTERNS = [
-  'https://www.kimi.com/*',
-  'https://kimi.com/*',
+  'https://www.kimi.ai/*',
+  'https://kimi.ai/*',
   'https://www.kimi.moonshot.cn/*',
   'https://kimi.moonshot.cn/*',
   'https://chat.deepseek.com/*',

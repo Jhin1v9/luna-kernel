@@ -727,8 +727,20 @@ async function deleteWorkspaceClient(id) {
 // ============================================================
 // EXPORTS
 // ============================================================
+
+// Dummy onChange for compatibility with server.js
+let _changeCallback = null;
+function onChange(callback) { _changeCallback = callback; }
+function notifyChange(entity, data) {
+  if (typeof _changeCallback === 'function') {
+    try { _changeCallback(entity, data); } catch (e) {}
+  }
+}
+
 module.exports = {
   USE_PG,
+  onChange,
+  notifyChange,
   getUsers, saveUser,
   getTasks, saveTask, deleteTask,
   getCompanyTasks, saveCompanyTask,

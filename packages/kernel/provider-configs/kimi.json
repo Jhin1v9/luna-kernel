@@ -1,10 +1,10 @@
 {
   "name": "kimi",
   "displayName": "Kimi Web",
-  "baseUrl": "https://www.kimi.com",
+  "baseUrl": "https://www.kimi.ai",
   "modeUrls": {
-    "instant": "https://www.kimi.com/en?chat_enter_method=new_chat",
-    "thinking": "https://www.kimi.com/en?chat_enter_method=new_chat"
+    "instant": "https://www.kimi.ai/en?chat_enter_method=new_chat",
+    "thinking": "https://www.kimi.ai/en?chat_enter_method=new_chat"
   },
   "selectors": {
     "input": [

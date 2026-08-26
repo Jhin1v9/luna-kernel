@@ -4,7 +4,7 @@ Extensão Chrome que injeta o observador DOM persistente no Kimi Web.
 
 ## Por que extensão?
 
-- ✅ Injetada automaticamente pelo Chrome em TODAS as páginas kimi.com
+- ✅ Injetada automaticamente pelo Chrome em TODAS as páginas kimi.ai
 - ✅ Roda no MAIN world da página (acesso total ao DOM)
 - ✅ Sobrevive a navegações SPA (React re-renders)
 - ✅ Auto-heal: reinicia sozinho se o React destruir o DOM
@@ -21,7 +21,7 @@ Extensão Chrome que injeta o observador DOM persistente no Kimi Web.
 
 ## Verificação
 
-Abra o Kimi Web (`kimi.com`), pressione **F12** → aba **Console**, e digite:
+Abra o Kimi Web (`kimi.ai`), pressione **F12** → aba **Console**, e digite:
 
 ```js
 window.__lunaEventQueue.stats()

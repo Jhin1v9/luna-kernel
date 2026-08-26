@@ -118,14 +118,14 @@ test('T10a: _isChatUrl casa todos os padrões legados mesmo com kimi.json intoca
   const cfg = JSON.parse(fs.readFileSync(path.join(CONFIGS_DIR, 'kimi.json'), 'utf8'));
   const interceptor = new ProviderNetworkInterceptor(null, cfg);
   for (const url of [
-    'https://www.kimi.com/api/chat/abc',
-    'https://www.kimi.com/kimi.gateway.chat/x',
-    'https://www.kimi.com/apiv2/kimi.chat/y',
-    'https://www.kimi.com/kimi.chat.v1.ChatService/ChatCompletion',
+    'https://www.kimi.ai/api/chat/abc',
+    'https://www.kimi.ai/kimi.gateway.chat/x',
+    'https://www.kimi.ai/apiv2/kimi.chat/y',
+    'https://www.kimi.ai/kimi.chat.v1.ChatService/ChatCompletion',
   ]) {
     assert.ok(interceptor._isChatUrl(url), `kimi deve casar ${url} (config ∪ defaults legados)`);
   }
-  assert.strictEqual(interceptor._isChatUrl('https://www.kimi.com/static/app.js'), false);
+  assert.strictEqual(interceptor._isChatUrl('https://www.kimi.ai/static/app.js'), false);
 });
 
 test('T10b: _isChatUrl usa apiEndpoints do config (deepseek)', () => {

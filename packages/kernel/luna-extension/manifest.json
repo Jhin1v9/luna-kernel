@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Luna DOM Observer",
-  "version": "2.8.0",
+  "version": "2.10.8",
   "description": "Real-time Kimi Web DOM observer — streams tool calls and responses to Luna server",
   "permissions": [
     "activeTab",
@@ -12,8 +12,8 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://www.kimi.com/*",
-    "https://kimi.com/*",
+    "https://www.kimi.ai/*",
+    "https://kimi.ai/*",
     "https://www.kimi.moonshot.cn/*",
     "https://kimi.moonshot.cn/*",
     "https://chat.deepseek.com/*",
@@ -27,8 +27,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.kimi.com/*",
-        "https://kimi.com/*",
+        "https://www.kimi.ai/*",
+        "https://kimi.ai/*",
         "https://www.kimi.moonshot.cn/*",
         "https://kimi.moonshot.cn/*",
         "https://chat.deepseek.com/*",
@@ -43,8 +43,8 @@
     {
       "resources": ["injected.js"],
       "matches": [
-        "https://www.kimi.com/*",
-        "https://kimi.com/*",
+        "https://www.kimi.ai/*",
+        "https://kimi.ai/*",
         "https://www.kimi.moonshot.cn/*",
         "https://kimi.moonshot.cn/*",
         "https://chat.deepseek.com/*",

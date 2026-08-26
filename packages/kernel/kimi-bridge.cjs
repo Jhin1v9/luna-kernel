@@ -1,6 +1,6 @@
 /**
  * Luna-Kimi Bridge v2.2
- * Multi-user Playwright automation for Kimi Web (kimi.com) via CDP
+ * Multi-user Playwright automation for Kimi Web (kimi.ai) via CDP
  * v2.2: Always uses persistent profile (~/.luna/chrome-profile) to preserve Kimi login across sessions.
  *       Kills Chrome if running with a temporary /tmp/ profile. Copies login data from user's Chrome on first run.
  * vTEST: unique marker 1785751600
@@ -1230,7 +1230,7 @@ class KimiBridge {
   }
 
   /**
-   * Return the base hostname for a provider config (e.g. "kimi.com").
+   * Return the base hostname for a provider config (e.g. "kimi.ai").
    */
   _providerDomain(provider) {
     const cfg = this._loadProviderConfig(provider);
@@ -4349,6 +4349,7 @@ class KimiBridge {
    * so the turn errors visibly instead of hanging silently (Wave 6 contract).
    */
   async _submitWithVerification(page, inputLocator, text, options = {}) {
+    const submitStartTime = Date.now();
     const submitCfg = this._loadProviderConfig(options.provider || 'kimi');
     const submitAssistantChain = resolveChain(submitCfg, 'assistantMessage', '.segment-assistant');
     const submitSendChain = resolveChain(submitCfg, 'sendButton', '.send-button-container');
@@ -4378,8 +4379,17 @@ class KimiBridge {
       const sendDisabled = sendBtn
         ? (sendBtn.classList.contains('disabled') || sendBtn.getAttribute('aria-disabled') === 'true' || sendBtn.disabled === true)
         : false;
-      const generating = !!firstMatch(stopChain);
-      return { assistants, sendDisabled, generating };
+      const stopBtn = firstMatch(stopChain);
+      const generating = !!stopBtn;
+      // TRACE: capture stop button details for diagnostics
+      const stopBtnInfo = stopBtn ? {
+        tagName: stopBtn.tagName,
+        className: (stopBtn.className || '').slice(0, 100),
+        visible: stopBtn.offsetParent !== null,
+        ariaLabel: stopBtn.getAttribute('aria-label') || '',
+        textContent: (stopBtn.textContent || '').slice(0, 50)
+      } : null;
+      return { assistants, sendDisabled, generating, stopBtnInfo };
     }, { assistantChain: submitAssistantChain, sendChain: submitSendChain, stopChain: submitStopChain }).catch(() => null);
 
     // v2.6.8-fix: hard-clear the input before taking a baseline. This prevents
@@ -4399,6 +4409,8 @@ class KimiBridge {
     // submit — a stop button left over from a previous turn or a send button
     // disabled on an empty input must not count as success.
     const baseline = await readState() || { assistants: 0, sendDisabled: false, generating: false };
+    // TRACE: log baseline state
+    console.log(`[TRACE][SUBMIT_BASELINE] time=${Date.now()} elapsed=${Date.now() - submitStartTime}ms generating=${baseline.generating} assistants=${baseline.assistants} sendDisabled=${baseline.sendDisabled} stopBtnInfo=${JSON.stringify(baseline.stopBtnInfo || null)} textLen=${(text || '').length}`);
     // Sticky: true once the box is OBSERVED holding the typed text. An input
     // clear only proves the send if the text was there before — otherwise a
     // silent fill failure would look exactly like a successful submit.
@@ -4410,6 +4422,9 @@ class KimiBridge {
 
     for (let attempt = 0; attempt < strategies.length; attempt++) {
       const strategy = strategies[attempt];
+      const attemptStartTime = Date.now();
+      // TRACE: log attempt start
+      console.log(`[TRACE][ATTEMPT_${attempt + 1}_STARTED] time=${attemptStartTime} strategy=${strategy} elapsed=${attemptStartTime - submitStartTime}ms`);
         // v12.0-fix: anti-echo guard. If a previous attempt ACTUALLY submitted
         // but no transition was observed within the verify window, retrying
         // would re-fill and re-send the SAME message (the duplicate-user-message
@@ -4469,11 +4484,20 @@ class KimiBridge {
 
       // Verify the submit: poll ~10s for a transition vs the baseline.
       const verifyDeadline = Date.now() + 10_000;
+      let verifyIterations = 0;
+      let lastVerifyState = null;
       while (Date.now() < verifyDeadline) {
+        verifyIterations++;
         const current = await readInput();
         if (current.includes(normText)) inputHeldPrefix = true;
         const inputCleared = inputHeldPrefix && !current.includes(normText);
         const state = await readState();
+        lastVerifyState = state;
+
+        // TRACE: log generating state during verification (every 5 iterations to avoid noise)
+        if (verifyIterations % 5 === 0 || state?.generating) {
+          console.log(`[TRACE][VERIFY_POLL] time=${Date.now()} attempt=${attempt + 1} strategy=${strategy} iteration=${verifyIterations} generating=${state?.generating} inputCleared=${inputCleared} assistants=${state?.assistants} baselineAssistants=${baseline.assistants} stopBtnInfo=${JSON.stringify(state?.stopBtnInfo || null)}`);
+        }
 
         // v2.6.6-fix: require that we actually OBSERVED the typed prefix in the
         // input before accepting a DOM transition as proof of submit. Otherwise a
@@ -4484,11 +4508,20 @@ class KimiBridge {
           || (hadText && state && state.assistants > baseline.assistants)
           || (hadText && state && !baseline.generating && state.generating)
           || (hadText && state && !baseline.sendDisabled && state.sendDisabled)) {
+          const confirmTime = Date.now();
+          // TRACE: log confirmation with details
+          console.log(`[TRACE][ATTEMPT_${attempt + 1}_CONFIRMED] time=${confirmTime} strategy=${strategy} elapsed=${confirmTime - attemptStartTime}ms totalElapsed=${confirmTime - submitStartTime}ms reason=${inputCleared ? 'inputCleared' : state.assistants > baseline.assistants ? 'assistantsGrew' : !baseline.generating && state.generating ? 'generatingStarted' : 'sendDisabled'} iterations=${verifyIterations}`);
           log.info(`[_submitWithVerification] submit confirmed via '${strategy}' (attempt ${attempt + 1})`);
           return { confirmed: true, strategy };
         }
         await page.waitForTimeout(300);
       }
+      const attemptEndTime = Date.now();
+      // TRACE: log attempt failure with structured reason
+      const failReason = lastVerifyState?.generating ? 'generating_stuck' :
+        !inputHeldPrefix ? 'input_not_filled' :
+        'verification_timeout';
+      console.log(`[TRACE][ATTEMPT_${attempt + 1}_FAILED] time=${attemptEndTime} strategy=${strategy} elapsed=${attemptEndTime - attemptStartTime}ms totalElapsed=${attemptEndTime - submitStartTime}ms reason=${failReason} iterations=${verifyIterations} finalGenerating=${lastVerifyState?.generating} finalStopBtn=${JSON.stringify(lastVerifyState?.stopBtnInfo || null)}`);
       log.warn(`[_submitWithVerification] attempt ${attempt + 1} ('${strategy}') NOT confirmed — no submit transition observed`);
       try {
         const failState = await readState();
@@ -4502,15 +4535,30 @@ class KimiBridge {
     // ~2s after the previous turn ended. Instead of throwing SEND_NOT_CONFIRMED
     // immediately, wait for generation to settle, re-fill, and retry once.
     try {
+      const recoveryStartTime = Date.now();
       let recoveryState = await readState();
+      // TRACE: log recovery start with full state
+      console.log(`[TRACE][RECOVERY_STARTED] time=${recoveryStartTime} totalElapsed=${recoveryStartTime - submitStartTime}ms generating=${recoveryState?.generating} stopBtnInfo=${JSON.stringify(recoveryState?.stopBtnInfo || null)} reason=${recoveryState?.generating ? 'generating_stuck_after_3_attempts' : 'all_attempts_failed'}`);
+
       if (recoveryState && recoveryState.generating) {
+        // TRACE: log that we're waiting for generating to clear
+        console.log(`[TRACE][RECOVERY_WAIT_GENERATING] time=${Date.now()} waitingUpTo=30000ms stopBtnDetails=${JSON.stringify(recoveryState.stopBtnInfo || null)}`);
         log.info('[_submitWithVerification] recovery: Kimi still generating — waiting up to 30s for the turn to settle');
         const stopDeadline = Date.now() + 30_000;
+        let generatingWaitIterations = 0;
         while (Date.now() < stopDeadline) {
+          generatingWaitIterations++;
           recoveryState = await readState();
+          // TRACE: log generating state during recovery wait (every 3 iterations)
+          if (generatingWaitIterations % 3 === 0 || !recoveryState?.generating) {
+            console.log(`[TRACE][RECOVERY_GENERATING_POLL] time=${Date.now()} iteration=${generatingWaitIterations} generating=${recoveryState?.generating} elapsed=${Date.now() - recoveryStartTime}ms stopBtnInfo=${JSON.stringify(recoveryState?.stopBtnInfo || null)}`);
+          }
           if (recoveryState && !recoveryState.generating) break;
           await page.waitForTimeout(1000);
         }
+        const generatingClearedTime = Date.now();
+        // TRACE: log how long we waited for generating to clear
+        console.log(`[TRACE][RECOVERY_GENERATING_CLEARED] time=${generatingClearedTime} waited=${generatingClearedTime - recoveryStartTime}ms iterations=${generatingWaitIterations} cleared=${!recoveryState?.generating}`);
         await page.waitForTimeout(1000);
       }
       await this._fillContentEditable(inputLocator, text || '');
@@ -4520,8 +4568,13 @@ class KimiBridge {
       await inputLocator.click({ timeout: 8000 }).catch(() => inputLocator.evaluate((el) => el.focus()));
       await page.waitForTimeout(500);
       await page.keyboard.press('Enter');
+      // TRACE: log recovery verify 1 start
+      const recoveryVerify1Start = Date.now();
+      console.log(`[TRACE][RECOVERY_VERIFY_1_START] time=${recoveryVerify1Start} totalElapsed=${recoveryVerify1Start - submitStartTime}ms`);
       let verifyDeadline = Date.now() + 12_000;
+      let recoveryVerify1Iterations = 0;
       while (Date.now() < verifyDeadline) {
+        recoveryVerify1Iterations++;
         const current = await readInput();
         if (current.includes(normText)) inputHeldPrefix = true;
         const inputCleared = inputHeldPrefix && !current.includes(normText);
@@ -4530,16 +4583,27 @@ class KimiBridge {
           || (state && state.assistants > baseline.assistants)
           || (state && !baseline.generating && state.generating)
           || (state && !baseline.sendDisabled && state.sendDisabled)) {
+          const confirmTime = Date.now();
+          // TRACE: log recovery verify 1 confirmation
+          console.log(`[TRACE][RECOVERY_VERIFY_1_CONFIRMED] time=${confirmTime} elapsed=${confirmTime - recoveryVerify1Start}ms totalElapsed=${confirmTime - submitStartTime}ms iterations=${recoveryVerify1Iterations}`);
           log.info('[_submitWithVerification] recovery pass (wait-then-retry) confirmed the submit');
           return { confirmed: true, strategy: 'recovery-wait-then-retry' };
         }
         await page.waitForTimeout(300);
       }
+      // TRACE: log recovery verify 1 failure
+      console.log(`[TRACE][RECOVERY_VERIFY_1_FAILED] time=${Date.now()} elapsed=${Date.now() - recoveryVerify1Start}ms iterations=${recoveryVerify1Iterations}`);
+
       const { locator: recoverySendBtn } = await firstMatchingLocator(page, submitSendChain);
       if (await recoverySendBtn.count() > 0) {
         await recoverySendBtn.click({ timeout: 8000 }).catch((e) => log.warn(`[_submitWithVerification] recovery send-button click failed: ${e.message}`));
+        // TRACE: log recovery verify 2 start
+        const recoveryVerify2Start = Date.now();
+        console.log(`[TRACE][RECOVERY_VERIFY_2_START] time=${recoveryVerify2Start} totalElapsed=${recoveryVerify2Start - submitStartTime}ms`);
         verifyDeadline = Date.now() + 12_000;
+        let recoveryVerify2Iterations = 0;
         while (Date.now() < verifyDeadline) {
+          recoveryVerify2Iterations++;
           const current = await readInput();
           if (current.includes(normText)) inputHeldPrefix = true;
           const inputCleared = inputHeldPrefix && !current.includes(normText);
@@ -4548,15 +4612,25 @@ class KimiBridge {
             || (state && state.assistants > baseline.assistants)
             || (state && !baseline.generating && state.generating)
             || (state && !baseline.sendDisabled && state.sendDisabled)) {
+            const confirmTime = Date.now();
+            // TRACE: log recovery verify 2 confirmation
+            console.log(`[TRACE][RECOVERY_VERIFY_2_CONFIRMED] time=${confirmTime} elapsed=${confirmTime - recoveryVerify2Start}ms totalElapsed=${confirmTime - submitStartTime}ms iterations=${recoveryVerify2Iterations}`);
             log.info('[_submitWithVerification] recovery send-button click confirmed the submit');
             return { confirmed: true, strategy: 'recovery-send-click' };
           }
           await page.waitForTimeout(300);
         }
+        // TRACE: log recovery verify 2 failure
+        console.log(`[TRACE][RECOVERY_VERIFY_2_FAILED] time=${Date.now()} elapsed=${Date.now() - recoveryVerify2Start}ms iterations=${recoveryVerify2Iterations}`);
       }
+      const recoveryEndTime = Date.now();
       const postRecovery = await readState();
+      // TRACE: log recovery exhaustion
+      console.log(`[TRACE][RECOVERY_EXHAUSTED] time=${recoveryEndTime} totalElapsed=${recoveryEndTime - submitStartTime}ms finalGenerating=${postRecovery?.generating} finalStopBtn=${JSON.stringify(postRecovery?.stopBtnInfo || null)}`);
       log.warn(`[_submitWithVerification] recovery pass exhausted — state=${JSON.stringify(postRecovery)}`);
     } catch (e) {
+      // TRACE: log recovery failure
+      console.log(`[TRACE][RECOVERY_FAILED] time=${Date.now()} totalElapsed=${Date.now() - submitStartTime}ms error=${e.message}`);
       log.warn(`[_submitWithVerification] recovery pass failed: ${e.message}`);
     }
 
@@ -4625,7 +4699,7 @@ class KimiBridge {
             let url = '';
             try { url = p.url(); } catch (e) { url = ''; }
             log.info(`[sendMessage] detected new tab: ${url}`);
-            if (url.includes('/chat/') || url.includes('kimi.com')) {
+            if (url.includes('/chat/') || url.includes('kimi.ai')) {
               try { if (!page.isClosed()) await page.close(); } catch (e) {}
               session.page = p;
               p._lunaUserId = userId;
@@ -6061,7 +6135,7 @@ class KimiBridge {
 
   /**
    * v8.6: Consume events from Chrome Extension's global buffer.
-   * The extension runs in the MAIN world of kimi.com and streams DOM events
+   * The extension runs in the MAIN world of kimi.ai and streams DOM events
    * directly via HTTP to luna-extension-handler.cjs, which buffers them in
    * global.__lunaExtensionEventBuffers. This is Layer 0 — highest priority.
    *
@@ -6159,6 +6233,7 @@ class KimiBridge {
                   type: 'thinking_update',
                   fullText: raw.data.fullThinking,
                   source: 'chrome_extension',
+                  channel: raw.data.channel || 'THINKING',
                   timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
                 });
               }
@@ -6174,6 +6249,16 @@ class KimiBridge {
               });
               break;
             }
+            case 'observer_ready': {
+              // Log observer_ready event
+              log.info(`[LunaExt] Observer ready: url=${raw.data?.url} version=${raw.data?.version}`);
+              break;
+            }
+            case 'luna_build_sentinel': {
+              // Log build sentinel event
+              log.info(`[LUNA_BUILD_SENTINEL] ${raw.data?.sentinel} extensionUrl=${raw.data?.extensionUrl} version=${raw.data?.version}`);
+              break;
+            }
             case 'tool_call_detected': {
               if (raw.data && raw.data.tool) {
                 // v13.0 (F1.5'): a JSON block auto-closed by miniJsonRepair is
@@ -6183,10 +6268,82 @@ class KimiBridge {
                   log.debug(`[ChromeExt] tool_call_detected dropped — rescued JSON (repaired mid-stream), waiting for the final complete block`);
                   break;
                 }
+                // v14.0: Check if this is from the new delimited protocol
+                if (raw.data.protocol === 'delimited') {
+                  log.info(`[TOOL_PROTOCOL][DETECTED] tool=${raw.data.tool} toolId=${raw.data.toolId} source=delimited`);
+                  allEvents.push({
+                    type: 'action_detected',
+                    action: { tool: raw.data.tool, params: raw.data.params || {} },
+                    source: 'delimited_protocol',
+                    toolId: raw.data.toolId,
+                    timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
+                  });
+                } else {
+                  allEvents.push({
+                    type: 'action_detected',
+                    action: { tool: raw.data.tool, params: raw.data.params || {} },
+                    source: 'chrome_extension',
+                    timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
+                  });
+                }
+              }
+              break;
+            }
+            case 'tool_protocol_start': {
+              // v14.0: New delimited protocol - tool call start detected
+              log.info(`[TOOL_PROTOCOL][START] toolId=${raw.data?.toolId} timestamp=${raw.timestamp}`);
+              break;
+            }
+            case 'tool_protocol_end': {
+              // v14.0: New delimited protocol - tool call end detected
+              log.info(`[TOOL_PROTOCOL][END] toolId=${raw.data?.toolId} timestamp=${raw.timestamp}`);
+              break;
+            }
+            case 'luna_tool_call_complete': {
+              // v2.0: Delimited protocol - tool call complete
+              if (raw.data && raw.data.toolCall) {
+                log.info(`[PROTOCOL][TOOL_COMPLETE] tool=${raw.data.toolCall.name} toolId=${raw.data.toolId} source=delimited channel=${raw.data.channel || 'OUTPUT'}`);
                 allEvents.push({
                   type: 'action_detected',
-                  action: { tool: raw.data.tool, params: raw.data.params || {} },
-                  source: 'chrome_extension',
+                  action: { tool: raw.data.toolCall.name, params: raw.data.toolCall.arguments || {} },
+                  source: 'delimited_protocol',
+                  toolId: raw.data.toolId,
+                  channel: raw.data.channel || 'OUTPUT',
+                  timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
+                });
+                // FASE B: Activate V2 authority for tools
+                v2AuthorityActive = true;
+                v2AuthorityType = 'tool';
+                log.info(`[V2_AUTHORITY][ACTIVE] time=${Date.now()} type=tool tool=${raw.data.toolCall.name}`);
+              }
+              break;
+            }
+            case 'luna_response_complete': {
+              // v2.0: Delimited protocol - response complete
+              if (raw.data && raw.data.response !== undefined) {
+                log.info(`[PROTOCOL][RESPONSE_COMPLETE] length=${raw.data.response.length} source=delimited channel=${raw.data.channel || 'OUTPUT'}`);
+                allEvents.push({
+                  type: 'response_detected',
+                  response: typeof raw.data.response === 'string' ? raw.data.response : JSON.stringify(raw.data.response),
+                  source: 'delimited_protocol',
+                  channel: raw.data.channel || 'OUTPUT',
+                  timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
+                });
+                // FASE B: Activate V2 authority for responses
+                v2AuthorityActive = true;
+                v2AuthorityType = 'response';
+                log.info(`[V2_AUTHORITY][ACTIVE] time=${Date.now()} type=response`);
+              }
+              break;
+            }
+            case 'luna_unknown_output': {
+              // v2.0: Delimited protocol - unknown output (turn ended without protocol)
+              if (raw.data) {
+                log.warn(`[PROTOCOL][UNKNOWN_OUTPUT] reason=${raw.data.reason} textLength=${raw.data.text?.length || 0}`);
+                allEvents.push({
+                  type: 'unknown_output',
+                  text: raw.data.text || '',
+                  reason: raw.data.reason || 'unknown',
                   timestamp: raw.timestamp || raw.bufferedAt || Date.now(),
                 });
               }
@@ -8473,7 +8630,7 @@ class KimiBridge {
             let url = '';
             try { url = p.url(); } catch (e) { url = ''; }
             log.info(`[sendMessageStream] detected new tab: ${url}`);
-            if (url.includes('/chat/') || url.includes('kimi.com')) {
+            if (url.includes('/chat/') || url.includes('kimi.ai')) {
               try { if (!page.isClosed()) await page.close(); } catch (e) {}
               session.page = p;
               p._lunaUserId = userId;
@@ -8621,8 +8778,12 @@ class KimiBridge {
       // empty → Enter becomes a no-op and the message sits unsent in the box).
       await this._fillContentEditable(inputLocator, text);
       await page.waitForTimeout(500);
+      // TRACE: log bridge send started (about to call _submitWithVerification)
+      console.log(`[TRACE][BRIDGE_SEND_STARTED] time=${Date.now()} userId=${hashUserId(userId)} textLen=${text.length} provider=${resolvedProvider}`);
       // W7-T4: verify-and-retry submit — typed text must never sit unsent.
       await this._submitWithVerification(page, inputLocator, text, { provider: resolvedProvider });
+      // TRACE: log bridge send completed
+      console.log(`[TRACE][BRIDGE_SEND_COMPLETED] time=${Date.now()} userId=${hashUserId(userId)}`);
       // Wave2-fix: discard everything the poller observed during send-prep —
       // it describes the PREVIOUS turn's DOM, not this message.
       queue.events.length = 0;
@@ -8799,6 +8960,11 @@ class KimiBridge {
       const emittedResponseHashes = new Set();
       const emittedJsonActionHashes = new Set();
       let domActionsCount = 0;
+      let delimitedProtocolActionsCount = 0; // v14.0: Track delimited protocol tools
+      
+      // FASE B: V2 Authority Gate - track when V2 has produced a valid event
+      let v2AuthorityActive = false;
+      let v2AuthorityType = null; // 'tool' or 'response'
 
       // W10-T1: json_buffer action yields used to bypass emittedActionCodes
       // entirely, so the SAME tool call re-detected by another source
@@ -8897,6 +9063,11 @@ class KimiBridge {
           while (queue.lastReadIndex < queue.events.length) {
             const ev = queue.events[queue.lastReadIndex++];
             if (ev.type === 'action_detected') {
+              // FASE B.1: V2 Authority Gate - block legacy tool if V2 is active
+              if (v2AuthorityActive && v2AuthorityType === 'tool' && ev.source !== 'delimited_protocol') {
+                log.info(`[V2_AUTHORITY][BLOCKED] time=${Date.now()} source=hard_cancel_drain reason=v2_tool_authority`);
+                continue;
+              }
               const dedupKey = this._dedupKeyForAction(ev);
               if (!emittedActionCodes.has(dedupKey)) {
                 emittedActionCodes.add(dedupKey);
@@ -9123,23 +9294,48 @@ class KimiBridge {
             }
 
             case 'action_detected': {
+              // FASE B: V2 Authority Gate - skip legacy tool detection if V2 is active
+              if (v2AuthorityActive && v2AuthorityType === 'tool' && ev.source !== 'delimited_protocol') {
+                log.info(`[V2_AUTHORITY][BLOCKED] time=${Date.now()} reason=legacy_tool_blocked_by_v2 source=${ev.source}`);
+                break;
+              }
               const dedupKey = this._dedupKeyForAction(ev);
               if (!emittedActionCodes.has(dedupKey)) {
                 emittedActionCodes.add(dedupKey);
                 domActionsCount++;
-                if (ev.source === 'dom_mirror') {
+                // v14.0: Delimited protocol tools are immediately executable
+                // They don't depend on isGenerating or stream_end
+                if (ev.source === 'delimited_protocol') {
+                  delimitedProtocolActionsCount++;
+                  log.info(`[TOOL_PROTOCOL][ACTION_DETECTED] tool=${ev.action?.tool || 'unknown'} toolId=${ev.toolId} source=delimited_protocol count=${delimitedProtocolActionsCount}`);
+                  yield {
+                    type: 'action_detected',
+                    action: ev.action,
+                    source: 'delimited_protocol',
+                    toolId: ev.toolId,
+                    immediate: true, // Flag for immediate execution
+                  };
+                } else if (ev.source === 'dom_mirror') {
                   log.info(`[DOM MIRROR] Detected ${ev.action?.tool || 'unknown'} block`);
+                  yield {
+                    type: 'action_detected',
+                    action: ev.action,
+                    source: ev.source,
+                    code: ev.code,
+                    kimiResult: ev.kimiResult,
+                    kimiImages: ev.kimiImages,
+                  };
                 } else {
                   log.info(`[JSON STREAM] Action detected: ${ev.action?.tool || 'unknown'}`);
+                  yield {
+                    type: 'action_detected',
+                    action: ev.action,
+                    source: ev.source,
+                    code: ev.code,
+                    kimiResult: ev.kimiResult,
+                    kimiImages: ev.kimiImages,
+                  };
                 }
-                yield {
-                  type: 'action_detected',
-                  action: ev.action,
-                  source: ev.source,
-                  code: ev.code,
-                  kimiResult: ev.kimiResult,
-                  kimiImages: ev.kimiImages,
-                };
               }
               break;
             }
@@ -9147,6 +9343,11 @@ class KimiBridge {
             case 'response_detected': {
               const hash = crypto.createHash('sha256').update(ev.response).digest('hex').slice(0, 16);
               if (!emittedResponseHashes.has(hash)) {
+                // FASE B: V2 Authority Gate - skip legacy response detection if V2 is active
+                if (v2AuthorityActive && v2AuthorityType === 'response' && ev.source !== 'delimited_protocol') {
+                  log.info(`[V2_AUTHORITY][BLOCKED] time=${Date.now()} reason=legacy_response_blocked_by_v2 source=${ev.source}`);
+                  break;
+                }
                 emittedResponseHashes.add(hash);
                 log.info(`[JSON STREAM] Response detected (${ev.response.length} chars)`);
                 // v2.6.13-fix: keep lastResponse in sync with the full answer we just
@@ -9283,10 +9484,14 @@ class KimiBridge {
               // v12.4-fix: never declare completion while the DOM still shows active
               // thinking/loading indicators. The Stop button can disappear transiently
               // during long reasoning, so button-based completion is not enough.
+              // v14.0: Delimited protocol tools can complete even with loading indicators
+              // because the tool completion is determined by the protocol, not visual state.
               const stillLoading = await this._hasActiveLoadingIndicators(page);
-              if (stillLoading) {
+              if (stillLoading && delimitedProtocolActionsCount === 0) {
                 log.info(`[sendMessageStream] Ignoring completion candidate — active loading/thinking indicators still visible`);
                 break;
+              } else if (stillLoading && delimitedProtocolActionsCount > 0) {
+                log.info(`[sendMessageStream] Allowing completion despite loading indicators — ${delimitedProtocolActionsCount} tool(s) executed via delimited protocol`);
               }
               // v13.0 (F1.3): consensus-based acceptance. A lone observational
               // signal (one button flicker, one inactivity timeout) is only a
@@ -9335,6 +9540,11 @@ class KimiBridge {
         while (queue.lastReadIndex < queue.events.length) {
           const ev = queue.events[queue.lastReadIndex++];
           if (ev.type === 'action_detected') {
+            // FASE B.1: V2 Authority Gate - block legacy tool if V2 is active
+            if (v2AuthorityActive && v2AuthorityType === 'tool' && ev.source !== 'delimited_protocol') {
+              log.info(`[V2_AUTHORITY][BLOCKED] time=${Date.now()} source=post_close_drain reason=v2_tool_authority`);
+              continue;
+            }
             const dedupKey = this._dedupKeyForAction(ev);
             if (!emittedActionCodes.has(dedupKey)) {
               emittedActionCodes.add(dedupKey);

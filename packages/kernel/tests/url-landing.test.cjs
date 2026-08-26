@@ -27,32 +27,32 @@ function isNewChatLanding(currentUrl, expectedUrl) {
 const cases = [
   {
     name: 'trailing slash no currentUrl',
-    current: 'https://www.kimi.com/?chat_enter_method=new_chat',
-    expected: 'https://www.kimi.com',
+    current: 'https://www.kimi.ai/?chat_enter_method=new_chat',
+    expected: 'https://www.kimi.ai',
     want: true,
   },
   {
     name: 'lang extra no expected',
-    current: 'https://www.kimi.com/?chat_enter_method=new_chat',
-    expected: 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en',
+    current: 'https://www.kimi.ai/?chat_enter_method=new_chat',
+    expected: 'https://www.kimi.ai/?chat_enter_method=new_chat&lang=en',
     want: true, // query params sao ignorados na comparacao de landing page
   },
   {
     name: 'query params reordenados',
-    current: 'https://www.kimi.com/?b=2&a=1',
-    expected: 'https://www.kimi.com/?a=1&b=2',
+    current: 'https://www.kimi.ai/?b=2&a=1',
+    expected: 'https://www.kimi.ai/?a=1&b=2',
     want: true,
   },
   {
     name: 'hash ignorado',
-    current: 'https://www.kimi.com/?chat_enter_method=new_chat#section',
-    expected: 'https://www.kimi.com/?chat_enter_method=new_chat',
+    current: 'https://www.kimi.ai/?chat_enter_method=new_chat#section',
+    expected: 'https://www.kimi.ai/?chat_enter_method=new_chat',
     want: true,
   },
   {
     name: 'chat real nao e landing',
-    current: 'https://www.kimi.com/chat/cn1l9vlaq9s6m01oe6m0',
-    expected: 'https://www.kimi.com',
+    current: 'https://www.kimi.ai/chat/cn1l9vlaq9s6m01oe6m0',
+    expected: 'https://www.kimi.ai',
     want: false,
   },
 ];

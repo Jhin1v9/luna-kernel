@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  * 1. Check if a page is logged into Kimi Web using browser-native selectors.
- * 2. Navigate to kimi.com if not logged in.
+ * 2. Navigate to kimi.ai if not logged in.
  * 3. Wait for login state to change (polling with absolute timeout).
  */
 
@@ -46,7 +46,7 @@ class LoginManager {
 
   /**
    * Ensure the given page is logged into Kimi Web.
-   * If not logged in, navigates to kimi.com and polls until login is detected or timeout.
+   * If not logged in, navigates to kimi.ai and polls until login is detected or timeout.
    *
    * @param {import('playwright').Page} page
    * @param {number} timeoutMs — absolute timeout in milliseconds (default: 30000)
@@ -66,17 +66,17 @@ class LoginManager {
       return { loggedIn: true, url: state.url, message: 'Already logged in to Kimi Web' };
     }
 
-    // 2. Not logged in — navigate to kimi.com
+    // 2. Not logged in — navigate to kimi.ai
     this.logger?.info?.('User not logged in, navigating to Kimi login page');
     try {
-      await page.goto('https://www.kimi.com/?lang=en', {
+      await page.goto('https://www.kimi.ai/?lang=en', {
         waitUntil: 'domcontentloaded',
         timeout: 30000,
       });
       await page.waitForTimeout(1500);
       await page.bringToFront().catch(() => {});
     } catch (e) {
-      this.logger?.warn?.(`Navigation to www.kimi.com failed: ${e.message}`);
+      this.logger?.warn?.(`Navigation to www.kimi.ai failed: ${e.message}`);
       return { loggedIn: false, url: page.url?.() || '', error: `Failed to navigate: ${e.message}`, action: 'login_required' };
     }
 

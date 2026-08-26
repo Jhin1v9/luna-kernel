@@ -264,7 +264,7 @@ class ChromeLauncher {
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
         ...extensionArgs,
-        'https://www.kimi.com/',
+        'https://www.kimi.ai/',
       ], {
         detached: false,
         stdio: ['ignore', 'pipe', 'pipe'],

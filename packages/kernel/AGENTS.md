@@ -150,18 +150,40 @@ User → Luna Web (Svelte) → luna-server (Node) → luna-soul.cjs → kimi-bri
 - **THINKING:** Shows ThinkingBubble while processing
 - **INSTANT:** Shows TypingIndicator (dots animation), no thinking text
 
-### Tool Action Format
-Only **JSON code blocks** are used for tool actions. The legacy `[[action]]` / `[[response]]` tags are obsolete and must not be used in prompts or parsers.
+### Tool Action Format (v2.0 — Delimited Protocol)
 
-Example tool block detected by the extension / DOM mirror:
-```json
+The primary protocol uses semantic envelopes:
+
+**Tool call:**
+```
+<luna_tool_call>
 {
-  "tool": "writeFile",
-  "params": { "path": "/home/user/project/readme.md", "content": "# Hello" }
+  "name": "writeFile",
+  "arguments": { "path": "/home/user/project/readme.md", "content": "# Hello" }
 }
+</luna_tool_call>
 ```
 
-The mirror layer emits `action_detected`, `luna-soul.cjs` parses it, and `luna-tools.cjs` executes it on the user's machine. The output is then mirrored back to the LLM chat.
+**Response:**
+```
+<luna_response>
+Your response text here
+</luna_response>
+```
+
+**Tool result:**
+```
+<luna_tool_result>
+{
+  "status": "success",
+  "result": "..."
+}
+</luna_tool_result>
+```
+
+The mirror layer emits `luna_tool_call_complete`, `luna-soul.cjs` parses it, and `luna-tools.cjs` executes it on the user's machine. The output is then mirrored back to the LLM chat.
+
+**Legacy fallback:** JSON code blocks are still supported as fallback when `LUNA_TOOL_PROTOCOL=dual` or `legacy`.
 
 ### Tool Card State
 ToolCard state is driven SOLELY by `action_start` → `action_end` events from the mirror executor. Never rely on DOM mirroring alone for tool status.

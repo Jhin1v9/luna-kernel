@@ -260,7 +260,7 @@
   window.__lunaDomObserver = { observer, teardown, swap: () => window.__lunaEventQueue.swap(), stats: () => ({ queueSize: window.__lunaEventQueue.size(), isObserving: true, url: window.location.href }) };
   window.addEventListener('beforeunload', teardown, { once: true });
 
-  // v7.0-fix: NEVER teardown on pushState/replaceState — SPA navigation on kimi.com
+  // v7.0-fix: NEVER teardown on pushState/replaceState — SPA navigation on kimi.ai
   // kills the observer permanently. Instead, keep observer alive across navigations.
   // The bridge will reinject if needed, but teardown here makes it impossible.
   const originalPushState = history.pushState;

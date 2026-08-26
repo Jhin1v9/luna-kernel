@@ -26,7 +26,7 @@ const { fetchLinkPreview, getCachedPreview, classifyUrl } = require('./services/
 
 // Action Preview Service — previews contextuais para ações da Luna
 const { buildPreviewForActions } = require('./services/action-preview');
-const dataStore = require('./datastore-pg');
+const dataStore = require('./datastore');
 const { LUNA_KERNEL_DIR } = require('./lib/resolve-luna.cjs');
 
 // Discord Mention Notifier

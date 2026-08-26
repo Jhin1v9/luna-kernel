@@ -7,10 +7,15 @@ const db = require('./db');
 
 // ── FATAL: No PostgreSQL, no service ──
 if (!process.env.DATABASE_URL) {
-  console.error('❌ FATAL: DATABASE_URL is not defined.');
-  console.error('   PostgreSQL is the only supported persistence layer.');
-  console.error('   Set DATABASE_URL and restart the server.');
-  process.exit(1);
+  console.warn('⚠️ DATABASE_URL is not defined.');
+  console.warn('   PostgreSQL is the only supported persistence layer.');
+  console.warn('   Set DATABASE_URL and restart the server.');
+  console.warn('   Falling back to JSON datastore.');
+  // Export a dummy module that throws on any operation
+  module.exports = new Proxy({}, {
+    get: () => () => { throw new Error('DATABASE_URL not configured'); }
+  });
+  return;
 }
 
 // ── Change notification hook (for WebSocket broadcasts) ──

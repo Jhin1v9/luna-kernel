@@ -109,7 +109,7 @@ class BridgeSessionManager {
     }
 
     // v7.4-fix: If no existing session, try to reuse an existing page from defaultContext
-    // that is already on kimi.com. This avoids creating a duplicate tab.
+    // that is already on kimi.ai. This avoids creating a duplicate tab.
     if (!existing || !existing.page || existing.page.isClosed()) {
       const pages = this.defaultContext?.pages() || [];
       for (const p of pages) {
@@ -118,8 +118,8 @@ class BridgeSessionManager {
         if (p._lunaUserId && p._lunaUserId !== userId) continue;
         try {
           const url = p.url();
-          if (url && url.includes('kimi.com')) {
-            this.logger?.info?.(`Reusing existing kimi.com page for user ${hashUserId(userId)}: ${url}`);
+          if (url && url.includes('kimi.ai')) {
+            this.logger?.info?.(`Reusing existing kimi.ai page for user ${hashUserId(userId)}: ${url}`);
             p._lunaUserId = userId;
             const session = {
               page: p,
@@ -145,7 +145,7 @@ class BridgeSessionManager {
     await this.semaphore.acquire();
 
     const stored = this.store.getUser(userId);
-    const chatUrl = stored?.chatUrl || 'https://www.kimi.com/?chat_enter_method=new_chat&lang=en';
+    const chatUrl = stored?.chatUrl || 'https://www.kimi.ai/?chat_enter_method=new_chat&lang=en';
 
     let page = null;
     try {

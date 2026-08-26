@@ -1,4 +1,4 @@
-// Luna Extension — Injected into MAIN world of provider pages (kimi.com, chat.deepseek.com, etc.)
+// Luna Extension — Injected into MAIN world of provider pages (kimi.ai, chat.deepseek.com, etc.)
 // v2.5.2: Thinking/source-of-truth extraction based on Kimi's .thinking-container.
 // Rule: text INSIDE the .thinking-container is reasoning; text OUTSIDE is the answer/tool.
 // v11.7-fix: detect the thinking container as early as possible via a lightweight
@@ -7,6 +7,11 @@
 // v2.6.0: Robust thinking/response separation with expanded selectors and fallback heuristic.
 
 (function setupLunaDomObserver() {
+  // SENTINEL: Prova que este injected.js está sendo executado
+  // Envia através do pipeline de eventos para o servidor
+  const BUILD_SENTINEL = 'LUNA_INJECTED_BUILD_SENTINEL_2_9_3_20260816';
+  const EXTENSION_URL = typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.getURL('') : 'unknown';
+
   if (window.__lunaDomObserver) {
     try { window.__lunaDomObserver.version = '2.6.0'; } catch (e) {}
     return;
@@ -630,6 +635,110 @@
   // that is still on screen, otherwise the bridge seeds the new turn with it.
   let _resetPrimed = false;
 
+  // ── Delimited Protocol v2.0 ──
+  // Protocol uses semantic envelopes: <luna_tool_call>...</luna_tool_call> and <luna_response>...</luna_response>
+  // The LLM does NOT send IDs. Luna generates toolInstanceId internally.
+  // Parser must handle chunked delimiters (e.g., <luna_tool in one chunk, _call> in next).
+
+  // Protocol constants (semantic envelope - single tag with closing)
+  const TOOL_OPEN = '<luna_tool_call>';
+  const TOOL_CLOSE = '</luna_tool_call>';
+  const RESPONSE_OPEN = '<luna_response>';
+  const RESPONSE_CLOSE = '</luna_response>';
+
+  // Protocol State Machine
+  const PROTOCOL_STATES = {
+    IDLE: 'IDLE',
+    DETECTING: 'DETECTING',
+    TOOL_BUFFERING: 'TOOL_BUFFERING',
+    TOOL_COMPLETE: 'TOOL_COMPLETE',
+    RESPONSE_BUFFERING: 'RESPONSE_BUFFERING',
+    RESPONSE_COMPLETE: 'RESPONSE_COMPLETE',
+    VALIDATING: 'VALIDATING',
+    READY: 'READY',
+    UNKNOWN_OUTPUT: 'UNKNOWN_OUTPUT'
+  };
+
+  let _protocolState = PROTOCOL_STATES.IDLE;
+  let _protocolBuffer = '';
+  let _protocolStartTime = null;
+  let _protocolToolId = null;
+  let _protocolType = null; // 'tool' or 'response'
+  // Track partial delimiter matches for chunked detection
+  let _partialDelimiter = '';
+  // Track whether a valid protocol was detected during the current turn
+  let _protocolDetectedThisTurn = false;
+  // FASE A: Track processed tool hashes to prevent reprocessing the same snapshot
+  let _processedToolHashes = new Set();
+  // FASE B: V2 Authority Gate - track when V2 has produced a valid event
+  let _v2AuthorityActive = false;
+  let _v2AuthorityType = null; // 'tool' or 'response'
+
+  function resetProtocol() {
+    _protocolState = PROTOCOL_STATES.IDLE;
+    _protocolBuffer = '';
+    _protocolStartTime = null;
+    _protocolToolId = null;
+    _protocolType = null;
+    _partialDelimiter = '';
+  }
+
+  function resetTurnProtocolState() {
+    _protocolDetectedThisTurn = false;
+    _processedToolHashes.clear();
+    _v2AuthorityActive = false;
+    _v2AuthorityType = null;
+    resetProtocol();
+  }
+
+  // FASE B: Check if V2 authority is blocking legacy
+  function isV2BlockingLegacy(eventType) {
+    if (!_v2AuthorityActive) return false;
+    // V2 blocks legacy for the same type
+    if (_v2AuthorityType === 'tool' && eventType === 'tool') return true;
+    if (_v2AuthorityType === 'response' && eventType === 'response') return true;
+    return false;
+  }
+
+  function generateToolId() {
+    return `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  // Check if text starts with a protocol delimiter (handles chunked delimiters)
+  function findProtocolStart(text) {
+    if (!text) return null;
+
+    // Check for tool protocol
+    if (text.includes(TOOL_OPEN)) return { type: 'tool', tag: TOOL_OPEN };
+    // Check for response protocol
+    if (text.includes(RESPONSE_OPEN)) return { type: 'response', tag: RESPONSE_OPEN };
+
+    // Check for partial delimiter at end of text (for chunked detection)
+    const toolPartial = findPartialMatch(text, TOOL_OPEN);
+    if (toolPartial) return { type: 'tool_partial', tag: toolPartial };
+
+    const responsePartial = findPartialMatch(text, RESPONSE_OPEN);
+    if (responsePartial) return { type: 'response_partial', tag: responsePartial };
+
+    return null;
+  }
+
+  // Find if text ends with a partial match of the delimiter
+  function findPartialMatch(text, delimiter) {
+    // Check if the end of text matches the beginning of delimiter
+    for (let i = Math.min(text.length, delimiter.length - 1); i > 0; i--) {
+      if (text.endsWith(delimiter.substring(0, i))) {
+        return delimiter.substring(0, i);
+      }
+    }
+    return null;
+  }
+
+  // Find protocol close tag in text
+  function findProtocolClose(text, closeTag) {
+    return text.indexOf(closeTag);
+  }
+
   function getToolKey(tool, params) {
     try {
       const paramsStr = JSON.stringify(params);
@@ -699,6 +808,11 @@
   // repeat calls harmless; a re-issue in a NEW bubble is still legitimate.
   function emitFinalToolCalls(targetAssistant, preScannedBlocks) {
     if (!targetAssistant) return;
+    // FASE B: V2 Authority Gate - skip legacy tool detection if V2 is active
+    if (isV2BlockingLegacy('tool')) {
+      console.log(`[V2_AUTHORITY][BLOCKED] time=${Date.now()} reason=emitFinalToolCalls_blocked_by_v2`);
+      return;
+    }
     try {
       const blocks = preScannedBlocks || detectJsonBlocks(targetAssistant, findThinkingContainer(targetAssistant), /* allowRepair */ false);
       for (const action of blocks.actions) {
@@ -729,7 +843,8 @@
     if (!thinking) return;
     queueEvent('thinking_update', {
       fullThinking: thinking,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      channel: 'THINKING'
     });
   }
 
@@ -755,6 +870,7 @@
         if (_currentAssistant) emitFinalToolCalls(_currentAssistant);
         _currentAssistant = assistant;
         resetAssistantState();
+        resetTurnProtocolState(); // Reset protocol state for new turn
         _resetPrimed = false;
       }
 
@@ -800,8 +916,9 @@
       // ── thinking lifecycle ──
       if (thinking && !_thinkingStartedEmitted) {
         const snapshot = _firstThinkingSnapshot || thinking;
+        console.log(`[PROTOCOL][CHANNEL] time=${Date.now()} channel=THINKING len=${snapshot.length}`);
         console.log(`[LunaExt DEBUG] emitting thinking_start len=${snapshot.length}`);
-        queueEvent('thinking_start', { thinking: snapshot });
+        queueEvent('thinking_start', { thinking: snapshot, channel: 'THINKING' });
         _thinkingStartedEmitted = true;
         // Emit a stream_state immediately with the full snapshot so the bridge/frontend
         // initialize the bubble with everything we have, not just future deltas.
@@ -818,6 +935,7 @@
       // reasoning text we've ever seen so the Luna bubble only grows / updates,
       // never shrinks or gets truncated.
       if (thinking && (effectiveForceResync || (thinking.length >= _lastSentThinking.length && thinking !== _lastSentThinking))) {
+        console.log(`[PROTOCOL][CHANNEL] time=${Date.now()} channel=THINKING len=${thinking.length}`);
         console.log(`[LunaExt DEBUG] emitting thinking_update len=${thinking.length} (last=${_lastSentThinking.length})`);
         _lastSentThinking = thinking;
         // v2.6.8-fix: preserve last known response to stop response=0 / response=N oscillation.
@@ -827,13 +945,238 @@
       }
 
       // ── response ──
-      if (response && (effectiveForceResync || response !== _lastSentResponse)) {
+      // v14.0: CRITICAL FIX - Check for protocol delimiters BEFORE emitting response
+      // If the response contains <luna_tool_call> or <luna_response>, it must be
+      // processed by the protocol parser FIRST, not emitted as a regular response.
+      // Also check for PARTIAL delimiters to handle chunked streaming.
+      // Also check for CLOSE tags to handle cases where response contains closing delimiter.
+      
+      // FIRST: Check if we have a pending partial delimiter from previous chunk
+      // This must happen BEFORE the emission decision
+      const hasPendingPartial = _partialDelimiter && _partialDelimiter.length > 0;
+      
+      const hasProtocolDelimiter = response && (
+        response.includes(TOOL_OPEN) ||
+        response.includes(TOOL_CLOSE) ||
+        response.includes(RESPONSE_OPEN) ||
+        response.includes(RESPONSE_CLOSE) ||
+        _protocolState !== PROTOCOL_STATES.IDLE ||
+        hasPendingPartial  // NEW: If we have a pending partial, treat as protocol
+      );
+
+      // Check if response ends with a partial delimiter (e.g., "<luna_" or "<luna_tool_call")
+      // This prevents emitting partial delimiters as response_delta during streaming
+      const toolPartial = response ? findPartialMatch(response, TOOL_OPEN) : null;
+      const responsePartial = response ? findPartialMatch(response, RESPONSE_OPEN) : null;
+      const hasPartialDelimiter = response && !hasProtocolDelimiter && (
+        toolPartial !== null ||
+        responsePartial !== null
+      );
+
+      // DIAGNOSTIC LOGS - Phase A: Partial delimiter investigation
+      if (response) {
+        console.log(`[PARTIAL_PROTOCOL] time=${Date.now()} channel=OUTPUT text="${response.substring(0, 100)}" hasPendingPartial=${hasPendingPartial} hasPartialDelimiter=${hasPartialDelimiter} toolPartial="${toolPartial}" responsePartial="${responsePartial}" parserState=${_protocolState} partialBuffer="${_partialDelimiter}"`);
+      }
+
+      // Only emit response_delta if:
+      // 1. No full protocol delimiter present
+      // 2. No partial delimiter at end of text
+      // 3. No pending partial from previous chunk
+      // 4. Not currently in a protocol state
+      const shouldEmitResponse = response && !hasProtocolDelimiter && !hasPartialDelimiter && (effectiveForceResync || response !== _lastSentResponse);
+      
+      // DIAGNOSTIC LOG - Phase A: Response delta decision
+      if (response) {
+        console.log(`[RESPONSE_DELTA_DECISION] time=${Date.now()} emit=${shouldEmitResponse} reason=${hasProtocolDelimiter ? 'HAS_PROTOCOL_DELIMITER' : hasPartialDelimiter ? 'HAS_PARTIAL_DELIMITER' : hasPendingPartial ? 'HAS_PENDING_PARTIAL' : !shouldEmitResponse ? 'NO_CHANGE_OR_FILTERED' : 'EMITTING'}`);
+      }
+
+      if (shouldEmitResponse) {
+        console.log(`[PROTOCOL][CHANNEL] time=${Date.now()} channel=OUTPUT len=${response.length}`);
         console.log(`[LunaExt DEBUG] emitting response_update len=${response.length}`);
         _lastSentResponse = response;
         emitStreamState(_lastSentThinking, response, true);
       }
 
-      // ── tools / responses ──
+      // ── Delimited Protocol v2.0 ──
+      // Detect tools and responses using semantic envelopes:
+      // <luna_tool_call>...</luna_tool_call> and <luna_response>...</luna_response>
+      // CRITICAL: Only process OUTPUT channel content. THINKING channel never triggers protocol.
+      // Parser handles chunked delimiters and waits for turn end before declaring UNKNOWN.
+      if (response) {
+        // RAW OUTPUT: Log the exact content received by the parser
+        const hasToolDelimiter = response.includes(TOOL_OPEN);
+        const hasResponseDelimiter = response.includes(RESPONSE_OPEN);
+        const rawHash = hashString(response);
+        console.log(`[RAW_OUTPUT] time=${Date.now()} channel=OUTPUT len=${response.length} hash=${rawHash} preview="${response.substring(0, 200)}"`);
+        console.log(`[CLASSIFY] time=${Date.now()} channel=OUTPUT hasTool=${hasToolDelimiter} hasResponse=${hasResponseDelimiter} startsWithTool=${response.startsWith(TOOL_OPEN)} startsWithResponse=${response.startsWith(RESPONSE_OPEN)} parserState=${_protocolState}`);
+        // Handle partial delimiter from previous chunk
+        if (_partialDelimiter && _protocolState === PROTOCOL_STATES.IDLE) {
+          // Check if this chunk completes the delimiter
+          const combined = _partialDelimiter + response;
+          const protocolStart = findProtocolStart(combined);
+          if (protocolStart && !protocolStart.type.includes('partial')) {
+            // Delimiter completed - start buffering
+            _protocolState = protocolStart.type === 'tool' ? PROTOCOL_STATES.TOOL_BUFFERING : PROTOCOL_STATES.RESPONSE_BUFFERING;
+            _protocolType = protocolStart.type;
+            _protocolStartTime = Date.now();
+            _protocolToolId = _protocolType === 'tool' ? generateToolId() : null;
+            _protocolBuffer = '';
+            _partialDelimiter = '';
+            console.log(`[PROTOCOL][${_protocolType.toUpperCase()}_START] time=${_protocolStartTime} toolId=${_protocolToolId}`);
+            queueEvent(`luna_${_protocolType}_start`, { toolId: _protocolToolId, timestamp: _protocolStartTime });
+            // Process remaining content after delimiter
+            response = combined.substring(protocolStart.tag.length);
+          } else if (protocolStart && protocolStart.type.includes('partial')) {
+            // Still partial - accumulate
+            _partialDelimiter = combined;
+            return;
+          } else {
+            // Not a protocol start - emit as unknown and reset
+            _partialDelimiter = '';
+          }
+        }
+
+        // Look for protocol start in current response
+        if (_protocolState === PROTOCOL_STATES.IDLE) {
+          const protocolStart = findProtocolStart(response);
+          if (protocolStart) {
+            if (protocolStart.type.includes('partial')) {
+              // Partial delimiter at end - save for next chunk
+              _partialDelimiter = protocolStart.tag;
+              return;
+            }
+            // Full delimiter found - start buffering
+            _protocolState = protocolStart.type === 'tool' ? PROTOCOL_STATES.TOOL_BUFFERING : PROTOCOL_STATES.RESPONSE_BUFFERING;
+            _protocolType = protocolStart.type;
+            _protocolStartTime = Date.now();
+            _protocolToolId = _protocolType === 'tool' ? generateToolId() : null;
+            _protocolBuffer = '';
+            console.log(`[PROTOCOL][${_protocolType.toUpperCase()}_START] time=${_protocolStartTime} toolId=${_protocolToolId}`);
+            queueEvent(`luna_${_protocolType}_start`, { toolId: _protocolToolId, timestamp: _protocolStartTime });
+            // Remove the opening tag from response
+            response = response.substring(protocolStart.tag.length);
+          }
+        }
+
+        // Buffer content if we're in a protocol
+        if (_protocolState === PROTOCOL_STATES.TOOL_BUFFERING || _protocolState === PROTOCOL_STATES.RESPONSE_BUFFERING) {
+          const closeTag = _protocolType === 'tool' ? TOOL_CLOSE : RESPONSE_CLOSE;
+          const closeIdx = findProtocolClose(response, closeTag);
+
+          if (closeIdx !== -1) {
+            // Close tag found - complete the protocol
+            const content = response.substring(0, closeIdx);
+            _protocolBuffer += content;
+            _protocolState = _protocolType === 'tool' ? PROTOCOL_STATES.TOOL_COMPLETE : PROTOCOL_STATES.RESPONSE_COMPLETE;
+
+            console.log(`[PROTOCOL][${_protocolType.toUpperCase()}_COMPLETE] time=${Date.now()} toolId=${_protocolToolId} bufferSize=${_protocolBuffer.length}`);
+            queueEvent(`luna_${_protocolType}_complete`, { toolId: _protocolToolId, timestamp: Date.now() });
+
+            // Parse and validate
+            _protocolState = PROTOCOL_STATES.VALIDATING;
+            console.log(`[PROTOCOL][PARSE] time=${Date.now()} toolId=${_protocolToolId}`);
+
+            if (_protocolType === 'tool') {
+              try {
+                // v14.0: Use miniJsonRepair before JSON.parse to handle malformed JSON
+                // (e.g., Windows paths with unescaped backslashes from LLM output)
+                let toolCall;
+                try {
+                  toolCall = JSON.parse(_protocolBuffer);
+                } catch (parseErr) {
+                  // Try miniJsonRepair for malformed JSON
+                  console.log(`[PROTOCOL][REPAIR] time=${Date.now()} toolId=${_protocolToolId} error="${parseErr.message}"`);
+                  const repaired = miniJsonRepair(_protocolBuffer);
+                  toolCall = JSON.parse(repaired);
+                  console.log(`[PROTOCOL][REPAIRED] time=${Date.now()} toolId=${_protocolToolId}`);
+                }
+                console.log(`[PROTOCOL][VALIDATE] time=${Date.now()} toolId=${_protocolToolId} tool=${toolCall.name}`);
+
+                // Validate required fields (name and arguments)
+                if (toolCall.name && toolCall.arguments) {
+                  // FASE A: Check if this tool has already been processed this turn
+                  const toolHash = hashString(_protocolBuffer);
+                  if (_processedToolHashes.has(toolHash)) {
+                    console.log(`[PROTOCOL][DEDUP] time=${Date.now()} tool=${toolCall.name} hash=${toolHash} reason=already_processed`);
+                    resetProtocol();
+                    return;
+                  }
+                  // Mark this tool as processed
+                  _processedToolHashes.add(toolHash);
+                  
+                  _protocolState = PROTOCOL_STATES.READY;
+                  console.log(`[PROTOCOL][READY] time=${Date.now()} toolId=${_protocolToolId} tool=${toolCall.name} hash=${toolHash}`);
+
+                  // Emit tool_call_detected event with protocol metadata
+                  queueEvent('luna_tool_call_complete', {
+                    toolCall: { name: toolCall.name, arguments: toolCall.arguments },
+                    rescued: false,
+                    protocol: 'delimited',
+                    toolId: _protocolToolId,
+                    channel: 'OUTPUT'
+                  });
+
+                  // Also emit as tool_call_detected for backward compatibility
+                  queueEvent('tool_call_detected', {
+                    tool: toolCall.name,
+                    params: toolCall.arguments,
+                    rescued: false,
+                    protocol: 'delimited',
+                    toolId: _protocolToolId,
+                    channel: 'OUTPUT'
+                  });
+
+                  // Mark that a valid protocol was detected this turn
+                  _protocolDetectedThisTurn = true;
+                  
+                  // FASE B: Activate V2 authority for tools
+                  _v2AuthorityActive = true;
+                  _v2AuthorityType = 'tool';
+                  console.log(`[PROTOCOL][V2_AUTHORITY] time=${Date.now()} type=tool tool=${toolCall.name}`);
+
+                  console.log(`[PROTOCOL][EMIT] time=${Date.now()} toolId=${_protocolToolId} tool=${toolCall.name}`);
+                } else {
+                  console.log(`[PROTOCOL][ERROR] time=${Date.now()} toolId=${_protocolToolId} error="missing name or arguments"`);
+                  queueEvent('luna_unknown_output', { text: _protocolBuffer, error: 'missing name or arguments' });
+                }
+              } catch (e) {
+                console.log(`[PROTOCOL][ERROR] time=${Date.now()} toolId=${_protocolToolId} error="invalid JSON: ${e.message}"`);
+                queueEvent('luna_unknown_output', { text: _protocolBuffer, error: `invalid JSON: ${e.message}` });
+              }
+            } else {
+              // Response protocol
+              _protocolState = PROTOCOL_STATES.READY;
+              console.log(`[PROTOCOL][RESPONSE_READY] time=${Date.now()} bufferSize=${_protocolBuffer.length}`);
+
+              // Emit response_complete event
+              queueEvent('luna_response_complete', {
+                response: _protocolBuffer,
+                protocol: 'delimited',
+                channel: 'OUTPUT'
+              });
+
+              // Mark that a valid protocol was detected this turn
+              _protocolDetectedThisTurn = true;
+              
+              // FASE B: Activate V2 authority for responses
+              _v2AuthorityActive = true;
+              _v2AuthorityType = 'response';
+              console.log(`[PROTOCOL][V2_AUTHORITY] time=${Date.now()} type=response`);
+
+              console.log(`[PROTOCOL][EMIT] time=${Date.now()} type=response`);
+            }
+
+            // Reset protocol state
+            resetProtocol();
+          } else {
+            // Still buffering - accumulate content
+            _protocolBuffer += response;
+            console.log(`[PROTOCOL][BUFFERING] time=${Date.now()} toolId=${_protocolToolId} bufferSize=${_protocolBuffer.length}`);
+          }
+        }
+      }
+
+      // ── tools / responses (legacy path) ──
       // v13.0 (F1.5'): executable tool calls are NEVER emitted mid-stream.
       // A mid-stream block is legitimately incomplete; auto-closing it with
       // miniJsonRepair produced syntactically valid but semantically truncated
@@ -842,17 +1185,28 @@
       // stream_end — the model ends its turn right after writing the tool JSON
       // (it needs the result), so the final block is naturally complete.
       // {"response": ...} blocks are not executable and keep flowing mid-stream.
-      const jsonBlocks = detectJsonBlocks(assistant, thinkingContainer, /* allowRepair */ false);
-      if (_streamEndEmitted) {
-        emitFinalToolCalls(assistant, jsonBlocks);
-      }
-      for (const resp of jsonBlocks.responses) {
-        const key = hashString(String(resp.response));
-        if (_detectedResponseKeys.get(key) !== assistant) {
-          _detectedResponseKeys.set(key, assistant);
-          queueEvent('tool_response_detected', { response: resp.response });
-          queueEvent('json_block_added', { actions: [], responses: [{ response: resp.response }] });
+      
+      // FASE B: V2 Authority Gate - skip legacy if V2 is active
+      if (!isV2BlockingLegacy('tool')) {
+        const jsonBlocks = detectJsonBlocks(assistant, thinkingContainer, /* allowRepair */ false);
+        if (_streamEndEmitted) {
+          emitFinalToolCalls(assistant, jsonBlocks);
         }
+      } else {
+        console.log(`[V2_AUTHORITY][BLOCKED] time=${Date.now()} reason=legacy_tool_blocked_by_v2`);
+      }
+      
+      if (!isV2BlockingLegacy('response')) {
+        for (const resp of jsonBlocks.responses) {
+          const key = hashString(String(resp.response));
+          if (_detectedResponseKeys.get(key) !== assistant) {
+            _detectedResponseKeys.set(key, assistant);
+            queueEvent('tool_response_detected', { response: resp.response });
+            queueEvent('json_block_added', { actions: [], responses: [{ response: resp.response }] });
+          }
+        }
+      } else {
+        console.log(`[V2_AUTHORITY][BLOCKED] time=${Date.now()} reason=legacy_response_blocked_by_v2`);
       }
 
       // ── stream end detection ──
@@ -875,6 +1229,16 @@
           _streamEndEmitted = true;
           _pendingButtonEndAt = 0;
           emitFinalToolCalls(assistant); // v13.0 (F1.5'): final scan, no repair
+
+          // Check if a valid protocol was detected this turn
+          // If not, emit UNKNOWN_OUTPUT (only when turn ends without protocol)
+          if (!_protocolDetectedThisTurn && _lastSentResponse.length > 0) {
+            console.log(`[PROTOCOL][UNKNOWN_OUTPUT] time=${Date.now()} reason="turn ended without valid protocol" responseLength=${_lastSentResponse.length}`);
+            queueEvent('luna_unknown_output', {
+              text: _lastSentResponse,
+              reason: 'turn ended without valid protocol'
+            });
+          }
         }
       }
       _wasStreaming = nowStreaming;
@@ -895,6 +1259,16 @@
         });
         _streamEndEmitted = true;
         emitFinalToolCalls(assistant); // v13.0 (F1.5'): final scan, no repair
+
+        // Check if a valid protocol was detected this turn
+        // If not, emit UNKNOWN_OUTPUT (only when turn ends without protocol)
+        if (!_protocolDetectedThisTurn && _lastSentResponse.length > 0) {
+          console.log(`[PROTOCOL][UNKNOWN_OUTPUT] time=${Date.now()} reason="turn ended without valid protocol" responseLength=${_lastSentResponse.length}`);
+          queueEvent('luna_unknown_output', {
+            text: _lastSentResponse,
+            reason: 'turn ended without valid protocol'
+          });
+        }
       }
 
       // ── button state changes ──
@@ -1037,5 +1411,23 @@
   }
 
   queueEvent('observer_ready', { url: window.location.href, version: VERSION });
+  // SENTINEL: Envia através do pipeline para o servidor
+  queueEvent('luna_build_sentinel', {
+    sentinel: BUILD_SENTINEL,
+    extensionUrl: EXTENSION_URL,
+    version: VERSION,
+    timestamp: Date.now()
+  });
+
+  // PERIODIC SENTINEL: Emite a cada 30 segundos para provar que o código está rodando
+  setInterval(() => {
+    queueEvent('luna_build_sentinel', {
+      sentinel: BUILD_SENTINEL + '_PERIODIC',
+      extensionUrl: EXTENSION_URL,
+      version: VERSION,
+      timestamp: Date.now()
+    });
+  }, 30000);
+
   console.log(`[Luna Injected] v${VERSION} active — mirroring Kimi UI every ${POLL_MS}ms`);
 })();

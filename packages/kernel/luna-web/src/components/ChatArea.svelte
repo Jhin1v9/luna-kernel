@@ -140,18 +140,33 @@
     const text = forceText !== null ? forceText : responseBuffer;
     if (!text || !text.trim()) return;
 
+    // DIAGNOSTIC: Log input
+    const inputHash = hashContent(text.trim());
+    console.log(`[UI_RESPONSE_TRACE][INPUT] length=${text.length} hash=${inputHash} first100="${text.substring(0, 100)}" last100="${text.substring(text.length - 100)}"`);
+
     // v9.0-fix: Strip tool blocks using the same logic as AssistantMessage
     let cleanText = stripToolBlocksFromBuffer(text);
+    
+    // DIAGNOSTIC: Log after strip
+    const afterStripHash = hashContent(cleanText.trim());
+    console.log(`[UI_RESPONSE_TRACE][AFTER_STRIP] length=${cleanText.length} hash=${afterStripHash} first100="${cleanText.substring(0, 100)}" last100="${cleanText.substring(cleanText.length - 100)}"`);
+    
     // v8.5-fix: removed aggressive meaningfulContent check that discarded short replies
     if (!cleanText || !cleanText.trim()) {
       if (forceText !== null) responseBuffer = '';
+      console.log(`[UI_RESPONSE_TRACE][EMPTY_AFTER_STRIP] text was empty after strip`);
       return;
     }
 
     // v9.1-fix: Deduplicate by content hash — prevents duplicate messages from multiple SSE events
     // (response_delta + response_detected + done can all carry the same text)
     const contentHash = hashContent(cleanText.trim());
+    
+    // DIAGNOSTIC: Log before dedup
+    console.log(`[UI_RESPONSE_TRACE][BEFORE_DEDUP] length=${cleanText.length} hash=${contentHash}`);
+    
     if (flushedContentHashes.has(contentHash)) {
+      console.log(`[UI_RESPONSE_TRACE][DEDUP] rejected reason=hash_already_exists hash=${contentHash}`);
       console.log('[flushResponseBuffer] Duplicate content hash detected, skipping');
       // Wave 1 Fix C1: content is already rendered — clear the buffer on the
       // delta path too, so a replayed prefix can't be re-appended by later deltas.
@@ -170,17 +185,22 @@
       return existing === cleanText.trim() || existing.includes(cleanText.trim());
     });
     if (isDuplicate) {
+      console.log(`[UI_RESPONSE_TRACE][DEDUP] rejected reason=content_already_exists hash=${contentHash}`);
       console.log('[flushResponseBuffer] Content already exists in recent assistant message, skipping');
       responseBuffer = ''; // Wave 1 Fix C1: same hardening as the hash guard above
       return;
     }
 
+    console.log(`[UI_RESPONSE_TRACE][DEDUP] accepted hash=${contentHash}`);
     flushedContentHashes.add(contentHash);
     // v8.5-fix: Eviction when Set grows too large
     if (flushedContentHashes.size > 1000) {
       const iter = flushedContentHashes.values();
       flushedContentHashes.delete(iter.next().value);
     }
+
+    // DIAGNOSTIC: Log message creation
+    console.log(`[UI_RESPONSE_TRACE][MESSAGE_CREATE] length=${cleanText.length} hash=${contentHash} first100="${cleanText.substring(0, 100)}" last100="${cleanText.substring(cleanText.length - 100)}"`);
 
     if (!currentAssistantId) {
       currentAssistantId = 'resp-' + Date.now();

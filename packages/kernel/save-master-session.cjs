@@ -9,7 +9,7 @@ const MASTER_LOCALSTORAGE = path.join(COOKIES_DIR, 'kimi-master-localstorage.jso
 (async () => {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
   const ctx = browser.contexts()[0];
-  const page = ctx.pages().find(p => p.url().includes('kimi.com'));
+  const page = ctx.pages().find(p => p.url().includes('kimi.ai'));
   
   if (!page) {
     console.log('No Kimi page found');

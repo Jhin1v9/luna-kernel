@@ -11,6 +11,13 @@
  * - Event emitter para adapters (CLI, Telegram) receberem updates
  */
 
+// v2.0: Protocol mode feature flag
+// 'legacy' = old JSON code blocks
+// 'v2' = new delimited protocol (luna_tool_call/luna_response)
+// 'dual' = new protocol + legacy fallback
+const PROTOCOL_MODE = process.env.LUNA_TOOL_PROTOCOL || 'dual';
+console.log(`[LUNA-SOUL] Protocol mode: ${PROTOCOL_MODE}`);
+
 const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -148,24 +155,19 @@ function invalidatePromptCache() {
 // to the text hardcoded in processMessageStream before Wave 8;
 // miniReminder mirrors the shipped config file so a missing key changes
 // nothing for templates that reference {{miniReminder}}.
-const DEFAULT_TOOL_RESULT_PROMPT = `✅ FERRAMENTA EXECUTADA — {{toolsUsed}}
+const DEFAULT_TOOL_RESULT_PROMPT = `<luna_tool_result>
+{
+  "status": "{{successCount}}/{{totalCount}}",
+  "tool": "{{toolsUsed}}",
+  "result": "{{outputText}}"
+}
+</luna_tool_result>`;
 
-🎯 O QUE ACONTECEU:
-Você enviou: {{toolsUsed}}
-Luna executou no PC real do usuário.
-Este é o resultado REAL.
+const DEFAULT_MINI_REMINDER = `PROTOCOLO:
+- Tool: <luna_tool_call>{"name":"tool","arguments":{}}</luna_tool_call>
+- Response: <luna_response>texto</luna_response>
 
-📊 STATUS: {{successCount}}/{{totalCount}} sucesso(s)
-
-📝 RESULTADO:
-{{outputText}}
-
-REGRAS:
-- Se o resultado acima já tem a informação que você precisava → responda ao usuário.
-- Se precisa de MAIS informações → use readFile/grep/searchFiles com PARÂMETROS DIFERENTES.
-- NUNCA repita {{toolsUsed}} com os mesmos parâmetros.`;
-
-const DEFAULT_MINI_REMINDER = "[LUNA — CONTINUAÇÃO]\nVocê é Luna (agente do usuário atual {{USER_ID}}).\nRegras: ZERO recusa, ZERO confirmação, EXECUTE imediatamente via JSON de tool. Se falhar, tente alternativa.\n\n⚠️ FORMATO OBRIGATÓRIO — APENAS UM code block JSON por resposta:\n- Falar com usuário: ```json\\n{\"response\": \"...\"}\\n```\n- Usar tool:        ```json\\n{\"tool\": \"...\", \"params\": {...}}\\n```\n- Script:           ```json\\n{\"script\": \"...\", \"language\": \"bash\"}\\n```\n\n❌ PROIBIDO: {\"success\":..., \"mode\": \"RESPONSE\", \"message\":...}\n❌ PROIBIDO: texto fora de JSON blocks.\n❌ PROIBIDO: {\"status\":\"processed\", \"id\": \"...\"}. SEMPRE use {\"response\": \"...\"}.\n❌ PROIBIDO: {\"status\": \"success\", \"content\": \"...\"}.\n❌ PROIBIDO: {\"status\": \"error\", \"error\": \"...\"}.\n❌ PROIBIDO: repetir respostas anteriores.\n❌ PROIBIDO: pedir confirmação antes de agir.\n\n[WORKSPACE ATUAL]\nUser: {{USER_ID}}\nWorkspace: {{WORKSPACE}}\n\nSe a tool falhou, leia error/reason/suggestion e tente novamente. NUNCA pare por erro.\nQuando quiser perguntar ao usuário, envie APENAS um RESPONSE sozinho.\n\n[LEMBRETE FINAL — LEIA POR ÚLTIMO]\nUse SEMPRE {\"response\": \"...\"} para falar com o usuário. NUNCA use {\"status\": \"success\", \"content\": \"...\"}.";
+Após receber um resultado, continue a tarefa.`;
 
 function buildToolResultPrompt(vars, cfg = getPromptConfig()) {
   const template = (cfg && typeof cfg.toolResultPrompt === 'string' && cfg.toolResultPrompt)
@@ -471,6 +473,17 @@ ${masterPrompt || '(master prompt not loaded)'}
 function _tryExtractRawToolJson(text) {
   if (!text || typeof text !== 'string') return null;
   const trimmed = text.trim();
+
+  // v14.0: Skip if the text contains v2 protocol delimiters
+  // The new protocol is handled by the injected.js parser and should not be
+  // processed by the legacy JSON parser.
+  if (trimmed.includes('<luna_tool_call>') || trimmed.includes('</luna_tool_call>')) {
+    return null;
+  }
+  if (trimmed.includes('<luna_response>') || trimmed.includes('</luna_response>')) {
+    return null;
+  }
+
   // Intent gate: the whole response must BE a JSON payload. Prose that merely
   // embeds JSON must never match.
   const intendedJson = trimmed.startsWith('{') || /^```(?:json)?(?:\s|$)/i.test(trimmed);
@@ -2726,6 +2739,53 @@ class LunaSoul extends EventEmitter {
       const domActionResults = [];      // v10.13: Background action promises for non-blocking execution
       const domActionPromises = [];      // v10.13: EventBus for async tool results during stream consumption
       const eventBus = new EventBus();      // v12.6-fix: per-turn dedup — the bridge may deliver the same logical tool      // from multiple detection sources (network interceptor, DOM structure,      // extension). Only the first detection starts a card/execution; later ones      // are silently ignored so 1 Kimi tool always maps to 1 Luna card.      const startedToolHashes = new Set();
+      // v14.0: Track if response was handled by delimited protocol
+      let v2ResponseHandled = false;
+      // v14.0: Track if V2 response is complete (for immediate turn termination)
+      let v2ResponseComplete = false;
+      // v14.0: Watchdog for stream stall detection
+      let lastProgressTime = Date.now();
+      const WATCHDOG_TIMEOUT_MS = 60000; // 60 seconds
+      let watchdogTimer = null;
+
+      // Start watchdog timer
+      watchdogTimer = setInterval(() => {
+        if (Date.now() - lastProgressTime > WATCHDOG_TIMEOUT_MS) {
+          console.log(`[WATCHDOG][STREAM_STALLED] time=${Date.now()} elapsed=${Date.now() - lastProgressTime}ms`);
+          // The watchdog will be cleared when the stream ends or completes
+        }
+      }, 10000); // Check every 10 seconds
+
+      // FASE C: UI Event Boundary - typed semantic events only
+      // The UI receives ONLY classified events, never raw model output.
+      // If a protocol tag reaches this point, it's a PROTOCOL LEAK.
+      const VALID_UI_EVENT_TYPES = new Set([
+        'thinking_start', 'thinking_delta', 'thinking_update',
+        'response_delta', 'response_detected', 'response_done',
+        'action_start', 'action_progress', 'action_end',
+        'done', 'system', 'error', 'confirmation_required', 'mode_detected',
+        'can_steer', 'waiting'
+      ]);
+
+      const mapRuntimeEventToUiEvent = (event) => {
+        if (!event) return null;
+
+        // Only allow known semantic event types
+        if (!VALID_UI_EVENT_TYPES.has(event.type)) {
+          console.error(`[UI_BOUNDARY][UNKNOWN_TYPE] time=${Date.now()} type=${event.type} — blocked`);
+          return null;
+        }
+
+        // PROTOCOL LEAK detection: if classified event still contains protocol tags
+        const text = event.text || event.fullText || event.response || '';
+        if (text.includes('<luna_tool_call>') || text.includes('</luna_tool_call>') ||
+            text.includes('<luna_response>') || text.includes('</luna_response>')) {
+          console.error(`[UI_BOUNDARY][PROTOCOL_LEAK] time=${Date.now()} type=${event.type} text_preview="${text.substring(0, 100)}"`);
+          // Don't block — log for diagnosis. The protocol parser should have stripped these.
+        }
+
+        return event;
+      };
 
       yield { type: 'thinking_start', sessionId };
 
@@ -2755,6 +2815,9 @@ class LunaSoul extends EventEmitter {
           const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: forceNewChat, isAutoContinue: safety > 1 }, provider);
 
           for await (const event of stream) {
+            // v14.0: Reset watchdog on each event
+            lastProgressTime = Date.now();
+
             // v10.13: Drain any completed background actions BEFORE processing stream event
             // This ensures action_end events reach the frontend as soon as tools complete
             while (eventBus.queue.length > 0) {
@@ -2792,7 +2855,9 @@ class LunaSoul extends EventEmitter {
               // _stripJsonResponseWrapper converts them to friendly text.
               let cleanText = this._stripJsonResponseWrapper(event.text || '');
               fullResponse += cleanText;
-              yield { type: 'response_delta', text: cleanText, fullResponse, sessionId };
+              // FASE C: UI Event Mapper - filter protocol tags
+              const responseDeltaEvent = mapRuntimeEventToUiEvent({ type: 'response_delta', text: cleanText, fullResponse, sessionId });
+              if (responseDeltaEvent) yield responseDeltaEvent;
               break;
             }
 
@@ -2807,6 +2872,11 @@ class LunaSoul extends EventEmitter {
 
             // v5.3: REAL-TIME JSON response streaming — show response immediately
             case 'response_detected': {
+              // v14.0: Skip if response was already handled by delimited protocol
+              if (v2ResponseHandled) {
+                console.log(`[PROTOCOL][SKIP_LEGACY] time=${Date.now()} reason="response already handled by v2 protocol"`);
+                break;
+              }
               // v10.35-fix: Centralize JSON wrapper / status-object stripping.
               let respText = this._stripJsonResponseWrapper(event.response || '');
               if (respText) {
@@ -2822,22 +2892,29 @@ class LunaSoul extends EventEmitter {
               // Kimi's sandbox result is captured as metadata for comparison/fallback only.
               // v10.13: NON-BLOCKING — tools execute in background so stream keeps flowing
               // v10.24-fix: Deduplicate via cache and emit stable toolInstanceId.
+              // v14.0: Delimited protocol tools execute immediately without waiting for stream_end
               const code = event.code || '';
               const kimiResult = event.kimiResult || '';
               const kimiImages = event.kimiImages || [];
+              const isDelimitedProtocol = event.source === 'delimited_protocol' || event.immediate === true;
 
               // v13.0 (F1.5'): last line of defense — NEVER execute a tool call
               // whose JSON was auto-closed by repair mid-stream (rescued) or
               // whose raw source block fails the completeness check. The bridge
               // already drops rescued events; this catches anything that slips
               // through another detection path.
-              if (event.action?.__rescued === true || event.rescued === true) {
-                log.warn(`[LUNA-SOUL] Refusing rescued (repaired mid-stream) tool call: ${event.action?.tool || 'unknown'}`);
-                break;
-              }
-              if (code && code.includes('{') && !isBalancedJson(code)) {
-                log.warn(`[LUNA-SOUL] Refusing tool call with incomplete JSON block (${code.length} chars): ${event.action?.tool || 'unknown'}`);
-                break;
+              // v14.0: Delimited protocol tools are always complete (START+END verified)
+              if (!isDelimitedProtocol) {
+                if (event.action?.__rescued === true || event.rescued === true) {
+                  log.warn(`[LUNA-SOUL] Refusing rescued (repaired mid-stream) tool call: ${event.action?.tool || 'unknown'}`);
+                  break;
+                }
+                if (code && code.includes('{') && !isBalancedJson(code)) {
+                  log.warn(`[LUNA-SOUL] Refusing tool call with incomplete JSON block (${code.length} chars): ${event.action?.tool || 'unknown'}`);
+                  break;
+                }
+              } else {
+                console.log(`[TOOL_PROTOCOL][EXECUTING] time=${Date.now()} tool=${event.action?.tool || 'unknown'} toolId=${event.toolId} source=delimited_protocol`);
               }
 
               // v8.5-fix: normalize flat JSON params into event.action.params
@@ -2895,6 +2972,8 @@ class LunaSoul extends EventEmitter {
                 kimiImages,
               };
               domActionResults.push(domResult);
+              // TRACE: log tool execution start
+              console.log(`[TRACE][TOOL_STARTED] time=${Date.now()} tool=${parsedAction.tool} sessionId=${sessionId} toolInstanceId=${toolInstanceId}`);
 
               // v10.13: Fire-and-forget execution — push results to eventBus
               const actionPromise = this._executeActionAsync(parsedAction, sessionId, options, toolHash, toolInstanceId, kimiResult, kimiImages, event.source || 'dom_mirror', eventBus, domResult);
@@ -2904,6 +2983,117 @@ class LunaSoul extends EventEmitter {
               domActionPromises.push(actionPromise);
 
               break;
+            }
+
+            case 'luna_tool_call_complete': {
+              // v2.0: Delimited protocol - tool call complete
+              // This is the new primary path for tool detection
+              if (event.toolCall) {
+                const toolName = event.toolCall.name;
+                const toolArgs = event.toolCall.arguments || {};
+
+                console.log(`[PROTOCOL][TOOL_RECEIVED] time=${Date.now()} tool=${toolName} toolId=${event.toolId} source=delimited`);
+
+                // Use the same logic as action_detected
+                const parsedActionTool = toolName;
+                const parsedActionParams = toolArgs;
+                const toolKey = `${parsedActionTool}:${JSON.stringify(normalizeParams(parsedActionTool, parsedActionParams))}`;
+                const toolHash = require('crypto').createHash('sha256').update(toolKey).digest('hex').slice(0, 16);
+
+                if (startedToolHashes.has(toolHash)) {
+                  console.log(`[LUNA-SOUL] Duplicate luna_tool_call_complete dropped within turn: ${parsedActionTool}`);
+                  break;
+                }
+                startedToolHashes.add(toolHash);
+
+                const toolInstanceId = nextToolEventId();
+                const parsedAction = {
+                  mode: 'ACTION',
+                  tool: toolName,
+                  params: toolArgs,
+                };
+
+                // Check cache for duplicates
+                const cachedResult = isMutatingToolCall(parsedAction.tool, parsedAction.params) ? this._getRecentActionResult(sessionId, toolHash) : null;
+                if (cachedResult) {
+                  console.log(`[LUNA] Skipping duplicate action (cached): ${parsedAction.tool}`);
+                  yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: 'delimited_protocol', sessionId, cached: true };
+                  const cachedEndEvent = { type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: cachedResult, source: 'delimited_protocol', sessionId, cached: true };
+                  eventBus.push(cachedEndEvent);
+                  eventBus.push(cachedResult);
+                  domActionResults.push({ tool: parsedAction.tool, result: cachedResult, cached: true });
+                  break;
+                }
+
+                yield { type: 'action_start', toolInstanceId, tool: parsedAction.tool, params: parsedAction.params, source: 'delimited_protocol', sessionId };
+
+                // Create placeholder result
+                const domResult = {
+                  tool: parsedAction.tool,
+                  result: null,
+                  code: null,
+                  kimiResult: '',
+                  kimiImages: [],
+                };
+                domActionResults.push(domResult);
+
+                console.log(`[TRACE][TOOL_STARTED] time=${Date.now()} tool=${parsedAction.tool} sessionId=${sessionId} toolInstanceId=${toolInstanceId} source=delimited_protocol`);
+
+                // Execute tool
+                const actionPromise = this._executeActionAsync(parsedAction, sessionId, options, toolHash, toolInstanceId, '', [], 'delimited_protocol', eventBus, domResult);
+                actionPromise._toolName = parsedAction.tool;
+                actionPromise._domResult = domResult;
+                domActionPromises.push(actionPromise);
+              }
+              break;
+            }
+
+            case 'luna_response_complete': {
+              // v2.0: Delimited protocol - response complete
+              if (event.response !== undefined) {
+                // Strip the <luna_response> wrapper from the response
+                let cleanResponse = event.response;
+                if (cleanResponse.startsWith('<luna_response>')) {
+                  cleanResponse = cleanResponse.substring('<luna_response>'.length);
+                }
+                if (cleanResponse.endsWith('</luna_response>')) {
+                  cleanResponse = cleanResponse.substring(0, cleanResponse.length - '</luna_response>'.length);
+                }
+                cleanResponse = cleanResponse.trim();
+
+                console.log(`[PROTO][RESPONSE_COMPLETE] time=${Date.now()} length=${cleanResponse.length} source=delimited`);
+                fullResponse = cleanResponse;
+                v2ResponseHandled = true;
+                v2ResponseComplete = true; // Mark V2 response as complete
+
+                // Emit response_detected for frontend
+                yield { type: 'response_detected', text: cleanResponse, source: 'delimited_protocol', sessionId };
+
+                // PROTOCOL COMPLETION: Cancel stream immediately
+                // The V2 protocol is the authority - don't wait for stream_end
+                console.log(`[PROTO][STREAM_CANCEL_REQUESTED] time=${Date.now()} reason=v2_response_complete`);
+                try {
+                  await this.kimiBridge.cancelStream(userId, true); // soft-cancel: stop Kimi, drain queue
+                  console.log(`[PROTO][STREAM_CANCELLED] time=${Date.now()}`);
+                } catch (cancelErr) {
+                  console.log(`[PROTO][STREAM_CANCEL_ERROR] time=${Date.now()} error=${cancelErr.message}`);
+                }
+              }
+              break;
+            }
+
+            case 'luna_unknown_output': {
+              // v2.0: Delimited protocol - unknown output (turn ended without protocol)
+              console.log(`[PROTOCOL][UNKNOWN_RECEIVED] time=${Date.now()} reason=${event.reason} textLength=${event.text?.length || 0}`);
+              // Emit format repair prompt
+              loopInput = 'Formato de saída não reconhecido. Use exatamente um destes formatos:\n\n<luna_tool_call>\n{"name":"tool","arguments":{}}\n</luna_tool_call>\n\nou\n\n<luna_response>\ntexto\n</luna_response>';
+              try {
+                loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
+              } catch (ctxErr) {
+                console.error(`[LUNA-SOUL] _buildContext failed for unknown output: ${ctxErr.message}`);
+              }
+              // Continue loop to get corrected response
+              continue;
             }
 
             case 'context_limit': {
@@ -3093,8 +3283,13 @@ class LunaSoul extends EventEmitter {
         }
 
         console.error(`[LUNA-SOUL] Stream error: ${err.message} (provider=${options.provider || 'kimi'})`);
+        // v14.0: Clear watchdog timer on error
+        if (watchdogTimer) {
+          clearInterval(watchdogTimer);
+          watchdogTimer = null;
+        }
         if (err.message === 'KIMI_LOGIN_REQUIRED') {
-          yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.com e faça login.', sessionId };
+          yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.ai e faça login.', sessionId };
         } else {
           yield { type: 'error', error: err.message, sessionId };
           // W6-T4: consumers that key turn-end off `done` only must still see a terminal event
@@ -3104,6 +3299,11 @@ class LunaSoul extends EventEmitter {
       }
 
       streamSuccess = true; // Mark success to exit retry loop
+      // v14.0: Clear watchdog timer on successful stream completion
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
       } // end while retry loop
 
       // v10.32: Regex fallback for context limit removed.
@@ -3128,6 +3328,22 @@ class LunaSoul extends EventEmitter {
         yield { type: 'error', error: 'Empty response from provider', sessionId };
         yield { type: 'system', message: 'O provedor não respondeu — tente reenviar sua mensagem.', sessionId };
         yield { type: 'done', result: { success: false, mode: 'CHAT', response: '', sessionId }, sessionId };
+        return;
+      }
+
+      // v14.0: PROTOCOL COMPLETION — V2 response detected
+      // If the V2 protocol detected a complete response, emit done immediately
+      // without waiting for stream_end or completion_candidate
+      if (v2ResponseComplete) {
+        // Clear watchdog timer
+        if (watchdogTimer) {
+          clearInterval(watchdogTimer);
+          watchdogTimer = null;
+        }
+        console.log(`[PROTO][TURN_COMPLETE] time=${Date.now()} reason=v2_response_complete responseLength=${fullResponse.length}`);
+        yield { type: 'response_detected', text: fullResponse, source: 'delimited_protocol', sessionId };
+        yield { type: 'done', result: { success: true, mode: 'CHAT', response: fullResponse, sessionId }, sessionId };
+        console.log(`[PROTO][IS_STREAMING_FALSE] time=${Date.now()}`);
         return;
       }
 
@@ -3313,8 +3529,12 @@ class LunaSoul extends EventEmitter {
           totalCount: String(totalCount),
           outputText: `${outputText}${fixInstructions}`,
         });
+        // TRACE: log result created with payload size
+        console.log(`[TRACE][RESULT_CREATED] time=${Date.now()} sessionId=${sessionId} toolsUsed=${toolsUsed} payloadSize=${loopInput.length} successCount=${successCount} totalCount=${totalCount}`);
         // Always use mini-reminder for tool results (thread already has full prompt)
         loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
+        // TRACE: log result submit started (about to call sendMessageStream)
+        console.log(`[TRACE][RESULT_SUBMIT_STARTED] time=${Date.now()} sessionId=${sessionId} promptSize=${loopContext.prompt.length}`);
         // v12.6-fix: DOM action results have been folded into loopInput; do not
         // carry them into the next iteration. Otherwise the next CHAT response is
         // treated as non-pure-chat (domActionResults.length > 0) and becomes
@@ -3414,7 +3634,9 @@ class LunaSoul extends EventEmitter {
 
             case 'thinking_delta':
               fullThinking += event.text;
-              yield { type: 'thinking_delta', text: event.text, fullThinking, sessionId };
+              // FASE C: UI Event Mapper - filter protocol tags
+              const thinkingDeltaEvent = mapRuntimeEventToUiEvent({ type: 'thinking_delta', text: event.text, fullThinking, sessionId });
+              if (thinkingDeltaEvent) yield thinkingDeltaEvent;
               break;
 
             case 'response_delta': {
@@ -3544,7 +3766,7 @@ class LunaSoul extends EventEmitter {
         return;
       }
       if (err.message === 'KIMI_LOGIN_REQUIRED') {
-        yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.com e faça login.', sessionId };
+        yield { type: 'login_required', message: '🔐 Você precisa logar primeiro no Kimi Web. Abra o Chrome em https://kimi.ai e faça login.', sessionId };
       } else {
         yield { type: 'error', error: err.message, sessionId };
       }
@@ -4384,8 +4606,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       let systemPrompt;
 
       if (isToolResult) {
-        // v10.21-fix: tool-loop prompt only contains history + tool result + short instruction
-        const defaultToolLoopTemplate = `🔄 RESULTADO DA FERRAMENTA:\n{{toolResult}}\n\nResponda com APENAS UM code block JSON ({"response"}/{"tool"}/{"script"}). NUNCA repita a ferramenta anterior com os mesmos parâmetros.`;
+        // v10.21-fix: tool-loop prompt only contains tool result
+        const defaultToolLoopTemplate = `{{toolResult}}`;
         const toolLoopTemplate = (cfg && cfg.prompts && cfg.prompts.toolLoop) ? cfg.prompts.toolLoop : defaultToolLoopTemplate;
         if (toolLoopTemplate.includes('{{miniReminder}}')) miniReminder = buildMiniReminder({ USER_ID: followUpUserId, WORKSPACE: followUpWorkspacePath });
         prompt = interpolateTemplate(toolLoopTemplate, {
@@ -4694,6 +4916,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
       // Update the placeholder result for auto-continue
       domResult.result = actionResult;
+
+      // TRACE: log tool finished with result details
+      console.log(`[TRACE][TOOL_FINISHED] time=${Date.now()} tool=${parsedAction.tool} sessionId=${sessionId} toolInstanceId=${toolInstanceId} success=${actionResult?.success} resultSize=${JSON.stringify(actionResult || '').length}`);
 
       // Push completion events to eventBus
       eventBus.push({ type: 'action_end', toolInstanceId, tool: parsedAction.tool, result: actionResult, source, sessionId });
