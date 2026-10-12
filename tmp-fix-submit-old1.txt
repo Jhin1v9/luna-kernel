@@ -1,6 +1,0 @@
-    const prefix = (text || '').slice(0, 100);
-    // Whitespace-normalized comparison: contenteditable innerText can render
-    // whitespace differently from the inserted string (collapsed runs, NBSP).
-    const normPrefix = prefix.replace(/\s+/g, ' ').trim();
-    const readInput = async () => {
-      if (!normPrefix) return '';

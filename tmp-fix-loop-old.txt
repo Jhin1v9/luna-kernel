@@ -1,5 +1,0 @@
-        // Process all new events in queue
-        while (queue.lastReadIndex < queue.events.length && !stopConsuming) {
-          const ev = queue.events[queue.lastReadIndex++];
-
-          switch (ev.type) {
