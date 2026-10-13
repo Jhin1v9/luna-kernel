@@ -432,11 +432,11 @@ Shell script:
 - NEVER say "não tenho acesso" or "não posso verificar" — you have FULL access INSIDE the active workspace
 - End with a USEFUL action suggestion or question — never generic "posso ajudar?"
 
-[FORMAT — ONLY CODE BLOCKS JSON]
-- Response: \`\`\`json\n{"response": "Your VISUALLY RICH response here with emojis ✨ and markdown **bold** etc"}\n\`\`\`
-- Tool:    \`\`\`json\n{"tool": "...", "params": {...}}\n\`\`\`
+[FORMAT — DOIS FORMATOS ACEITOS (equivalentes, use UM deles)]
+- Response: \`\`\`json\n{"response": "Sua resposta aqui"}\n\`\`\`  — ou —  [[response]]\nSua resposta\n[[/response]]
+- Tool:    \`\`\`json\n{"tool": "...", "params": {...}}\n\`\`\`  — ou —  [[action]]\n{"tool": "...", "params": {...}}\n[[/action]]
 - Script:  \`\`\`json\n{"script": "..."}\n\`\`\`
-NEVER use [[response]], [[action]], [[script]] — OBSOLETE.
+NUNCA use tags XML (<luna_tool_call>, <luna_response>) — nao sao o protocolo oficial.
 NEVER use ipython for file ops — use readFile/writeFile/executeShell.
 ONE tool per message. WAIT for result before next.
 
