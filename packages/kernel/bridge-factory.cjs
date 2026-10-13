@@ -75,7 +75,41 @@ function resolveApiProvider() {
  * quando o provider caía (429/quota), o turno morria sem failover.
  * Modo manual (LUNA_API_*) devolve roda de 1 elemento.
  */
+function carregaRodaDeArquivo(cfgPath) {
+  try {
+    if (!cfgPath || !fs.existsSync(cfgPath)) return null;
+    // injeta keys do .env ao lado do config (só *_API_KEY/*_TOKEN, só se ausentes)
+    const envPath = require('path').join(require('path').dirname(cfgPath), '.env');
+    try {
+      if (fs.existsSync(envPath)) {
+        for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+          const m = line.match(/^([A-Za-z_0-9]+)=(.*)$/);
+          if (!m) continue;
+          if (!/(API_KEY|TOKEN)$/.test(m[1])) continue;
+          if (!process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+        }
+      }
+    } catch { /* env opcional */ }
+    const config = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const roda = (config.providers || [])
+      .filter((p) => p.enabled && p.transport === 'openai' && p.baseUrl && p.model)
+      .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
+      .map((p) => ({ baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKeyEnv ? process.env[p.apiKeyEnv] || null : null, label: 'roda:' + p.id }));
+    if (roda.length) console.log('[BRIDGE-FACTORY] roda standalone em ' + cfgPath + ': ' + roda.map((p) => p.label).join(' → '));
+    return roda.length ? roda : null;
+  } catch (e) {
+    console.warn('[BRIDGE-FACTORY] roda standalone ilegível: ' + e.message);
+    return null;
+  }
+}
+
 function resolveApiRoda() {
+  // 0. roda standalone (VPS / deploy sem luna-agent) — LUNA_RODA_CONFIG aponta pro providers.json
+  if (process.env.LUNA_RODA_CONFIG) {
+    const roda = carregaRodaDeArquivo(process.env.LUNA_RODA_CONFIG);
+    if (roda) return roda;
+    console.warn('[BRIDGE-FACTORY] LUNA_RODA_CONFIG definido mas ilegível/vazio — caindo pros defaults');
+  }
   // 1. manual
   if (process.env.LUNA_API_BASE_URL && process.env.LUNA_API_MODEL) {
     return [{ baseUrl: process.env.LUNA_API_BASE_URL, model: process.env.LUNA_API_MODEL, apiKey: process.env.LUNA_API_KEY || null, label: 'manual' }];
