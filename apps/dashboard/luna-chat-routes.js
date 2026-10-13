@@ -2216,6 +2216,8 @@ router.get('/api/luna-web/providers', (req, res) => {
       manual: { baseUrl: process.env.LUNA_API_BASE_URL || '', model: process.env.LUNA_API_MODEL || '', hasKey: !!process.env.LUNA_API_KEY },
       kernelEnvFallback: { baseUrl: process.env.KIMI_BASE_URL || '', model: process.env.KIMI_MODEL || '', hasKey: !!process.env.KIMI_API_KEY },
       agentsConfigFound: !!found,
+      // provider que esta pensando agora (RodaApiBridge.currentLabel / ApiBridge.label)
+      currentProvider: lunaSoul && lunaSoul.kimiBridge ? (lunaSoul.kimiBridge.currentLabel || lunaSoul.kimiBridge.label || 'cdp') : null,
       roda,
     });
   } catch (e) {

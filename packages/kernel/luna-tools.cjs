@@ -2384,11 +2384,26 @@ async function dashboardSyncEmails(params) {
 // ── WHATSAPP ──
 
 async function dashboardSendWhatsApp(params) {
-  const body = {
-    phone: params.phone || params.number || params.numero || '',
-    message: params.message || params.text || params.mensagem || '',
-  };
-  if (!body.phone || !body.message) return err('Número e mensagem obrigatórios');
+  const phone = params.phone || params.number || params.numero || params.chatId || params.chat || '';
+  const message = params.message || params.text || params.mensagem || '';
+  if (!phone || !message) return err('Número e mensagem obrigatórios');
+  // 1) caminho local: painel :3101 enfileira via pg_notify (funciona com Postgres local)
+  const localBase = process.env.PAINEL_URL || 'http://127.0.0.1:3101';
+  try {
+    const res = await fetch(`${localBase}/api/mensagem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: String(phone), body: String(message).slice(0, 900), sender: 'luna' }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.ok) return ok({ stdout: `💬 WhatsApp enviado para ${phone} (fila local).` });
+    if (data?.error) return err(`Painel local recusou: ${data.error}`);
+  } catch (e) {
+    // cai pro caminho do VPS abaixo
+  }
+  // 2) fallback: pipeline oficial do VPS
+  const body = { phone, message };
   const result_result = await dashboardApi('/whatsapp/send', 'POST', body);
   if (!result_result.success) return result_result;
   const result = result_result.data;
@@ -2853,7 +2868,16 @@ async function dashboardCreateReviewVote(params) {
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Meta-tools v7.2 — listTools/toolInfo vivem em tool-catalog.cjs (fonte da
+// documentação). Require LAZY dentro da função: tool-catalog.cjs exige
+// luna-tools.cjs pra verificação, então require no topo criaria ciclo.
+function listTools(params) { return require('./tool-catalog.cjs').listTools(params); }
+function toolInfo(params) { return require('./tool-catalog.cjs').toolInfo(params); }
+
 module.exports = {
+  // Meta-tools (documentação de tools acessível via tool call)
+  listTools,
+  toolInfo,
   // Aliases for natively-named tools
   web_search: searchWeb,
   webSearch: searchWeb,

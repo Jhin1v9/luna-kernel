@@ -30,6 +30,9 @@ console.log('[DEBUG-LUNA-RESOLVE] kimi-bridge resolved to:', require.resolve('./
 const { KimiBridge } = require('./kimi-bridge.cjs');
 const { ComputerUseEngine } = require('./computer-use-engine.cjs');
 const lunaTools = require('./luna-tools.cjs');
+// v7.2: catálogo completo de tools (com exemplos) interpolado no system
+// prompt via {{TOOL_CATALOG}} — a API sempre enxerga TODAS as tools.
+const { buildToolCatalog, buildToolIndex } = require('./tool-catalog.cjs');
 const { workspaceManager } = require('./luna-workspace.cjs');
 const { LunaGit } = require('./luna-git.cjs');
 const { loadBrainContext } = require('./brain-loader.cjs');
@@ -156,17 +159,29 @@ function invalidatePromptCache() {
 // to the text hardcoded in processMessageStream before Wave 8;
 // miniReminder mirrors the shipped config file so a missing key changes
 // nothing for templates that reference {{miniReminder}}.
-const DEFAULT_TOOL_RESULT_PROMPT = `<luna_tool_result>
+// v7.2: formato neutro [TOOL RESULT] — nada de XML, coerente com o
+// protocolo [[action]] que o modelo emite. (XML no RESULTADO confundia o
+// modelo: ele imitava as tags no OUTPUT.)
+const DEFAULT_TOOL_RESULT_PROMPT = `[TOOL RESULT]
 {
   "status": "{{successCount}}/{{totalCount}}",
   "tool": "{{toolsUsed}}",
   "result": "{{outputText}}"
 }
-</luna_tool_result>`;
+[/TOOL RESULT]`;
 
-const DEFAULT_MINI_REMINDER = `PROTOCOLO:
-- Tool: <luna_tool_call>{"name":"tool","arguments":{}}</luna_tool_call>
-- Response: <luna_response>texto</luna_response>
+// v7.2: mini-reminder alinhado com o protocolo oficial — [[action]] /
+// [[response]] / code block JSON. O texto antigo ensinava <luna_tool_call>,
+// contra-treinando o modelo a cada turno do loop.
+const DEFAULT_MINI_REMINDER = `PROTOCOLO (lembrete):
+- Tool: [[action]]
+{"tool":"nome","params":{}}
+[[/action]]
+- Resposta: [[response]]
+texto
+[[/response]]
+- code block \`\`\`json com {"tool":...} / {"response":...} equivale aos blocos.
+- NUNCA use tags XML (<luna_tool_call>, <luna_response>).
 
 Após receber um resultado, continue a tarefa.`;
 
@@ -381,6 +396,7 @@ function buildSystemPrompt(opts = {}) {
       WORKSPACE: workspacePath,
       WORKSPACE_CONTEXT: workspaceContext,
       BRAIN_CONTEXT: brainContext ? '\n[BRAIN CONTEXT]\n' + brainContext.slice(0, 8000) + (brainContext.length > 8000 ? '\n...[truncated]...' : '') : '',
+      TOOL_INDEX: buildToolIndex().split('{{WORKSPACE}}').join(workspacePath),
     };
     // wave1-fix A1: the config template only interpolates {{WORKSPACE}} — append
     // persona, memories, AGENTS.md and brain context, then the master prompt LAST
@@ -439,6 +455,7 @@ Shell script:
 NUNCA use tags XML (<luna_tool_call>, <luna_response>) — nao sao o protocolo oficial.
 NEVER use ipython for file ops — use readFile/writeFile/executeShell.
 ONE tool per message. WAIT for result before next.
+${buildToolIndex().split('{{WORKSPACE}}').join(workspacePath)}
 
 [CONTEXT]
 Home: ${os.homedir()}/ | Active Workspace: ${workspacePath} | User: ${userId} | Skills: ${skillIndex ? skillIndex.split('\n').length : 0} | Personas: ${personaRegistry ? personaRegistry.split('\n').length : 0}
@@ -2717,6 +2734,7 @@ class LunaSoul extends EventEmitter {
     let loopInput = messageInput;
     let checkAlreadySent = false; // v12.0-fix: single reformat retry (the old string-compare broke once the message carried the raw excerpt)
     let truncatedToolRetries = 0; // v13.0 (LB1): bounded re-emission requests for truncated tool JSON
+    const emittedToolCalls = new Map(); // v13.1: circuit breaker — chamadas idênticas no mesmo turno
 
     // Detect if this is the FIRST message in a new thread.
     // We check if the session has any prior assistant/tool events.
@@ -3209,13 +3227,7 @@ class LunaSoul extends EventEmitter {
               const reason = innerResult?.reason;
               const suggestion = innerResult?.suggestion;
               if (!stdout && !msg && !error) stdout = '[Resultado não possui saída legível]';
-              outputText += `\n\n[LUNA-MIRROR] ${successMark} ${dar.tool} executado no PC local:`;
-              if (msg) outputText += `\n--- message ---\n${msg}`;
-              if (stdout) outputText += `\n--- stdout ---\n${stdout}`;
-              if (stderr) outputText += `\n--- stderr ---\n${stderr}`;
-              if (error) outputText += `\n--- error ---\n${error}`;
-              if (reason) outputText += `\n--- reason ---\n${reason}`;
-              if (suggestion) outputText += `\n--- suggestion ---\n${suggestion}`;
+              outputText += this._formatToolFeedbackBlock(dar);
             }
             // v13.0 (owner directive 2026-08-13): NO char cap — full output.
             const toolsUsed = domActionResults.map(d => d.tool).join(', ');
@@ -3436,6 +3448,25 @@ class LunaSoul extends EventEmitter {
 
       yield { type: 'mode_detected', mode: parsed.mode, sessionId };
 
+      // v13.1: circuit breaker — a MESMA tool com os MESMOS params emitida mais
+      // de 3x no turno significa que o modelo não está progredindo (feedback não
+      // entendido, ou tentativa repetida por erro). Em vez de girar para sempre,
+      // encerramos o turno com uma resposta honesta para o usuário.
+      if (parsed.mode === 'ACTION' || parsed.mode === 'SCRIPT') {
+        const cbKey = parsed.mode === 'SCRIPT'
+          ? 'script:' + String(parsed.script || '')
+          : (parsed.tool || '?') + ':' + JSON.stringify(parsed.params || {});
+        const cbCount = (emittedToolCalls.get(cbKey) || 0) + 1;
+        emittedToolCalls.set(cbKey, cbCount);
+        if (cbCount > 3) {
+          const cbName = parsed.mode === 'SCRIPT' ? 'executeScript' : parsed.tool;
+          yield { type: 'warning', message: '🔁 Circuit breaker: mesma chamada (' + cbName + ') emitida 3x sem progressão — encerrando o loop.', sessionId };
+          const cbResponse = 'Tentei executar ' + cbName + ' várias vezes, mas não consegui progredir. O resultado da última tentativa foi: ' + String(result && result.output ? result.output : '(sem saída)').slice(0, 300) + ' — me diga se quer que eu tente de outro jeito.';
+          yield { type: 'done', result: { success: true, mode: 'CHAT', response: cbResponse, sessionId }, sessionId };
+          return;
+        }
+      }
+
       // v13.0 (FIX-DUP): one logical tool call = ONE execution per turn. The
       // stream action_detected path already executed this turn's action(s);
       // the mode-ACTION parse of fullResponse is a FALLBACK for when no stream
@@ -3464,14 +3495,27 @@ class LunaSoul extends EventEmitter {
       }
 
       // Yield events that were already emitted synchronously
+      const modeActionEnds = [];
       for (const ev of result.events) {
+        if (ev && ev.type === 'action_end' && ev.result) modeActionEnds.push(ev);
         yield ev;
       }
 
       // v10.13: Wait for background actions and drain their events in real-time
       if (result.pendingPromises && result.pendingPromises.length > 0) {
         for await (const ev of this._waitPromisesWithDrain(result.pendingPromises, modeResultEventBus)) {
+          if (ev && ev.type === 'action_end' && ev.result) modeActionEnds.push(ev);
           yield ev;
+        }
+      }
+      // v13.1-fix: execução via mode-path (W6-T9 backstop) NUNCA popula
+      // domActionResults — o feedback saía com successCount=0 e só o placeholder
+      // "[Executando...]", então o modelo achava que a tool falhou e reemitia a
+      // MESMA tool para sempre (loop infinito). Dobramos os action_end drenados
+      // de volta para o feedback carregar o resultado REAL e o success de verdade.
+      if (domActionResults.length === 0) {
+        for (const ev of modeActionEnds) {
+          domActionResults.push({ tool: ev.tool, result: ev.result });
         }
       }
       // Final drain for any stragglers
@@ -3513,13 +3557,7 @@ class LunaSoul extends EventEmitter {
             if (!stdout && !msg && !error) {
               stdout = '[Resultado não possui saída legível]';
             }
-            outputText += `\n\n[LUNA-MIRROR] ${successMark} ${dar.tool} executado no PC local:`;
-            if (msg) outputText += `\n--- message ---\n${msg}`;
-            if (stdout) outputText += `\n--- stdout ---\n${stdout}`;
-            if (stderr) outputText += `\n--- stderr ---\n${stderr}`;
-            if (error) outputText += `\n--- error ---\n${error}`;
-            if (reason) outputText += `\n--- reason ---\n${reason}`;
-            if (suggestion) outputText += `\n--- suggestion ---\n${suggestion}`;
+              outputText += this._formatToolFeedbackBlock(dar);
             if (dar.kimiResult) outputText += `\n--- sandbox (referência) ---\n${dar.kimiResult.slice(0, 500)}${dar.kimiResult.length > 500 ? '...' : ''}`;
           }
         }
@@ -4004,6 +4042,36 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // "Think ..." reasoning sections
       .replace(/\bThink\b[\s\S]*?(?=\{|$)/gi, '')
       .trim();
+  }
+
+  /**
+   * v7.2 — Formato ENXUTO de feedback de tool pro loop:
+   *   [nomeDaTool] status=ok|erro
+   *   <resultado>
+   *   motivo: <só quando erro>
+   * Sem verbosidade — o modelo vê o que executou, se funcionou e o que voltou.
+   */
+  _formatToolFeedbackBlock(dar) {
+    const inner = dar.result?.result;
+    const ok = dar.result?.success !== false;
+    const status = ok ? 'ok' : 'erro';
+    let body = this._serializeToolResultForFeedback(inner);
+    const msg = inner?.message || inner?.friendlyMessage || '';
+    const error = inner?.error || dar.result?.error || '';
+    const reason = inner?.reason || '';
+    const suggestion = inner?.suggestion || '';
+    const stderr = inner?.stderr || '';
+    if (!body && msg) body = msg;
+    if (!body && !error) body = '[sem saída]';
+    let out = `\n\n[${dar.tool}] status=${status}`;
+    if (body) out += `\n${body}`;
+    if (!ok) {
+      const motivo = [error, reason].filter(Boolean).join(' — ') || 'falha desconhecida';
+      out += `\nmotivo: ${motivo}`;
+    }
+    if (stderr && !body.includes(stderr)) out += `\nstderr: ${stderr}`;
+    if (suggestion) out += `\nsugestão: ${suggestion}`;
+    return out;
   }
 
   /** Format a tool result for inclusion in the plan-mode history. */
@@ -4568,7 +4636,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const history = historyLines.join('\n');
 
       // Build full prompt from configurable template (fallback to legacy format)
-      const defaultFirstTemplate = `{{systemPrompt}}\n\n{{systemContext}}\n\n{{desktopSection}}{{workspaceSection}}{{activeFilesSection}}\n\n--- HISTÓRICO ---\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
+      const defaultFirstTemplate = `{{systemPrompt}}\n\n{{systemContext}}\n\n{{desktopSection}}{{workspaceSection}}{{activeFilesSection}}\n\n--- HISTÓRICO ---\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda com EXATAMENTE UM dos formatos oficiais: um code block \`\`\`json com {"response": "..."} ou {"tool": ..., "params": ...} — OU o bloco equivalente [[response]]...[[/response]] / [[action]]...[[/action]]. NUNCA use tags XML (<luna_tool_call>):`;
       const firstTemplate = (cfg && cfg.prompts && cfg.prompts.firstMessage) ? cfg.prompts.firstMessage : defaultFirstTemplate;
       const prompt = interpolateTemplate(firstTemplate, {
         systemPrompt,
@@ -4642,7 +4710,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         console.log(`[LUNA-PROMPT] kind=toolLoop bytes=${Buffer.byteLength(prompt, 'utf8')}`);
       } else {
         // v10.21-fix: follow-up prompt contains only history + current user input
-        const defaultFollowUpTemplate = `{{systemContext}}\n\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda usando APENAS code blocks JSON. NUNCA tags [[response]] ou [[action]]:`;
+        const defaultFollowUpTemplate = `{{systemContext}}\n\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda com EXATAMENTE UM dos formatos oficiais: um code block \`\`\`json com {"response": "..."} ou {"tool": ..., "params": ...} — OU o bloco equivalente [[response]]...[[/response]] / [[action]]...[[/action]]. NUNCA use tags XML (<luna_tool_call>):`;
         const followUpTemplate = (cfg && cfg.prompts && cfg.prompts.followUp) ? cfg.prompts.followUp : defaultFollowUpTemplate;
         if (followUpTemplate.includes('{{miniReminder}}')) miniReminder = buildMiniReminder({ USER_ID: followUpUserId, WORKSPACE: followUpWorkspacePath });
         prompt = interpolateTemplate(followUpTemplate, {
@@ -4980,6 +5048,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         'dashboardListUsers', 'dashboardListGitHubRepos', 'dashboardListVercelProjects',
         'dashboardListBugReports', 'dashboardListEmails', 'dashboardListLinks',
         'think', 'getCurrentDirectory', 'clipboardRead', 'readMediaFile',
+        'listTools', 'toolInfo',
         'ipython', 'python', 'code', 'executePython',
       ];
       const DASHBOARD_READ_ONLY_PATTERN = /^dashboard(List|Get)/;
@@ -5295,6 +5364,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'dashboardCreateVotingSession': return lunaTools.dashboardCreateVotingSession(p);
               case 'dashboardVoteInSession': return lunaTools.dashboardVoteInSession(p);
               case 'dashboardDeleteVotingSession': return lunaTools.dashboardDeleteVotingSession(p);
+              case 'listTools': return lunaTools.listTools(p);
+              case 'toolInfo': return lunaTools.toolInfo(p);
               case 'dashboardCommandRouter': return this._execDashboardCommandRouter(p);
               default: return { success: false, error: `Ferramenta desconhecida: ${tool}` };
             }
