@@ -181,6 +181,11 @@ const EXTRA_DASHBOARD_TOOLS = {
     { name: 'dashboardAddProvider', desc: 'Adiciona provider (presetId ou custom {...}).', params: ['presetId? | provider?'] },
     { name: 'dashboardRemoveProvider', desc: 'Remove um provider da roda.', params: ['id'] },
   ],
+  // 📞 2026-10-14: chamada ao vivo — a Luna responde o OPERADOR via tool
+  // (arquitetura owner: sessão Luna Web como conductor da chamada).
+  '📞 Chamada — Operador': [
+    { name: 'callRespond', desc: 'Fala um texto NA CHAMADA ativa (vai pro operador/ChatGPT e a voz fala). Sua voz durante a ligação.', params: ['texto'] },
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────────────────

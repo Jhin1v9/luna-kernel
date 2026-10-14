@@ -68,6 +68,10 @@ const ALIAS_MAP = {
     setapikey: 'dashboardSetProviderKey',
     salvarkey: 'dashboardSetProviderKey',
     removeprovider: 'dashboardRemoveProvider',
+    // 📞 chamada (2026-10-14)
+    'call.respond': 'callRespond',
+    responderchamada: 'callRespond',
+    falarluna: 'callRespond',
   // 📧 Email
   sendemail: 'dashboardSendEmail',
   enviaremail: 'dashboardSendEmail',

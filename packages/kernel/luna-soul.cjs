@@ -5401,6 +5401,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'dashboardSetProviderKey': return lunaTools.dashboardSetProviderKey(p);
               case 'dashboardAddProvider': return lunaTools.dashboardAddProvider(p);
               case 'dashboardRemoveProvider': return lunaTools.dashboardRemoveProvider(p);
+              case 'callRespond':
+              case 'call.respond': return lunaTools.callRespond(p);
               case 'dashboardCommandRouter': return this._execDashboardCommandRouter(p);
               default: return { success: false, error: `Ferramenta desconhecida: ${tool}` };
             }
