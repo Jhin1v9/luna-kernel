@@ -23,6 +23,8 @@ const { execSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
 const lunaConfig = require('./config/luna-config');
+const workspaceNexoTools = require('./workspace-nexo-tools.cjs');
+const whatsappTools = require('./whatsapp-tools.cjs');
 const { looksBinary } = require('./lib/text-file.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { clampExecTimeout, shQuote } = require('./lib/exec-timeout.cjs');
@@ -1641,6 +1643,34 @@ function getInternalApiToken() {
   return process.env.DASHBOARD_INTERNAL_API_TOKEN || process.env.INTERNAL_API_TOKEN || '';
 }
 
+// ── Acesso direto ao Postgres da Luna (mesma base do whatsplay/painel) ──
+// 2026-10-13: as tools de WhatsApp apontavam pra uma API legada (:3501 /
+// whatsapp-agent/*) que não existe mais. Leitura de mensagens passa a ser
+// SQL direto na tabela `messages` — a fonte da verdade do whatsplay-native.
+let _lunaDbPool = null;
+function lunaDb() {
+  if (_lunaDbPool) return _lunaDbPool;
+  const url = process.env.DATABASE_URL || process.env.LUNA_DATABASE_URL;
+  if (!url) throw new Error('DATABASE_URL não configurado no kernel (leitura WhatsApp indisponível)');
+  // pg vem do node_modules do dashboard (kernel não tem deps próprias fixas)
+  const candidates = [
+    process.env.LUNA_KERNEL_PG_PATH,
+    require('path').join(__dirname, '..', '..', 'apps', 'dashboard', 'node_modules', 'pg'),
+    '/home/nexo/luna-kernel/apps/dashboard/node_modules/pg',
+  ].filter(Boolean);
+  let pg = null;
+  for (const c of candidates) { try { pg = require(c); break; } catch { /* tenta o próximo */ } }
+  if (!pg) throw new Error('módulo pg não encontrado nos caminhos candidatos');
+  _lunaDbPool = new pg.Pool({ connectionString: url });
+  return _lunaDbPool;
+}
+
+async function lunaDbQuery(sql, params = []) {
+  const pool = lunaDb();
+  const r = await pool.query(sql, params);
+  return r.rows;
+}
+
 async function dashboardApi(path, method = 'GET', body = null) {
   try {
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -2383,10 +2413,54 @@ async function dashboardSyncEmails(params) {
 
 // ── WHATSAPP ──
 
+async function waSendDirect(phone, message) {
+  // 2026-10-13: fallback quando o painel recusa (ex.: conversation_id
+  // inexistente pra chat_id novo). Replica o pipeline oficial: get-or-create
+  // org → client → conversation, insere outbound 'queued' e dispara
+  // pg_notify('luna_outbound') que o whatsplay-native consome.
+  try {
+    const chatId = String(phone).replace(/[^0-9]/g, '');
+    if (!chatId) return err('Número inválido para envio direto');
+    let org = await lunaDbQuery("SELECT id FROM organizations WHERE slug='nexo' LIMIT 1");
+    if (!org.length) org = await lunaDbQuery("INSERT INTO organizations (name, slug) VALUES ('Nexo Digital','nexo') RETURNING id");
+    let client = await lunaDbQuery("SELECT id FROM clients WHERE code='whatsapp-direto' LIMIT 1");
+    if (!client.length) client = await lunaDbQuery("INSERT INTO clients (organization_id, name, code) VALUES ($1,'WhatsApp Direto','whatsapp-direto') RETURNING id", [org[0].id]);
+    let conv = await lunaDbQuery("SELECT id FROM conversations WHERE channel='whatsapp' AND metadata->>'chat_id'=$1 LIMIT 1", [chatId]);
+    if (!conv.length) conv = await lunaDbQuery("INSERT INTO conversations (client_id, channel, subject, metadata) VALUES ($1,'whatsapp',$2,$3) RETURNING id", [client[0].id, 'WhatsApp ' + chatId, JSON.stringify({ chat_id: chatId })]);
+    const ins = await lunaDbQuery("INSERT INTO messages (conversation_id, direction, channel, sender, body, send_state, metadata) VALUES ($1,'outbound','whatsapp','luna',$2,'queued',$3) RETURNING id", [conv[0].id, String(message).slice(0, 900), JSON.stringify({ source: 'kernel-direct', chat_id: chatId })]);
+    await lunaDbQuery("SELECT pg_notify('luna_outbound', $1)", [String(ins[0].id)]);
+    return ok({ stdout: `💬 WhatsApp enfileirado direto pra ${phone} (fila luna_outbound).` });
+  } catch (e) {
+    return err(`Envio direto falhou: ${e.message}`);
+  }
+}
+
+async function waResolveContact(name) {
+  // 2026-10-13: resolve nome de contato → chat_id via /api/contacts do painel
+  // (agenda que o owner mantém na UI do painel). Retorna null se não achar.
+  try {
+    const localBase = process.env.PAINEL_URL || 'http://127.0.0.1:3101';
+    const res = await fetch(`${localBase}/api/contacts`, { signal: AbortSignal.timeout(8000) });
+    const data = await res.json().catch(() => null);
+    const list = data?.contacts || [];
+    const n = String(name).trim().toLowerCase();
+    const hit = list.find((c) => String(c.name).toLowerCase() === n)
+      || list.find((c) => String(c.name).toLowerCase().includes(n));
+    return hit ? String(hit.chat_id) : null;
+  } catch { return null; }
+}
+
 async function dashboardSendWhatsApp(params) {
-  const phone = params.phone || params.number || params.numero || params.chatId || params.chat || '';
+  let phone = params.phone || params.number || params.numero || params.chatId || params.chat || params.to || params.target || params.recipient || params.destinatario || '';
   const message = params.message || params.text || params.mensagem || '';
   if (!phone || !message) return err('Número e mensagem obrigatórios');
+  // 0) se veio um NOME em vez de dígitos, resolve pela agenda de contatos do painel
+  const soDigitos = String(phone).replace(/\D/g, '');
+  if (!soDigitos || soDigitos.length < 6) {
+    const resolved = await waResolveContact(phone);
+    if (resolved) phone = resolved;
+    else return err(`Contato '${phone}' não encontrado na agenda. Peça pra salvar em Contatos no painel ou use o número com DDI (ex.: 34685093192).`);
+  }
   // 1) caminho local: painel :3101 enfileira via pg_notify (funciona com Postgres local)
   const localBase = process.env.PAINEL_URL || 'http://127.0.0.1:3101';
   try {
@@ -2398,45 +2472,67 @@ async function dashboardSendWhatsApp(params) {
     });
     const data = await res.json().catch(() => null);
     if (res.ok && data?.ok) return ok({ stdout: `💬 WhatsApp enviado para ${phone} (fila local).` });
-    if (data?.error) return err(`Painel local recusou: ${data.error}`);
+    // 2) painel recusou (ex.: conversation_id não encontrada) → fila direta no Postgres
+    return await waSendDirect(phone, message);
   } catch (e) {
-    // cai pro caminho do VPS abaixo
+    return await waSendDirect(phone, message);
   }
-  // 2) fallback: pipeline oficial do VPS
-  const body = { phone, message };
-  const result_result = await dashboardApi('/whatsapp/send', 'POST', body);
-  if (!result_result.success) return result_result;
-  const result = result_result.data;
-  if (!result.success) return result;
-  return ok({ stdout: `💬 WhatsApp enviado para ${body.phone}.` });
 }
 
 async function dashboardGetWhatsAppHistory(params) {
-  const query = new URLSearchParams();
-  if (params.limit) query.set('limit', String(params.limit || 10));
-  if (params.chatId) query.set('chatId', params.chatId);
-  const result_data = await dashboardApi(`/whatsapp/history?${query.toString()}`);
-  if (!result_data.success) return result_data;
-  const data = result_data.data;
-  const items = data.history || data.messages || data || [];
-  const lines = items.map(m => `- [${m.author || '?'}]: ${(m.body || m.text || '(mídia)')}`).join('\n'); // v13.0: no cap
-  return ok({ stdout: `💬 ${items.length} mensagem(s):\n${lines || 'Vazio.'}` });
+  // 2026-10-13: leitura direta na tabela messages (fonte da verdade do
+  // whatsplay-native). API legada /whatsapp/history não existe mais.
+  try {
+    const limit = Math.min(Number(params.limit) || 15, 50);
+    let rows;
+    if (params.chatId) {
+      const q = `%${String(params.chatId).replace(/[%_]/g, '')}%`;
+      rows = await lunaDbQuery(
+        `SELECT direction, sender, body, author_name, created_at, metadata->>'chat_id' AS chat_id
+         FROM messages WHERE channel='whatsapp' AND (metadata->>'chat_id' ILIKE $1 OR sender ILIKE $1)
+         ORDER BY created_at DESC LIMIT $2`, [q, limit]);
+    } else {
+      rows = await lunaDbQuery(
+        `SELECT direction, sender, body, author_name, created_at, metadata->>'chat_id' AS chat_id
+         FROM messages WHERE channel='whatsapp' ORDER BY created_at DESC LIMIT $1`, [limit]);
+    }
+    if (!rows.length) return ok({ stdout: '💬 Nenhuma mensagem WhatsApp registrada ainda na base (messages vazio). Peça pro Abner mandar uma mensagem nova pra testar o ingest.' });
+    const lines = rows.map(m => `- [${m.created_at?.slice(5, 16) || '?'}] ${m.direction === 'inbound' ? '⬅️' : '➡️'} ${m.author_name || m.sender}: ${(m.body || '(mídia)').slice(0, 120)}`).join('\n');
+    return ok({ stdout: `💬 ${rows.length} mensagem(ns) WhatsApp recentes:\n${lines}` });
+  } catch (e) {
+    return err(`Leitura WhatsApp falhou: ${e.message}`);
+  }
 }
 
 async function dashboardScanWhatsApp(params) {
-  const result_result = await dashboardApi('/whatsapp-agent/refresh', 'POST', {});
-  if (!result_result.success) return result_result;
-  const result = result_result.data;
-  if (!result.success) return result;
-  return ok({ stdout: `🔍 Scan do WhatsApp iniciado.` });
+  // 2026-10-13: "scan" = verificar o que chegou de novo (inbound recente +
+  // pendentes). SQL direto; endpoint legado /whatsapp-agent/refresh morto.
+  try {
+    const fresh = await lunaDbQuery(
+      `SELECT sender, author_name, body, created_at, metadata->>'chat_id' AS chat_id
+       FROM messages WHERE channel='whatsapp' AND direction='inbound'
+       ORDER BY created_at DESC LIMIT 20`);
+    if (!fresh.length) return ok({ stdout: '🔍 Scan: nenhuma mensagem inbound registrada na base ainda. Se alguém mandou mensagem no WhatsApp e não apareceu, o ingest do whatsplay pode estar com problema — avise o Abner.' });
+    const lines = fresh.map(m => `- ${m.author_name || m.sender} (${m.chat_id || '?'}): ${(m.body || '(mídia)').slice(0, 100)}`).join('\n');
+    return ok({ stdout: `🔍 Scan WhatsApp — ${fresh.length} mensagem(ns) recebida(s) mais recente(s):\n${lines}` });
+  } catch (e) {
+    return err(`Scan WhatsApp falhou: ${e.message}`);
+  }
 }
 
 async function dashboardGetWhatsAppStatus(params) {
-  const result_result_data = await dashboardApi('/whatsapp-agent/status');
-  if (!result_result_data.success) return result_result_data;
-  const result_data = result_result_data.data;
-  const data = result_data;
-  return ok({ stdout: `📱 WhatsApp: ${data.status || data.state || 'N/A'} | ${data.totalMessages || data.total || 0} msgs` });
+  try {
+    const r = await lunaDbQuery(
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE direction='inbound')::int AS inbound,
+              count(*) FILTER (WHERE direction='outbound')::int AS outbound,
+              max(created_at) AS ultima
+       FROM messages WHERE channel='whatsapp'`);
+    const s = r[0] || {};
+    return ok({ stdout: `📱 WhatsApp DB: ${s.total || 0} msgs (${s.inbound || 0} recebidas / ${s.outbound || 0} enviadas) | última: ${s.ultima || 'nunca'}` });
+  } catch (e) {
+    return err(`Status WhatsApp falhou: ${e.message}`);
+  }
 }
 
 async function dashboardGetWhatsAppClassifications(params) {
@@ -2865,6 +2961,87 @@ async function dashboardCreateReviewVote(params) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 🧠 BRAIN TOOLS — acesso HTTP ao NEXO Brain (memória institucional).
+// O brain mora no VPS (container nexo-brain :4321, exposto em
+// https://vps.nexo-digital.app/brain). Auth: Bearer BRAIN_API_TOKEN.
+// 2026-10-13: antes o modelo NÃO TINHA como consultar o brain — o brain-loader
+// só lia um diretório LOCAL (.brain-luna) que não existe no VPS. Agora a Luna
+// pesquisa e lê notas do brain a hora que quiser, por tool call.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const BRAIN_BASE = (process.env.BRAIN_INTERNAL_URL || process.env.BRAIN_URL || 'http://127.0.0.1:4321').replace(/\/+$/, '');
+
+function brainHeaders() {
+  const token = process.env.BRAIN_API_TOKEN || '';
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** Pesquisa notas do brain por texto. Retorna id/título/cluster/score/resumo. */
+async function brainSearch(params) {
+  const q = params.query || params.q || params.busca || '';
+  if (!q) return err('Informe o que pesquisar: brainSearch {"query": "quem é Abner"}');
+  try {
+    const res = await fetch(`${BRAIN_BASE}/api/search?q=${encodeURIComponent(String(q).slice(0, 200))}`, {
+      headers: brainHeaders(),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return err(`Brain respondeu HTTP ${res.status}`);
+    const data = await res.json().catch(() => null);
+    const results = (data && data.results) || [];
+    if (!results.length) return ok({ stdout: `🧠 Brain: nada encontrado para "${q}". Tente termos diferentes.` });
+    const lines = results.slice(0, 8).map((r, i) =>
+      `${i + 1}. [${r.cluster}] ${r.title}\n   id: ${r.id}\n   ${String(r.excerpt || '').slice(0, 180)}`);
+    return ok({ stdout: `🧠 Brain — ${results.length} resultado(s) para "${q}":\n${lines.join('\n')}\n\nLeia o conteúdo completo com: brainRead {"id": "ID_DA_NOTA"}` });
+  } catch (e) {
+    return err(`brainSearch falhou: ${String(e.message || e).slice(0, 200)}`);
+  }
+}
+
+/** Lê uma nota completa do brain pelo id (vem de brainSearch). */
+async function brainRead(params) {
+  const id = params.id || params.path || params.nota || '';
+  if (!id) return err('Informe o id da nota: brainRead {"id": "learning/outcomes/..."}');
+  try {
+    const res = await fetch(`${BRAIN_BASE}/api/nodes/${encodeURIComponent(String(id))}`, {
+      headers: brainHeaders(),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return err(`Brain respondeu HTTP ${res.status} para esse id`);
+    const data = await res.json().catch(() => null);
+    if (!data) return err('Brain devolveu corpo vazio');
+    const corpo = data.body || data.content || data.summary || JSON.stringify(data);
+    return ok({ stdout: `🧠 [${data.cluster}] ${data.title || id} (${data.date || 's/data'})\n\n${String(corpo).slice(0, 4000)}` });
+  } catch (e) {
+    return err(`brainRead falhou: ${String(e.message || e).slice(0, 200)}`);
+  }
+}
+
+/** Grava um aprendizado/outcome no brain (memória de longo prazo). */
+async function brainSaveOutcome(params) {
+  const title = params.title || params.titulo || '';
+  const body = params.body || params.conteudo || '';
+  if (!title || !body) return err('title e body obrigatórios: brainSaveOutcome {"type": "positive", "title": "...", "body": "...", "tags": ["luna"]}');
+  try {
+    const res = await fetch(`${BRAIN_BASE}/api/learning/outcomes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...brainHeaders() },
+      body: JSON.stringify({
+        type: params.type || 'positive',
+        title: String(title).slice(0, 200),
+        body: String(body).slice(0, 8000),
+        tags: Array.isArray(params.tags) ? params.tags : ['luna'],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) return err(`Brain recusou (HTTP ${res.status}): ${data?.message || 'sem detalhe'}`);
+    return ok({ stdout: `🧠 Aprendizado gravado no brain: ${data?.path || title}` });
+  } catch (e) {
+    return err(`brainSaveOutcome falhou: ${String(e.message || e).slice(0, 200)}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2878,6 +3055,10 @@ module.exports = {
   // Meta-tools (documentação de tools acessível via tool call)
   listTools,
   toolInfo,
+  // 🧠 Brain (memória institucional do NEXO)
+  brainSearch,
+  brainRead,
+  brainSaveOutcome,
   // Aliases for natively-named tools
   web_search: searchWeb,
   webSearch: searchWeb,
@@ -3049,4 +3230,8 @@ module.exports = {
     const { validateProject } = require('./luna-code-validator.cjs');
     return validateProject(projectPath);
   },
+  // Workspace Nexo (solicitações do portal /nexo) — 2026-10-14
+  ...workspaceNexoTools,
+  // WhatsApp — diretório, envio por nome/jid e onboarding (2026-10-14)
+  ...whatsappTools,
 };

@@ -64,10 +64,14 @@ const CORE_TOOLS = [
   { name: 'gitCommit', cat: '🌿 Git', desc: 'Commit das alterações.', params: '{path, message}', ex: { path: '{{WORKSPACE}}', message: 'feat: ajusta configuração' } },
   { name: 'applyPatch', cat: '🌿 Git', desc: 'Aplica um patch unificado a arquivos.', params: '{patch}', ex: { patch: '--- a/x.js\n+++ b/x.js\n@@ -1 +1 @@\n-old\n+new' } },
 
+  // 🧠 Brain — memória institucional do NEXO (notas, aprendizados, runbooks)
+  { name: 'brainSearch', cat: '🧠 Brain', desc: 'Pesquisa notas/aprendizados no brain da empresa (quem é quem, números, decisões, erros). Use SEMPRE que precisar de contexto que você não tem.', params: '{query}', ex: { query: 'quem é Abner whatsapp' } },
+  { name: 'brainRead', cat: '🧠 Brain', desc: 'Lê uma nota completa do brain pelo id (id vem do brainSearch).', params: '{id}', ex: { id: 'learning/outcomes/positive/2026-10-13-exemplo.md' } },
+  { name: 'brainSaveOutcome', cat: '🧠 Brain', desc: 'Grava aprendizado/outcome no brain (memória de longo prazo da Luna).', params: '{type, title, body, tags?}', ex: { type: 'positive', title: 'Fix validado no whatsplay', body: 'o que funcionou e por quê', tags: ['luna', 'whatsplay'] } },
+
   // 🧠 Raciocínio & sistema
   { name: 'think', cat: '🧠 Sistema', desc: 'Registra raciocínio passo a passo (não executa nada).', params: '{thought}', ex: { thought: 'Plano: 1) ler config 2) editar 3) testar' } },
-  { name: 'getCurrentDirectory', cat: '🧠 Sistema', desc: 'Diretório de trabalho atual.', params: '{}', ex: {} },
-  { name: 'clipboardRead', cat: '🧠 Sistema', desc: 'Lê o conteúdo da área de transferência.', params: '{}', ex: {} },
+  { name: 'getCurrentDirectory', cat: '🧠 Sistema', desc: 'Diretório de trabalho atual.', params: '{}', ex: {} },  { name: 'clipboardRead', cat: '🧠 Sistema', desc: 'Lê o conteúdo da área de transferência.', params: '{}', ex: {} },
   { name: 'clipboardWrite', cat: '🧠 Sistema', desc: 'Escreve na área de transferência.', params: '{text}', ex: { text: 'texto copiado' } },
   { name: 'readMediaFile', cat: '🧠 Sistema', desc: 'Inspeciona imagem/vídeo (tipo, tamanho).', params: '{path}', ex: { path: '{{WORKSPACE}}/foto.png' } },
   { name: 'lunaSelfUpdate', cat: '🧠 Sistema', desc: 'Atualiza a Luna do GitHub (dryRun p/ simular).', params: '{dryRun?}', ex: { dryRun: true } },
@@ -112,6 +116,16 @@ const EXTRA_DASHBOARD_TOOLS = {
     { name: 'dashboardCreateOpsAlert', desc: 'Cria alerta operacional.', params: ['title', 'severity', 'message'] },
     { name: 'dashboardDeleteOpsAlert', desc: 'Remove alerta operacional.', params: ['id'] },
   ],
+  // 2026-10-13: tasks/solicitações já existiam em luna-tools.cjs mas AUSENTES
+  // aqui — modelos não sabiam que existiam (matrix: "não tenho tool de tarefas").
+  '📋 Dashboard — Tarefas & Solicitações': [
+    { name: 'dashboardCreateTask', desc: 'Cria tarefa/solicitação no dashboard.', params: ['title', 'description', 'priority?'] },
+    { name: 'dashboardListTasks', desc: 'Lista tarefas (filtros opcionais).', params: ['status?', 'limit?'] },
+    { name: 'dashboardUpdateTask', desc: 'Atualiza tarefa.', params: ['id', 'status?', 'title?', 'priority?'] },
+    { name: 'dashboardCompleteTask', desc: 'Marca tarefa como concluída.', params: ['id'] },
+    { name: 'dashboardDeleteTask', desc: 'Remove uma tarefa.', params: ['id'] },
+    { name: 'dashboardCreateLead', desc: 'Registra um lead.', params: ['name', 'phone?', 'email?', 'source?'] },
+  ],
   '🚀 Dashboard — GitHub/Vercel': [
     { name: 'dashboardListGitHubRepos', desc: 'Lista repositórios GitHub.', params: [] },
     { name: 'dashboardListVercelProjects', desc: 'Lista projetos Vercel.', params: [] },
@@ -137,6 +151,26 @@ const EXTRA_DASHBOARD_TOOLS = {
     { name: 'dashboardJoinTimeline', desc: 'Entra em uma timeline colaborativa.', params: ['timelineId'] },
     { name: 'dashboardAdvanceTimelineStep', desc: 'Avança o step da timeline.', params: ['timelineId'] },
     { name: 'dashboardCreateReviewVote', desc: 'Cria votação de revisão de fase.', params: ['phaseTitle', 'quorumRequired'] },
+  ],
+  // 🗂️ 2026-10-14: Workspace Nexo (portal admin /nexo) — solicitações REAIS dos clientes
+  '🗂️ Workspace Nexo — Solicitações': [
+    { name: 'workspaceListRequests', desc: 'Lista solicitações dos clientes (filtros: status, organizationId, projectId, search).', params: ['status?', 'organizationId?', 'projectId?', 'search?', 'limit?'] },
+    { name: 'workspaceGetRequest', desc: 'Detalhe completo de uma solicitação.', params: ['id'] },
+    { name: 'workspaceCreateRequest', desc: 'Cria solicitação para qualquer cliente.', params: ['organizationId', 'projectId', 'content', 'status?', 'urgencyHint?'] },
+    { name: 'workspaceUpdateRequest', desc: 'Muda status/urgência de uma solicitação.', params: ['id', 'status?', 'urgencyHint?'] },
+    { name: 'workspaceAddComment', desc: 'Comenta numa solicitação (visível pro cliente).', params: ['id', 'content'] },
+    { name: 'workspaceListProjects', desc: 'Lista projetos do workspace (clientes e ids).', params: [] },
+    { name: 'workspaceListOrganizations', desc: 'Lista organizações (clientes) com ids.', params: [] },
+    { name: 'workspaceListClients', desc: 'Lista usuários-cliente cadastrados.', params: [] },
+  ],
+  // 🟢 2026-10-14: WhatsApp de verdade — a Luna VÊ o diretório e envia por NOME
+  // (grupo incluído). Protocolo de onboarding: whatsappAllowContact.
+  '🟢 WhatsApp — Diretório & Envio': [
+    { name: 'whatsappListContacts', desc: 'Lista contatos do WhatsApp (diretório real; filtro search).', params: ['search?'] },
+    { name: 'whatsappListGroups', desc: 'Lista grupos do WhatsApp com nº de membros (filtro search).', params: ['search?'] },
+    { name: 'whatsappGroupMembers', desc: 'Lista os membros de um grupo.', params: ['group'] },
+    { name: 'whatsappSendMessage', desc: 'Envia msg pra NOME, jid ou número — grupo incluído. FLUXO: listar → escolher → enviar.', params: ['to', 'message'] },
+    { name: 'whatsappAllowContact', desc: 'PROTOCOLO NOVO CONTATO: add nome/número na allowlist + diretório (decree owner).', params: ['name', 'phone?', 'note?'] },
   ],
 };
 

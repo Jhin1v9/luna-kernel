@@ -8,10 +8,95 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-    <script type="module" crossorigin src="/assets/index-CiKZoglU.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-MueCeNzm.css">
+    <script type="module" crossorigin src="./assets/index-whek6KXW.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BPps_7ng.css">
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"></div>
+
+    <!-- roda-widget: visor de provider atual (2026-10-13) -->
+  <style>
+    #roda-widget { position: fixed; top: 60px; right: 16px; z-index: 9999;
+      display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+      background: rgba(10, 15, 30, 0.72); border: 1px solid rgba(120, 140, 255, 0.18);
+      border-radius: 999px; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      font-family: 'Inter', system-ui, sans-serif; cursor: default; user-select: none;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.35); transition: border-color .3s; }
+    #roda-widget:hover { border-color: rgba(120, 140, 255, 0.45); }
+    #roda-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b;
+      box-shadow: 0 0 8px currentColor; transition: background .4s; flex-shrink: 0; }
+    #roda-dot.ok { background: #22c55e; color: #22c55e; }
+    #roda-dot.limited { background: #f59e0b; color: #f59e0b; }
+    #roda-dot.dead { background: #ef4444; color: #ef4444; }
+    #roda-dot.unknown { background: #64748b; color: #64748b; }
+    #roda-name { color: #e2e8f0; font-size: 12.5px; font-weight: 600; letter-spacing: .02em;
+      transition: opacity .25s; white-space: nowrap; }
+    #roda-model { color: #64748b; font-size: 10.5px; font-weight: 500; white-space: nowrap; }
+    #roda-tip { position: absolute; top: calc(100% + 10px); right: 0; min-width: 230px;
+      background: rgba(8, 12, 26, 0.95); border: 1px solid rgba(120,140,255,0.2); border-radius: 12px;
+      padding: 10px 12px; display: none; backdrop-filter: blur(16px); box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+    #roda-widget:hover #roda-tip { display: block; }
+    .roda-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px;
+      font-size: 11.5px; color: #94a3b8; font-weight: 500; }
+    .roda-row.current { color: #e2e8f0; font-weight: 600; }
+    .roda-row .mini { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .roda-row .mini.ok { background: #22c55e; } .roda-row .mini.limited { background: #f59e0b; }
+    .roda-row .mini.dead { background: #ef4444; } .roda-row .mini.unknown { background: #475569; }
+    .roda-tip-title { font-size: 10px; text-transform: uppercase; letter-spacing: .1em;
+      color: #475569; padding: 2px 2px 6px; font-weight: 600; }
+  </style>
+  <div id="roda-widget" title="Provider atual da roda">
+    <span id="roda-dot" class="unknown"></span>
+    <span id="roda-name">conectando…</span>
+    <span id="roda-model"></span>
+    <div id="roda-tip"><div class="roda-tip-title">Roda de providers</div><div id="roda-rows"></div></div>
+  </div>
+  <script>
+  (function () {
+    var SHORT = {
+      'kimi-coding': 'Kimi', 'kimi-for-coding': 'Kimi', 'gemini': 'Gemini',
+      'github-models': 'GPT-4o', 'pollinations': 'Pollinations', 'nvidia-nim': 'NVIDIA',
+      'openrouter-nemotron-super': 'Nemotron', 'openrouter-nemotron-ultra': 'Nemotron Ultra',
+      'openrouter-gemma-31b': 'Gemma', 'openrouter-gemma-26b': 'Gemma 26B',
+      'openrouter-laguna-s': 'Laguna', 'openrouter-laguna-xs': 'Laguna XS',
+      'openrouter-north-code': 'North', 'openrouter-dots-note': 'Dots',
+      'openrouter-nano-omni': 'Nano Omni', 'openrouter-lightning': 'Lightning',
+      'openrouter-lfm': 'LFM', 'fcc-local': 'FCC', 'colibri-local': 'Colibri'
+    };
+    function short(id) {
+      if (!id) return '?';
+      id = String(id).replace(/^(roda|agent):/, '');
+      if (SHORT[id]) return SHORT[id];
+      if (id.indexOf('openrouter-') === 0) id = id.slice(11);
+      return id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, ' ');
+    }
+    var dot = document.getElementById('roda-dot'),
+        name = document.getElementById('roda-name'),
+        model = document.getElementById('roda-model'),
+        rows = document.getElementById('roda-rows');
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+    function render(d) {
+      if (!d || !d.ok) { dot.className = 'unknown'; name.textContent = 'sem roda'; model.textContent = ''; rows.innerHTML = ''; return; }
+      var cur = null;
+      (d.providers || []).forEach(function (p) { if (p.current) cur = p; });
+      if (cur) {
+        dot.className = cur.status || 'unknown';
+        name.style.opacity = 0;
+        setTimeout(function () { name.textContent = short(cur.id); name.style.opacity = 1; }, 180);
+        model.textContent = '';
+      }
+      rows.innerHTML = (d.providers || []).map(function (p) {
+        return '<div class="roda-row' + (p.current ? ' current' : '') + '"><span class="mini ' + esc(p.status) + '"></span>' + esc(short(p.id)) + '</div>';
+      }).join('');
+    }
+    function tick() {
+      fetch('./api/roda/status').then(function (r) { return r.json(); }).then(render).catch(function () {
+        dot.className = 'unknown'; name.textContent = 'offline';
+      });
+    }
+    tick(); setInterval(tick, 8000);
+  })();
+  </script>
+
   </body>
 </html>

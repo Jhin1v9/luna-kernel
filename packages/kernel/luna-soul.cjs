@@ -33,6 +33,8 @@ const lunaTools = require('./luna-tools.cjs');
 // v7.2: catálogo completo de tools (com exemplos) interpolado no system
 // prompt via {{TOOL_CATALOG}} — a API sempre enxerga TODAS as tools.
 const { buildToolCatalog, buildToolIndex } = require('./tool-catalog.cjs');
+// 2026-10-14: alias adapter — modelos inventam nomes de tools; resolve p/ canônico
+const { resolveToolName } = require('./tool-alias-resolver.cjs');
 const { workspaceManager } = require('./luna-workspace.cjs');
 const { LunaGit } = require('./luna-git.cjs');
 const { loadBrainContext } = require('./brain-loader.cjs');
@@ -434,8 +436,7 @@ Shell script:
 [WORKSPACE ISOLATION — MANDATORY]
 - User ID: ${userId}
 - Workspace: ${workspacePath}
-- NUNCA acesse arquivos fora de ${workspacePath} sem autorização explícita do usuário atual.
-- NUNCA execute comandos em diretórios fora do workspace ativo.
+- 2026-10-14 decreto owner: acesso TOTAL à máquina — a VPS inteira é seu workspace. Não existe "fora do workspace".
 - Cada sessão/usuário tem seu próprio workspace. Não misture dados de usuários diferentes.
 
 [VISUAL PERSONA — MANDATORY FOR ALL TEXT RESPONSES]
@@ -1338,15 +1339,8 @@ IMPORTANT: Mantenha consistência com sua persona.
     const ws = workspaceManager.getWorkspace('luna-cli');
     let resolvedPath;
     if (path.isAbsolute(filePath)) {
-      if (ws) {
-        const wsPath = path.resolve(ws.path);
-        resolvedPath = path.resolve(filePath);
-        if (!resolvedPath.startsWith(wsPath) && !filePath.startsWith('/tmp')) {
-          return { success: false, error: `Path traversal bloqueado: "${filePath}" está fora do workspace.` };
-        }
-      } else {
-        resolvedPath = path.resolve(filePath);
-      }
+      // 2026-10-14 decreto owner: acesso total à VPS — sem confinamento de workspace.
+      resolvedPath = path.resolve(filePath);
     } else {
       resolvedPath = ws ? path.resolve(ws.path, filePath) : path.resolve(filePath);
     }
@@ -1366,15 +1360,8 @@ IMPORTANT: Mantenha consistência com sua persona.
     const ws = workspaceManager.getWorkspace('luna-cli');
     let resolvedPath;
     if (path.isAbsolute(filePath)) {
-      if (ws) {
-        const wsPath = path.resolve(ws.path);
-        resolvedPath = path.resolve(filePath);
-        if (!resolvedPath.startsWith(wsPath) && !filePath.startsWith('/tmp')) {
-          return { success: false, error: `Path traversal bloqueado: "${filePath}" está fora do workspace.` };
-        }
-      } else {
-        resolvedPath = path.resolve(filePath);
-      }
+      // 2026-10-14 decreto owner: acesso total à VPS — sem confinamento de workspace.
+      resolvedPath = path.resolve(filePath);
     } else {
       resolvedPath = ws ? path.resolve(ws.path, filePath) : path.resolve(filePath);
     }
@@ -2010,7 +1997,8 @@ class LunaSoul extends EventEmitter {
    * Compact session context: build a rich checkpoint, create a new thread,
    * send the checkpoint, and reset local context.
    */
-  async *_compactContext(sessionId, userId = 'luna-default') {    yield {
+  async *_compactContext(sessionId, userId = 'luna-default') {
+    yield {
       type: 'compact_start',
       message: '📦 Compactação manual iniciada. Criando checkpoint inteligente...',
       sessionId,
@@ -2054,7 +2042,8 @@ class LunaSoul extends EventEmitter {
           type: 'compact_error',
           message: `❌ Falha ao criar nova thread: ${err.message}. Contexto preservado.`,
           sessionId,
-        };        return { success: false, error: err.message };
+        };
+        return { success: false, error: err.message };
       }
 
       yield {
@@ -2099,7 +2088,8 @@ class LunaSoul extends EventEmitter {
           type: 'compact_error',
           message: `❌ Checkpoint não enviado: ${sendErr.message}. Contexto local preservado.`,
           sessionId,
-        };        return { success: false, error: sendErr.message };
+        };
+        return { success: false, error: sendErr.message };
       } finally {
         if (bridgeSession && wasProcessing) bridgeSession.processing = wasProcessing;
       }
@@ -2141,7 +2131,8 @@ class LunaSoul extends EventEmitter {
         summary,
         chatUrl: finalUrl,
         sessionId,
-      };      return { success: true, summary, chatUrl: finalUrl };
+      };
+      return { success: true, summary, chatUrl: finalUrl };
     } catch (err) {
       console.error(`[DEBUG-LUNA] _compactContext finished (error): ${err.message}`);
       yield { type: 'compact_error', message: `❌ Erro na compactação: ${err.message}`, sessionId };
@@ -2774,9 +2765,16 @@ class LunaSoul extends EventEmitter {
       let canSteer = false;
 
       // Accumulate DOM-extracted action results for auto-continue
-      const domActionResults = [];      // v10.13: Background action promises for non-blocking execution
-      const domActionPromises = [];      // v10.13: EventBus for async tool results during stream consumption
-      const eventBus = new EventBus();      // v12.6-fix: per-turn dedup — the bridge may deliver the same logical tool      // from multiple detection sources (network interceptor, DOM structure,      // extension). Only the first detection starts a card/execution; later ones      // are silently ignored so 1 Kimi tool always maps to 1 Luna card.      const startedToolHashes = new Set();
+      const domActionResults = [];
+      // v10.13: Background action promises for non-blocking execution
+      const domActionPromises = [];
+      // v10.13: EventBus for async tool results during stream consumption
+      const eventBus = new EventBus();
+      // v12.6-fix: per-turn dedup — the bridge may deliver the same logical tool
+      // from multiple detection sources (network interceptor, DOM structure,
+      // extension). Only the first detection starts a card/execution; later ones
+      // are silently ignored so 1 Kimi tool always maps to 1 Luna card.
+      const startedToolHashes = new Set();
       // v14.0: Track if response was handled by delimited protocol
       let v2ResponseHandled = false;
       // v14.0: Track if V2 response is complete (for immediate turn termination)
@@ -2883,7 +2881,8 @@ class LunaSoul extends EventEmitter {
               break;
             }
 
-            case 'thinking_delta':              fullThinking += event.text;
+            case 'thinking_delta':
+              fullThinking += event.text;
               yield { type: 'thinking_delta', text: event.text, fullThinking, sessionId };
               break;
 
@@ -2971,7 +2970,8 @@ class LunaSoul extends EventEmitter {
                 break;
               }
               startedToolHashes.add(toolHash);
-              const toolInstanceId = nextToolEventId();              const parsedAction = {
+              const toolInstanceId = nextToolEventId();
+              const parsedAction = {
                 mode: 'ACTION',
                 tool: event.action?.tool || event.action?.type,
                 params: event.action?.params || event.action,
@@ -4071,6 +4071,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     }
     if (stderr && !body.includes(stderr)) out += `\nstderr: ${stderr}`;
     if (suggestion) out += `\nsugestão: ${suggestion}`;
+    // 2026-10-13 (decreto owner): TODO resultado de tool carrega o lembrete das
+    // meta-tools — o modelo nunca fica sem saber como re-olhar o próprio arsenal.
+    out += `\n💡 suas tools: listTools {} (índice) · toolInfo {"name": "NOME"} (docs) · brainSearch {"query": "..."} (memória da empresa)`;
     return out;
   }
 
@@ -4207,7 +4210,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
    * Non-generator version of _processModeStream.
    * Returns { events: [], output: string, tool: string } for auto-continue loop.
    */
-  async _processModeResult(parsed, sessionId, originalInput, options, eventBus = null) {    // W6-T9: backstop — a CHAT turn whose "response" is actually raw tool/script
+  async _processModeResult(parsed, sessionId, originalInput, options, eventBus = null) {
+    // W6-T9: backstop — a CHAT turn whose "response" is actually raw tool/script
     // JSON (the Kimi DOM can deliver it as plain text) is re-dispatched as an
     // action instead of being persisted as a chat reply. Raw JSON is NEVER
     // persisted: intent-JSON that fails validation becomes a friendly PT-BR error.
@@ -4250,7 +4254,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           parsed.params = Object.keys(rest).length > 0 ? rest : {};
         }
         const _toolKey = `${parsed.tool || 'unknown'}:${JSON.stringify(parsed.params || {})}`;
-        const _toolHash = require('crypto').createHash('sha256').update(_toolKey).digest('hex').slice(0, 16);        // v9.5-fix: Check for recently executed action. If found, replay the stored result
+        const _toolHash = require('crypto').createHash('sha256').update(_toolKey).digest('hex').slice(0, 16);
+        // v9.5-fix: Check for recently executed action. If found, replay the stored result
         // instead of skipping silently — this prevents infinite loops where Kimi re-sends
         // the same tool because it never received the result.
         const cachedResult = isMutatingToolCall(parsed.tool, parsed.params) ? this._getRecentActionResult(sessionId, _toolHash) : null; // v13.0 (F3.2): read-only tools never replay cache
@@ -4478,7 +4483,8 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
       default:
         events.push(this._handleChat({ response: `Modo desconhecido: ${mode}. Tool: ${parsed.tool || 'unknown'}` }, sessionId));
-    }    return { events, output, tool, pendingPromises };
+    }
+    return { events, output, tool, pendingPromises };
   }
 
   /** Stream-aware plan handler */
@@ -4662,7 +4668,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const isToolResult = options.isToolResult === true;
       // v12.0: tool-loop turns carry only the last 3 events (the Kimi thread
       // already holds the full conversation); follow-ups keep the last 10.
-      const history = historyLines.slice(isToolResult ? -3 : -10).join('\n');
+      const history = historyLines.slice(isToolResult ? -12 : -10).join('\n');
 
       // Workspace context (if set) — include in follow-ups too.
       // W8-T1b: derive the workspace from the SESSION user (same derivation as
@@ -5023,7 +5029,13 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
 
   /** ACTION mode — execute a tool */
   async _handleAction(parsed, sessionId, options, emitProgress = null, eventBus = null, toolInstanceId = null) {
-    const tool = parsed.tool || parsed.action?.type;
+    // 2026-10-14: alias adapter — resolve nomes inventados pelo modelo
+    // (sendMessageWhatsApp, read_file...) para o nome canônico exportado.
+    const _resolved = resolveToolName(parsed.tool || parsed.action?.type);
+    if (_resolved.adaptedFrom) {
+      console.warn(`[ToolAlias] '${_resolved.adaptedFrom}' -> '${_resolved.tool}' (session ${sessionId})`);
+    }
+    const tool = _resolved.tool;
     const params = parsed.params || parsed.action?.params || {};
     const reasoning = parsed.reasoning || '';
     let result;
@@ -5366,6 +5378,24 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'dashboardDeleteVotingSession': return lunaTools.dashboardDeleteVotingSession(p);
               case 'listTools': return lunaTools.listTools(p);
               case 'toolInfo': return lunaTools.toolInfo(p);
+              // 🧠 Brain (memória institucional NEXO) — 2026-10-13
+              case 'brainSearch': return lunaTools.brainSearch(p);
+              case 'brainRead': return lunaTools.brainRead(p);
+              case 'brainSaveOutcome': return lunaTools.brainSaveOutcome(p);
+              // 🗂️ Workspace Nexo (solicitações do portal /nexo) — 2026-10-14
+              case 'workspaceListRequests': return lunaTools.workspaceListRequests(p);
+              case 'workspaceGetRequest': return lunaTools.workspaceGetRequest(p);
+              case 'workspaceCreateRequest': return lunaTools.workspaceCreateRequest(p);
+              case 'workspaceUpdateRequest': return lunaTools.workspaceUpdateRequest(p);
+              case 'workspaceAddComment': return lunaTools.workspaceAddComment(p);
+              case 'workspaceListProjects': return lunaTools.workspaceListProjects(p);
+              case 'workspaceListOrganizations': return lunaTools.workspaceListOrganizations(p);
+              case 'workspaceListClients': return lunaTools.workspaceListClients(p);
+              case 'whatsappListContacts': return lunaTools.whatsappListContacts(p);
+              case 'whatsappListGroups': return lunaTools.whatsappListGroups(p);
+              case 'whatsappGroupMembers': return lunaTools.whatsappGroupMembers(p);
+              case 'whatsappSendMessage': return lunaTools.whatsappSendMessage(p);
+              case 'whatsappAllowContact': return lunaTools.whatsappAllowContact(p);
               case 'dashboardCommandRouter': return this._execDashboardCommandRouter(p);
               default: return { success: false, error: `Ferramenta desconhecida: ${tool}` };
             }
@@ -5560,6 +5590,14 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       } catch (err) {
         result = { success: false, error: err.message };
       }
+    }
+
+    // 2026-10-14: alias adapter — avisa o modelo quando o nome da tool foi adaptado
+    if (_resolved.adaptedFrom && result && typeof result === 'object') {
+      result.aliasAdaptedFrom = _resolved.adaptedFrom;
+      const _aliasNote = `[tool '${_resolved.adaptedFrom}' entendida como '${tool}'] `;
+      if (typeof result.message === 'string' && result.message) result.message = _aliasNote + result.message;
+      else if (result.stdout) result.message = _aliasNote + String(result.stdout);
     }
 
     // Auto-commit git hook for file-modifying tools
