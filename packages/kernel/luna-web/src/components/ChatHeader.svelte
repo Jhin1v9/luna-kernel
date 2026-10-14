@@ -3,6 +3,7 @@
   import { Zap, Brain, Globe, Drama } from 'lucide-svelte';
   import { lunaStore, MODE_COLORS } from '../stores.js';
   import { fetchPersonas, setSessionPersona, setSessionProvider, fetchProviders, compactSession } from '../api.js';
+  import RodaIndicator from './RodaIndicator.svelte';
 
   const dispatch = createEventDispatcher();
 
@@ -219,6 +220,9 @@
 
   <!-- RIGHT: Actions -->
   <div class="header-right">
+    <!-- Roda de providers — provider ativo no momento (decreto owner 13/10) -->
+    <RodaIndicator />
+
     <!-- Provider Selector (integrated) -->
     <div class="provider-wrapper">
       <button
