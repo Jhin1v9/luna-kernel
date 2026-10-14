@@ -33,6 +33,9 @@ const BACKEND_PORT = process.env.LUNA_CONFIG_PORT || discoverBackendPort();
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
 
 export default defineConfig({
+  // base relativo: permite servir em /luna/ (Caddy strip) ou qualquer subpath
+  // em qualquer dispositivo — nunca quebra por path absoluto de outro build.
+  base: './',
   plugins: [svelte(), basicSsl()],
   server: {
     port: 5173,
