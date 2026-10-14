@@ -39,6 +39,8 @@ const ALIAS_MAP = {
   enviarmsg: 'dashboardSendWhatsApp',
   mandarmensagem: 'dashboardSendWhatsApp',
   sendmessage: 'dashboardSendWhatsApp',
+  messagesendwhatsapp: 'dashboardSendWhatsApp',
+  sendwhatsappmsg: 'dashboardSendWhatsApp',
   sendmsg: 'dashboardSendWhatsApp',
   // 📧 Email
   sendemail: 'dashboardSendEmail',
