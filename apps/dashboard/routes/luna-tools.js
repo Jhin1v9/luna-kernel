@@ -1,33 +1,29 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * Luna Tools API — Proxy to Dashboard PRO (port 3456)
+ * Luna Tools API — Proxy para o Dashboard Backend real (v6.0)
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * All reads/writes go to Dashboard PRO via HTTP. No local JSON files.
+ * v6.0: O "Dashboard PRO" da porta 3456 nunca existiu em produção. Os dados
+ * reais (leads, tarefas, financeiro, votação) vivem no backend do painel
+ * Nexo (container nexo_dashboard_backend :3500 no VPS), exposto pelo Caddy
+ * em https://vps.nexo-digital.app/dashboard/api/* e autenticado por Bearer.
+ *
+ * Config via env (apps/dashboard/.env — vale no PC e no VPS):
+ *   LUNA_DASHBOARD_URL   — default https://vps.nexo-digital.app/dashboard
+ *   LUNA_DASHBOARD_TOKEN — Bearer token (INTERNAL_API_TOKEN do backend 3500)
  * ═══════════════════════════════════════════════════════════════════════════
  */
 const express = require('express');
 const http = require('http');
-const jwt = require('jsonwebtoken');
+const https = require('https');
 const NodeCache = require('node-cache');
 const router = express.Router();
 
-// v5.2: Centralized config
-const path = require('path');
-let config;
-try {
-  const { LUNA_KERNEL_DIR } = require('../lib/resolve-luna.cjs');
-  config = require(path.join(LUNA_KERNEL_DIR, 'config', 'luna-config'));
-} catch (e) {
-  config = {
-    URLS: { dashboard: 'http://localhost:3456' },
-    AUTH: { jwtSecret: process.env.JWT_SECRET || 'nexo-default-secret-change-me' },
-    PORTS: { dashboard: 3456 },
-    DB: { cacheTTL: { stats: 30, leads: 30, tasks: 30, finance: 30, voting: 30 } }
-  };
-}
+const DASHBOARD_BASE = (process.env.LUNA_DASHBOARD_URL || 'https://vps.nexo-digital.app/dashboard').replace(/\/+$/, '');
+const DASHBOARD_TOKEN = process.env.LUNA_DASHBOARD_TOKEN || process.env.DASHBOARD_INTERNAL_TOKEN || '';
+const CACHE_TTL = { stats: 30, leads: 30, tasks: 30, finance: 30, voting: 30 };
 
-// v5.2: In-memory cache for read-heavy endpoints
-const cache = new NodeCache({ stdTTL: config?.DB?.cacheTTL?.stats || 30, checkperiod: 60 });
+// In-memory cache for read-heavy endpoints
+const cache = new NodeCache({ stdTTL: CACHE_TTL.stats, checkperiod: 60 });
 const CACHE_KEYS = {
   leads: 'tools:leads',
   tasks: 'tools:tasks',
@@ -39,45 +35,37 @@ function invalidateCache(...keys) {
   keys.forEach(k => cache.del(k));
 }
 
-const DASHBOARD_URL = config.URLS.dashboard;
-const JWT_SECRET = config.AUTH.jwtSecret;
-
-// Service token for Dashboard PRO authentication
-function getServiceToken() {
-  return jwt.sign(
-    { userId: 'luna-web', name: 'Luna Web', role: 'Admin' },
-    JWT_SECRET,
-    { expiresIn: '1h' }
-  );
-}
-
-function dashboardRequest(path, method = 'GET', body = null) {
+function dashboardRequest(apiPath, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
-    const token = getServiceToken();
-    const options = {
-      hostname: 'localhost',
-      port: config.PORTS.dashboard,
-      path,
+    if (!DASHBOARD_TOKEN) {
+      const err = new Error('LUNA_DASHBOARD_TOKEN não configurado (apps/dashboard/.env)');
+      err.code = 'NO_TOKEN';
+      return reject(err);
+    }
+    const url = new URL(`${DASHBOARD_BASE}${apiPath}`);
+    const transport = url.protocol === 'https:' ? https : http;
+    const req = transport.request({
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      path: url.pathname + url.search,
       method,
       headers: {
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${DASHBOARD_TOKEN}`,
         'Content-Type': 'application/json'
-      }
-    };
-
-    const req = http.request(options, (res) => {
+      },
+      timeout: 12000
+    }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
-          const json = JSON.parse(data);
-          resolve({ status: res.statusCode, body: json });
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
         } catch {
           resolve({ status: res.statusCode, body: data });
         }
       });
     });
-
+    req.on('timeout', () => req.destroy(new Error('Timeout ao consultar Dashboard')));
     req.on('error', reject);
     if (body) req.write(JSON.stringify(body));
     req.end();
@@ -96,7 +84,7 @@ router.get('/api/tools/leads', async (req, res) => {
     }
     const result = await dashboardRequest('/api/leads');
     if (result.status !== 200 || !result.body.success) {
-      return res.status(502).json({ ok: false, error: 'Dashboard PRO indisponível' });
+      return res.status(502).json({ ok: false, error: 'Dashboard indisponível' });
     }
     const leads = result.body.leads || [];
 
@@ -118,7 +106,7 @@ router.get('/api/tools/leads', async (req, res) => {
     });
 
     const response = { ok: true, leads, stats };
-    cache.set(CACHE_KEYS.leads, response, config.DB.cacheTTL.leads);
+    cache.set(CACHE_KEYS.leads, response, CACHE_TTL.leads);
     res.json(response);
   } catch (e) {
     console.error('[LunaTools] leads GET error:', e.message);
@@ -165,7 +153,7 @@ router.get('/api/tools/tasks', async (req, res) => {
     }
     const result = await dashboardRequest('/api/tasks');
     if (result.status !== 200 || !Array.isArray(result.body)) {
-      return res.status(502).json({ ok: false, error: 'Dashboard PRO indisponível' });
+      return res.status(502).json({ ok: false, error: 'Dashboard indisponível' });
     }
     const tasks = result.body;
 
@@ -187,7 +175,7 @@ router.get('/api/tools/tasks', async (req, res) => {
     });
 
     const response = { ok: true, tasks, stats };
-    cache.set(CACHE_KEYS.tasks, response, config.DB.cacheTTL.tasks);
+    cache.set(CACHE_KEYS.tasks, response, CACHE_TTL.tasks);
     res.json(response);
   } catch (e) {
     console.error('[LunaTools] tasks GET error:', e.message);
@@ -232,7 +220,7 @@ router.get('/api/tools/finance', async (req, res) => {
     }
     const result = await dashboardRequest('/api/finance/summary');
     if (result.status !== 200) {
-      return res.status(502).json({ ok: false, error: 'Dashboard PRO indisponível' });
+      return res.status(502).json({ ok: false, error: 'Dashboard indisponível' });
     }
     const data = result.body;
     const response = {
@@ -249,7 +237,7 @@ router.get('/api/tools/finance', async (req, res) => {
         currency: data.balance?.currency || 'EUR'
       }
     };
-    cache.set(CACHE_KEYS.finance, response, config.DB.cacheTTL.finance);
+    cache.set(CACHE_KEYS.finance, response, CACHE_TTL.finance);
     res.json(response);
   } catch (e) {
     console.error('[LunaTools] finance error:', e.message);
@@ -269,7 +257,7 @@ router.get('/api/tools/voting', async (req, res) => {
     }
     const result = await dashboardRequest('/api/voting/sessions');
     if (result.status !== 200 || !result.body.sessions) {
-      return res.status(502).json({ ok: false, error: 'Dashboard PRO indisponível' });
+      return res.status(502).json({ ok: false, error: 'Dashboard indisponível' });
     }
     const sessions = result.body.sessions || [];
     const open = sessions.filter(s => s.status === 'open');
@@ -289,7 +277,7 @@ router.get('/api/tools/voting', async (req, res) => {
         sessions: sessions.slice(0, 20)
       }
     };
-    cache.set(CACHE_KEYS.voting, response, config.DB.cacheTTL.voting);
+    cache.set(CACHE_KEYS.voting, response, CACHE_TTL.voting);
     res.json(response);
   } catch (e) {
     console.error('[LunaTools] voting error:', e.message);
@@ -350,7 +338,7 @@ router.get('/api/tools/stats', async (req, res) => {
         }
       }
     };
-    cache.set(CACHE_KEYS.stats, response, config.DB.cacheTTL.stats);
+    cache.set(CACHE_KEYS.stats, response, CACHE_TTL.stats);
     res.json(response);
   } catch (e) {
     console.error('[LunaTools] stats error:', e.message);

@@ -1142,6 +1142,23 @@ router.post('/api/chat/export', async (req, res) => {
 });
 
 // ============================================================
+// Roda status — visor de provider atual da Luna Web (2026-10-13)
+// ============================================================
+
+router.get('/api/roda/status', async (req, res) => {
+  try {
+    const luna = await getLunaSoul();
+    const bridge = luna?.kimiBridge;
+    if (bridge && typeof bridge.getStatus === 'function') {
+      return res.json({ ok: true, ...bridge.getStatus() });
+    }
+    res.json({ ok: false, error: 'bridge sem getStatus (transporte nao-API?)', current: null, providers: [] });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, current: null, providers: [] });
+  }
+});
+
+// ============================================================
 // Config API
 // ============================================================
 

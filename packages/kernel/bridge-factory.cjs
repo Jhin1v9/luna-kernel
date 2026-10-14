@@ -23,14 +23,18 @@ const AGENT_CONFIG_CANDIDATES = [
 function readAgentProvidersConfig() {
   const candidates = [
     process.env.LUNA_AGENT_CONFIG_PATH || '',
+    process.env.LUNA_RODA_CONFIG || '',  // VPS standalone: roda do kernel (sem luna-agent por perto)
     path.resolve(__dirname, '..', '..', '..', 'Luna cto', 'luna-agent', 'config', 'providers.json'),  // pasta original do kernel
     path.resolve(__dirname, '..', '..', '..', 'config', 'providers.json'),                          // monorepo: kernel/ dentro do agent
     path.resolve(__dirname, '..', '..', '..', '..', 'Luna cto', 'luna-agent', 'config', 'providers.json'),
   ].filter(Boolean);
   for (const p of candidates) {
     try {
-      // só aceita o config do luna-agent — existem providers.json "decoy" por aí
-      if (!p.replace(/\\/g, '/').includes('luna-agent')) continue;
+      // só aceita o config do luna-agent — existem providers.json "decoy" por aí.
+      // exceção: path EXPLÍCITO por env (LUNA_AGENT_CONFIG_PATH / LUNA_RODA_CONFIG)
+      // é intenção do operador, não decoy.
+      const explicit = p === process.env.LUNA_AGENT_CONFIG_PATH || p === process.env.LUNA_RODA_CONFIG;
+      if (!explicit && !p.replace(/\\/g, '/').includes('luna-agent')) continue;
       if (fs.existsSync(p)) return { config: JSON.parse(fs.readFileSync(p, 'utf8')), path: p };
     } catch (e) {
       console.warn(`[BRIDGE-FACTORY] providers.json ilegível em ${p}: ${e.message}`);
@@ -161,6 +165,10 @@ class RodaApiBridge {
     this.connected = false;
     this._abort = null;
     this._bridge = null;
+    // 2026-10-13: saúde por provider pro indicador da Luna Web.
+    // ok → 🟢 | limited (429/quota ao menos 1x) → 🟠 | dead (falhas seguidas) → 🔴
+    this.health = {};
+    for (const p of roda) this.health[p.label] = { fails: 0, limited: false, ok: false, lastErr: '' };
     this._montar();
     console.log(`[RODA-BRIDGE] ativa — ${roda.length} provider(s); head: ${roda[0].label} (${roda[0].model})`);
   }
@@ -173,6 +181,20 @@ class RodaApiBridge {
   }
 
   get currentLabel() { return this.roda[this.idx].label; }
+
+  /** Estado da roda p/ o endpoint /api/roda/status (visor da Luna Web). */
+  getStatus() {
+    return {
+      current: this.roda[this.idx].label,
+      idx: this.idx,
+      providers: this.roda.map((p, i) => {
+        const h = this.health[p.label] || { fails: 0, limited: false, ok: false };
+        const status = h.ok && !h.limited ? 'ok' : (h.limited && h.fails < 3 ? 'limited' : (h.fails >= 3 || h.limited ? 'dead' : 'unknown'));
+        return { id: p.label.replace(/^(roda|agent):/, ''), model: p.model, current: i === this.idx, fails: h.fails, limited: h.limited, status, lastErr: (h.lastErr || '').slice(0, 120) };
+      }),
+      updatedAt: new Date().toISOString(),
+    };
+  }
 
   async connect() { this.connected = true; }
   async disconnect() { this.connected = false; await this.cancelStream(); }
@@ -195,11 +217,16 @@ class RodaApiBridge {
     let promptAtual = prompt;
     for (let tentativa = 0; tentativa < this.roda.length; tentativa++) {
       let parcial = '';
+      const labelAtual = this.roda[this.idx].label;
       try {
         const resposta = [];
         for await (const ev of this._bridge.sendMessageStream(userId, promptAtual, options, provider)) {
           yield ev;
-          if (ev.type === 'done') return;
+          if (ev.type === 'done') {
+            const h = this.health[labelAtual] || (this.health[labelAtual] = { fails: 0, limited: false });
+            h.ok = true; h.fails = 0;
+            return;
+          }
           if (ev.type === 'response_delta') parcial += ev.text || '';
           resposta.push(ev);
         }
@@ -210,10 +237,18 @@ class RodaApiBridge {
       } catch (e) {
         lastErr = e;
         const msg = String(e.message || e);
+        const h = this.health[labelAtual] || (this.health[labelAtual] = { fails: 0, limited: false });
+        h.fails += 1;
+        h.lastErr = msg;
+        if (/HTTP 429|quota|rate.?limit/i.test(msg)) h.limited = true;
         const falhaDeProvider = /HTTP (4\d\d|5\d\d)|quota|rate.?limit|timeout|abortado|vazio|abort|fetch failed|ECONNREFUSED|ENOTFOUND|ENETUNREACH|socket hangup|model not found/i.test(msg);
         this.idx = (this.idx + 1) % this.roda.length;
         if (this.idx === startIdx || !falhaDeProvider) {
-          // ciclo completo ou erro não-transitório: desiste
+          // ciclo completo ou erro não-transitório: desiste com mensagem amigável
+          const rodaEsgotada = this.idx === startIdx && falhaDeProvider;
+          if (rodaEsgotada) {
+            throw new Error('Todos os providers da roda falharam (cotas diárias esgotadas ou instáveis no momento). Aguarde alguns minutos ou verifique as chaves — a roda gira sozinha quando algum voltar. Último erro: ' + msg.slice(0, 120));
+          }
           throw e;
         }
         console.warn(`[RODA-BRIDGE] ${msg.slice(0, 120)} — girando pra ${this.roda[this.idx].label}`);

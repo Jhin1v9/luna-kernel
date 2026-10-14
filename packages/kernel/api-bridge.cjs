@@ -9,7 +9,10 @@
  * o parse e a execução de tools continuam 100% no luna-soul.
  */
 
-const TIMEOUT_MS = 10 * 60 * 1000; // exceção justificada no ADR: APIs grátis são lentas
+const TIMEOUT_MS = 3 * 60 * 1000; // 3min: APIs grátis são lentas, mas 10min por provider
+// mata a "roda infinita" — um endpoint morto (ex.: NVIDIA travando a conexão)
+// segurava o turno o tempo todo antes de girar pro próximo. 3min cobre o p99
+// das APIs grátis e mantém o failover vivo (evidência VPS 2026-10-13).
 
 class ApiBridge {
   constructor({ baseUrl, apiKey = null, model, label = 'api' }) {
@@ -63,7 +66,11 @@ class ApiBridge {
         body: JSON.stringify({
           model: this.model,
           messages: [{ role: 'user', content: prompt }],
-          temperature: 0,
+          // 2026-10-13: temperature fixa 0 quebrava kimi-for-coding ("invalid
+          // temperature: only 1 is allowed") — HTTP 400 em TODO turno, a roda
+          // girava pra providers piores e a resposta morria. Agora só envia se
+          // LUNA_API_TEMPERATURE estiver explícita; default = default do provider.
+          ...(process.env.LUNA_API_TEMPERATURE ? { temperature: Number(process.env.LUNA_API_TEMPERATURE) } : {}),
           stream: true,
         }),
         signal: this._abort.signal,
