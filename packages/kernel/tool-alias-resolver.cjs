@@ -57,6 +57,17 @@ const ALIAS_MAP = {
     novocontato: 'whatsappAllowContact',
     cadastrarcontato: 'whatsappAllowContact',
     allowcontact: 'whatsappAllowContact',
+    // ⚙️ providers/roda (2026-10-14)
+    providers: 'dashboardConfigProvider',
+    listaproviders: 'dashboardConfigProvider',
+    rodaproviders: 'dashboardConfigProvider',
+    configproviders: 'dashboardConfigProvider',
+    addprovider: 'dashboardAddProvider',
+    novoprovider: 'dashboardAddProvider',
+    setkey: 'dashboardSetProviderKey',
+    setapikey: 'dashboardSetProviderKey',
+    salvarkey: 'dashboardSetProviderKey',
+    removeprovider: 'dashboardRemoveProvider',
   // 📧 Email
   sendemail: 'dashboardSendEmail',
   enviaremail: 'dashboardSendEmail',

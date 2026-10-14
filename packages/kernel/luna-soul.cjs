@@ -5396,6 +5396,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'whatsappGroupMembers': return lunaTools.whatsappGroupMembers(p);
               case 'whatsappSendMessage': return lunaTools.whatsappSendMessage(p);
               case 'whatsappAllowContact': return lunaTools.whatsappAllowContact(p);
+              case 'dashboardConfigProvider': return lunaTools.dashboardConfigProvider(p);
+              case 'dashboardListProviders': return lunaTools.dashboardListProviders(p);
+              case 'dashboardSetProviderKey': return lunaTools.dashboardSetProviderKey(p);
+              case 'dashboardAddProvider': return lunaTools.dashboardAddProvider(p);
+              case 'dashboardRemoveProvider': return lunaTools.dashboardRemoveProvider(p);
               case 'dashboardCommandRouter': return this._execDashboardCommandRouter(p);
               default: return { success: false, error: `Ferramenta desconhecida: ${tool}` };
             }

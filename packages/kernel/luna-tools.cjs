@@ -25,6 +25,7 @@ const http = require('http');
 const lunaConfig = require('./config/luna-config');
 const workspaceNexoTools = require('./workspace-nexo-tools.cjs');
 const whatsappTools = require('./whatsapp-tools.cjs');
+const providerTools = require('./dashboard-providers-tools.cjs');
 const { looksBinary } = require('./lib/text-file.cjs');
 const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { clampExecTimeout, shQuote } = require('./lib/exec-timeout.cjs');
@@ -3234,4 +3235,6 @@ module.exports = {
   ...workspaceNexoTools,
   // WhatsApp — diretório, envio por nome/jid e onboarding (2026-10-14)
   ...whatsappTools,
+  // Painel — configuração da roda de providers (2026-10-14)
+  ...providerTools,
 };

@@ -172,6 +172,15 @@ const EXTRA_DASHBOARD_TOOLS = {
     { name: 'whatsappSendMessage', desc: 'Envia msg pra NOME, jid ou número — grupo incluído. FLUXO: listar → escolher → enviar.', params: ['to', 'message'] },
     { name: 'whatsappAllowContact', desc: 'PROTOCOLO NOVO CONTATO: add nome/número na allowlist + diretório (decree owner).', params: ['name', 'phone?', 'note?'] },
   ],
+  // ⚙️ 2026-10-14: a Luna CONFIGURA A RODA DE PROVIDERS do painel via tool —
+  // o owner manda a key e ela põe direto.
+  '⚙️ Painel — Providers & Roda': [
+    { name: 'dashboardConfigProvider', desc: 'API unificada: list | set-key | add-preset | add-custom | remove.', params: ['action', '...'] },
+    { name: 'dashboardListProviders', desc: 'Lista providers da roda com status de key.', params: ['busca?'] },
+    { name: 'dashboardSetProviderKey', desc: 'Salva uma API key no .env via painel (env + value).', params: ['env', 'value'] },
+    { name: 'dashboardAddProvider', desc: 'Adiciona provider (presetId ou custom {...}).', params: ['presetId? | provider?'] },
+    { name: 'dashboardRemoveProvider', desc: 'Remove um provider da roda.', params: ['id'] },
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────────────────
