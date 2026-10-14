@@ -17,6 +17,12 @@ const { makeEventDedupKey } = require('./lib/chat-event-dedup.cjs');
 // Targeted service recovery via pm2 (canonical monorepo process names)
 const selfheal = require('./lib/selfheal.cjs');
 
+// v14.2 (owner 2026-10-14): a RODA de providers é a via principal — nada
+// depende de uma só API. Novas sessões nascem com provider 'roda' (o
+// bridge-factory resolve a fila completa com failover); 'kimi' só volta
+// como default se LUNA_DEFAULT_PROVIDER for setado explicitamente.
+const DEFAULT_WEB_PROVIDER = process.env.LUNA_DEFAULT_PROVIDER || 'roda';
+
 // v11.0: Centralized kernel resolution via shared resolver
 const { LUNA_KERNEL_DIR } = require('./lib/resolve-luna.cjs');
 console.log('[DEBUG-LUNA-RESOLVE-2] LUNA_KERNEL_DIR:', LUNA_KERNEL_DIR, 'SOUL_PATH:', path.join(LUNA_KERNEL_DIR, 'luna-soul.cjs'));
@@ -159,7 +165,7 @@ function generateWebSessionId() {
   return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 }
 
-function createWebSession(title = 'Nova conversa', mode = 'instant', persona = 'default', id = null, provider = 'kimi') {
+function createWebSession(title = 'Nova conversa', mode = 'instant', persona = 'default', id = null, provider = DEFAULT_WEB_PROVIDER) {
   const sessionId = id || generateWebSessionId();
   const session = {
     id: sessionId,
@@ -201,7 +207,7 @@ async function loadSessionFromDB(id) {
         title: row.title,
         mode: row.mode,
         persona: row.persona || 'default',
-        provider: row.provider || 'kimi',
+        provider: row.provider || DEFAULT_WEB_PROVIDER,
         messages: Array.isArray(row.messages) ? row.messages : (typeof row.messages === 'string' ? JSON.parse(row.messages) : []),
         eventLedger: Array.isArray(row.event_ledger) ? row.event_ledger : (typeof row.event_ledger === 'string' ? JSON.parse(row.event_ledger) : []),
         lastAckedEventId: row.last_acked_event_id || null,
@@ -515,7 +521,7 @@ router.post('/api/chat', async (req, res) => {
       userId: 'web-' + session.id,
       mode: ['instant', 'thinking'].includes(mode) ? mode : 'instant',
       persona: session.persona || 'default',
-      provider: session.provider || 'kimi',
+      provider: session.provider || DEFAULT_WEB_PROVIDER,
       files: finalFiles,
       messageId,
     });
@@ -852,7 +858,7 @@ router.get('/api/chat/sessions', async (req, res) => {
       id: s.id,
       title: s.title,
       mode: s.mode || 'instant',
-      provider: s.provider || 'kimi',
+      provider: s.provider || DEFAULT_WEB_PROVIDER,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       messageCount: Array.isArray(s.messages) ? s.messages.length : 0,
@@ -873,7 +879,7 @@ router.get('/api/chat/sessions', async (req, res) => {
           title: row.title,
           mode: row.mode,
           persona: row.persona || 'default',
-          provider: row.provider || 'kimi',
+          provider: row.provider || DEFAULT_WEB_PROVIDER,
           messages: Array.isArray(row.messages) ? row.messages : (typeof row.messages === 'string' ? JSON.parse(row.messages) : []),
           eventLedger: [],
           lastAckedEventId: null,
@@ -908,7 +914,7 @@ router.post('/api/chat/session', async (req, res) => {
 
   switch (action) {
     case 'create': {
-      const session = createWebSession(title || 'Nova conversa', 'instant', persona || 'default', sessionId || undefined, provider || 'kimi');
+      const session = createWebSession(title || 'Nova conversa', 'instant', persona || 'default', sessionId || undefined, provider || DEFAULT_WEB_PROVIDER);
       res.json({ ok: true, session: { id: session.id, title: session.title, provider: session.provider } });
       break;
     }
@@ -2181,7 +2187,7 @@ router.post('/v1/chat/completions', async (req, res) => {
       userId: 'web-' + session.id,
       mode: 'instant',
       persona: 'default',
-      provider: 'kimi',
+      provider: DEFAULT_WEB_PROVIDER,
     });
 
     for await (const ev of stream) {

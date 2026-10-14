@@ -45,6 +45,22 @@ const { atomicWriteFileSync } = require('./lib/atomic-write.cjs');
 const { checkPathWithinRoots, PATH_PARAM_KEYS } = require('./lib/path-guard.cjs');
 const { makeProgressEvent } = require('./lib/progress-event.cjs');
 const { onContextLimit, shouldForceNewChat } = require('./lib/auto-compact-policy.cjs');
+
+// v14.2 (owner 2026-10-14): A RODA é a via principal — nada depende de uma
+// só API. O provider default vira 'roda' sempre que uma roda resolve; 'kimi'
+// (CDP/thread) só continua default quando NENHUMA roda existe na instalação.
+// Override explícito via LUNA_DEFAULT_PROVIDER.
+let _defaultProvider = null;
+function defaultProvider() {
+  if (_defaultProvider) return _defaultProvider;
+  try {
+    const { resolveApiRoda } = require('./bridge-factory.cjs');
+    _defaultProvider = process.env.LUNA_DEFAULT_PROVIDER || (resolveApiRoda().length ? 'roda' : 'kimi');
+  } catch {
+    _defaultProvider = process.env.LUNA_DEFAULT_PROVIDER || 'kimi';
+  }
+  return _defaultProvider;
+}
 const { parseToolJson, isBalancedJson, extractBalancedJsonObjects } = require('./lib/tool-json-parser.cjs'); // v12.0: unified tolerant parser
 const { normalizeParams } = require('./lib/tool-dedup-key.cjs'); // v12.6: deterministic tool identity for per-turn dedup
 const lunaConfig = require('./config/luna-config');
@@ -2548,7 +2564,7 @@ class LunaSoul extends EventEmitter {
         options.userId || 'luna-default',
         context.prompt,
         { mode },
-        options.provider || 'kimi'
+        options.provider || defaultProvider()
       );
       kimiResponse = result.response;
     } catch (err) {
@@ -2846,7 +2862,7 @@ class LunaSoul extends EventEmitter {
           // v10.43-fix: Only open a new chat on the very first iteration of the
           // auto-continue loop. Re-sending a tool result is a continuation of the
           // same turn and MUST stay in the same Kimi thread.
-          const provider = options.provider || 'kimi';
+          const provider = options.provider || defaultProvider();
           const forceNewChat = safety === 1 && shouldForceNewChat({ provider, isFirstMessage, bridgeRetryCount, autoCompactAttempted });
           const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: forceNewChat, isAutoContinue: safety > 1 }, provider);
 
@@ -3314,7 +3330,7 @@ class LunaSoul extends EventEmitter {
           continue; // Retry the while loop with new context
         }
 
-        console.error(`[LUNA-SOUL] Stream error: ${err.message} (provider=${options.provider || 'kimi'})`);
+        console.error(`[LUNA-SOUL] Stream error: ${err.message} (provider=${options.provider || defaultProvider()})`);
         // v14.0: Clear watchdog timer on error
         if (watchdogTimer) {
           clearInterval(watchdogTimer);
@@ -3668,7 +3684,7 @@ class LunaSoul extends EventEmitter {
 
         console.log(`[PLAN MODE] Turn ${turn + 1}/${MAX_TURNS} starting (toolsSoFar=${totalToolCalls}, promptLen=${turnPrompt.length})`);
 
-        const stream = this.kimiBridge.sendMessageStream(userId, turnPrompt, { mode: 'thinking', isAutoContinue: turn > 0 }, options.provider || 'kimi');
+        const stream = this.kimiBridge.sendMessageStream(userId, turnPrompt, { mode: 'thinking', isAutoContinue: turn > 0 }, options.provider || defaultProvider());
 
         for await (const event of stream) {
           while (eventBus.queue.length > 0) {
@@ -4669,10 +4685,14 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // v14.1 (owner 2026-10-14): providers da RODA de APIs (gemini, openrouter,
       // nvidia, groq...) são STATELESS — cada request é isolado, não existe
       // "thread" segurando a conversa. Sem reidratação a Luna Web fica amnésica
-      // entre mensagens (esquece até quem é o usuário). Para esses providers o
-      // follow-up carrega histórico longo; o kimi (thread nativa) mantém o
-      // comportamento antigo enxuto.
-      const isStatelessApi = Boolean(options.provider) && options.provider !== 'kimi';
+      // entre mensagens (esquece até quem é o usuário). Detecção pelo GROUND
+      // TRUTH: a ponte em uso. RodaApiBridge expõe canSteer()===false (não há
+      // thread pra steerar); KimiBridge (CDP) não tem o método e segura a
+      // conversa na thread do kimi web — lá o follow-up segue enxuto.
+      const _bridge = this.kimiBridge;
+      const isStatelessApi =
+        (typeof _bridge?.canSteer === 'function' && _bridge.canSteer() === false) ||
+        (Boolean(options.provider) && options.provider !== 'kimi');
       // v12.0: tool-loop turns carry only the last 3 events (the Kimi thread
       // already holds the full conversation); follow-ups keep the last 10.
       const history = historyLines.slice(isToolResult ? -12 : (isStatelessApi ? -30 : -10)).join('\n');
@@ -4785,6 +4805,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // cabeçalho reidratado precisa estar DENTRO do prompt.
       if (statelessHeader) {
         prompt = statelessHeader + (isToolResult ? `--- HISTÓRICO RECENTE ---\n${history}\n\n` : '') + prompt;
+        console.log(`[LUNA-PROMPT] stateless-rehydrate ON kind=${isToolResult ? 'toolLoop' : 'followUp'} headerBytes=${Buffer.byteLength(statelessHeader, 'utf8')}`);
       }
 
       return { prompt, systemPrompt, historyLines, desktopState, isFirstMessage: false };
@@ -6077,7 +6098,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         options.userId || 'luna-default',
         prompt,
         { mode: options.mode || this.defaultMode },
-        options.provider || 'kimi'
+        options.provider || defaultProvider()
       );
       kimiResponse = result.response;
     } catch (err) {
@@ -6466,7 +6487,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Classifique a intenção desta mensagem em UMA categoria: ${categories}.\nResponda APENAS com a palavra da categoria.\nMensagem: "${escapedInput}"`;
     try {
-      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || 'kimi', 'CHAT', 45000);
+      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || defaultProvider(), 'CHAT', 45000);
       const text = (result?.response || '').trim().toLowerCase();
       const category = getCategories().find(c => c.toLowerCase() === text);
       if (category) return category;
@@ -6489,7 +6510,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Você tem acesso apenas a estas tools da categoria **${cat.label}**:\n${toolList}\n\nPara atender a mensagem "${escapedInput}", escolha a tool correta e responda em JSON:\n{"tool": "${cat.tools[0].name}", "params": {}}`;
     try {
-      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || 'kimi', null, 45000);
+      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || defaultProvider(), null, 45000);
       const text = result?.response || '';
       const parsed = tolerantJsonParse(text);
       if (parsed && parsed.tool && typeof parsed.tool === 'string' && typeof parsed.params === 'object') {
@@ -6522,7 +6543,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Formate a resposta abaixo de forma amigável para o Telegram, usando emojis, listas e negrito. Seja breve e direta.\n\nCategoria: ${cat.emoji} ${cat.label}\n\nDados:\n${raw}\n\nResposta:`;
     try {
-      const formatted = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || 'kimi', raw, 60000);
+      const formatted = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || defaultProvider(), raw, 60000);
       return formatted?.response || raw;
     } catch (err) {
       console.error('[TelegramPipeline] formatTelegramResponse sendMessage failed:', err.message);
@@ -6536,7 +6557,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
     const telegramPersona = this._telegramPersona || '';
     const prompt = `${telegramPersona ? telegramPersona + '\n\n' : ''}Responda de forma amigável, breve e direta no Telegram.\n\nMensagem do usuário: ${escapedInput}\n\nResposta:`;
     try {
-      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || 'kimi', 'Hmm, não consegui pensar em uma resposta agora. 😅', 60000);
+      const result = await this._kimiSendWithTimeout(userId, prompt, { mode: 'instant', newChat: false }, options.provider || defaultProvider(), 'Hmm, não consegui pensar em uma resposta agora. 😅', 60000);
       return result?.response || 'Hmm, não consegui pensar em uma resposta agora. 😅';
     } catch (err) {
       console.error('[TelegramPipeline] telegramChatResponse sendMessage failed:', err.message);

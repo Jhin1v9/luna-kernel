@@ -200,6 +200,7 @@ class RodaApiBridge {
   async disconnect() { this.connected = false; await this.cancelStream(); }
   async newChat() { /* stateless */ }
   async recoverSession() { /* noop ok por contrato */ }
+  setPersistent() { /* noop — o heartbeat do painel chama; stateless não precisa */ }
   canSteer() { return false; }
 
   async cancelStream() {
