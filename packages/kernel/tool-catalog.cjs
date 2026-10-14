@@ -334,7 +334,10 @@ function buildToolIndex() {
   }
   const lines = [header];
   for (const [cat, tools] of byCat) {
-    lines.push('', cat);
+    // v14.1 (owner 2026-10-14): H1 por seção — o modelo navega por blocos
+    // nítidos (# BRAIN, # WHATSAPP, # SHELL...) em vez de legendas com emoji.
+    const h1 = String(cat).replace(/^\S+\s*/, '').toUpperCase();
+    lines.push('', `# ${h1}`);
     for (const t of tools) {
       lines.push(`- ${t.name} — ${t.desc}`);
     }

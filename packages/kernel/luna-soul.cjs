@@ -4666,9 +4666,16 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // v10.21-fix: use dedicated followUp/toolLoop templates instead of the
       // heavy mini-reminder + dashboard tool list on every turn.
       const isToolResult = options.isToolResult === true;
+      // v14.1 (owner 2026-10-14): providers da RODA de APIs (gemini, openrouter,
+      // nvidia, groq...) são STATELESS — cada request é isolado, não existe
+      // "thread" segurando a conversa. Sem reidratação a Luna Web fica amnésica
+      // entre mensagens (esquece até quem é o usuário). Para esses providers o
+      // follow-up carrega histórico longo; o kimi (thread nativa) mantém o
+      // comportamento antigo enxuto.
+      const isStatelessApi = Boolean(options.provider) && options.provider !== 'kimi';
       // v12.0: tool-loop turns carry only the last 3 events (the Kimi thread
       // already holds the full conversation); follow-ups keep the last 10.
-      const history = historyLines.slice(isToolResult ? -12 : -10).join('\n');
+      const history = historyLines.slice(isToolResult ? -12 : (isStatelessApi ? -30 : -10)).join('\n');
 
       // Workspace context (if set) — include in follow-ups too.
       // W8-T1b: derive the workspace from the SESSION user (same derivation as
@@ -4689,6 +4696,43 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const platform = process.platform;
       const shell = process.env.SHELL || (platform === 'win32' ? 'Git Bash / cmd' : '/bin/bash');
       const systemContext = `--- CONTEXTO DO SISTEMA ---\nSO: ${platform === 'win32' ? 'Windows (paths use \\ , shell via Git Bash)' : 'Linux'}\nWorkspace ativo: ${followUpWorkspacePath}\nShell padrão: ${shell}`;
+
+      // v14.1 (owner 2026-10-14): reidratação pra roda stateless — reconstrói
+      // o system condensado (persona + TOOL INDEX + memórias + brain + master)
+      // em CADA turno. É o que a Luna do WhatsApp já faz e por isso ela "sabe
+      // de tudo" e a Web esquecia. No tool-loop vai uma versão leve (persona +
+      // TOOL_INDEX + formato) pra não estourar contexto a cada execução.
+      let statelessHeader = '';
+      if (isStatelessApi) {
+        try {
+          const stPersona = loadPersona(session?.persona || 'default') || '';
+          const stMemories = loadMemories();
+          const stMemoryContext = stMemories.map(m => `[${m.file}]\n${m.content}`).join('\n\n');
+          if (isToolResult) {
+            statelessHeader = [
+              '[LUNA — REIDRATAÇÃO DE TURNO (API stateless)]',
+              stPersona ? `[PERSONA]\n${stPersona.slice(0, 800)}` : '',
+              buildToolIndex().split('{{WORKSPACE}}').join(followUpWorkspacePath),
+              'Você estava no meio de uma cadeia de tools. O resultado da última está abaixo — continue a cadeia (próxima tool) ou responda ao usuário com [[response]].',
+            ].filter(Boolean).join('\n\n') + '\n\n';
+          } else {
+            const stSystem = buildSystemPrompt({
+              skillIndex: loadSkillIndex().map(s => `- ${s.name}: ${s.description}`).join('\n'),
+              personaContent: stPersona,
+              memoryContext: stMemoryContext,
+              personaRegistry: loadPersonaRegistry().map(p => `- ${p.name}: ${p.description}`).join('\n'),
+              skillRegistry: loadSkillRegistry().map(s => `- ${s.name}: ${s.description}`).join('\n'),
+              agentsMd: loadAgentsMd(process.cwd()),
+              masterPrompt: loadMasterPrompt(),
+              userId: followUpUserId,
+              brainContext: loadBrainContext(),
+            });
+            statelessHeader = stSystem + '\n\n';
+          }
+        } catch (e) {
+          console.warn(`[LUNA-SOUL] stateless rehydrate falhou: ${e.message}`);
+        }
+      }
 
       // W8-T1c: miniReminder available to followUp/toolLoop templates as
       // {{miniReminder}} (config key miniReminder, default = shipped text).
@@ -4734,6 +4778,13 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // Debug log
       if (process.env.LUNA_DEBUG) {
         console.error(`[LunaDebug] FOLLOW_UP promptSize=${Buffer.byteLength(prompt, 'utf8')} bytes, toolResult=${isToolResult}, historyLines=${historyLines.length}`);
+      }
+
+      // v14.1: roda stateless — o systemPrompt NUNCA é enviado como role
+      // separado pela bridge (só o `prompt` vai no messages[]), então o
+      // cabeçalho reidratado precisa estar DENTRO do prompt.
+      if (statelessHeader) {
+        prompt = statelessHeader + (isToolResult ? `--- HISTÓRICO RECENTE ---\n${history}\n\n` : '') + prompt;
       }
 
       return { prompt, systemPrompt, historyLines, desktopState, isFirstMessage: false };
@@ -5404,7 +5455,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'callRespond':
               case 'call.respond': return lunaTools.callRespond(p);
               case 'dashboardCommandRouter': return this._execDashboardCommandRouter(p);
-              default: return { success: false, error: `Ferramenta desconhecida: ${tool}` };
+              default: return { success: false, error: `Ferramenta desconhecida: ${tool}. Execute listTools {} para ver o índice oficial (ou listTools {"busca": "trecho"}), e toolInfo {"name": "NOME"} pra docs completas da tool certa.` };
             }
           };
           // v9.4-fix: Real execution timer — source of truth for tool duration
