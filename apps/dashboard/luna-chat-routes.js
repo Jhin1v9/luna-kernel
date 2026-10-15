@@ -34,6 +34,7 @@ const providerLoader = require(path.join(LUNA_KERNEL_DIR, 'provider-loader.cjs')
 // ============================================================
 const LUNA_DIR = LUNA_KERNEL_DIR;
 const SOUL_PATH = path.join(LUNA_DIR, 'luna-soul.cjs');
+const { runGoalStream, parseGoalCommand } = require('./luna-goal');
 const ENV_PATH = path.join(LUNA_DIR, '.env');
 let lunaSoul = null;
 let lunaReady = false;
@@ -442,6 +443,10 @@ router.post('/api/chat', async (req, res) => {
   const { message, sessionId, mode = 'instant', files, messageId: clientMessageId } = req.body;
   if (!message) return res.status(400).json({ ok: false, error: 'message obrigatório' });
 
+  // v15.5 — Modo GOAL: '/goal <pedido>' ativa a missão com fim determinado
+  // (classificador + loop live brain). Também ativável via mode: 'goal'.
+  const goalCmd = parseGoalCommand(message);
+
   let session = sessionId ? getWebSession(sessionId) : null;
   if (!session && sessionId) {
     session = await loadSessionFromDB(sessionId);
@@ -449,7 +454,7 @@ router.post('/api/chat', async (req, res) => {
   if (!session) {
     session = createWebSession(message.slice(0, 40), mode, 'default', sessionId || undefined);
   }
-  session.mode = mode;
+  session.mode = goalCmd ? 'goal' : mode;
 
   // v5.3-fix: If message > 3KB, convert to .txt file to optimize Kimi input
   let finalMessage = message;
@@ -542,15 +547,20 @@ router.post('/api/chat', async (req, res) => {
     console.log('[DEBUG-LUNA-ROUTES] getting luna soul for session', session.id);
     const luna = await getLunaSoul();
     console.log('[DEBUG-LUNA-ROUTES] luna soul ready', !!luna, !!luna?.processMessageStream);
-    const stream = luna.processMessageStream(finalMessage, {
+    const baseTurnOpts = {
       sessionId: session.id,
       userId: 'web-' + session.id,
-      mode: ['instant', 'thinking'].includes(mode) ? mode : 'instant',
       persona: session.persona || 'default',
       provider: session.provider || DEFAULT_WEB_PROVIDER,
       files: finalFiles,
       messageId,
-    });
+    };
+    // v15.5 — Modo GOAL: o orquestrador (luna-goal) assume o turno e
+    // yield os mesmos eventos; o soul recebe 'thinking' (ele so conhece
+    // instant/thinking — 'goal' e modo de orquestracao, nao de soul).
+    const stream = session.mode === 'goal'
+      ? runGoalStream(luna, { ...baseTurnOpts, mode: 'thinking' }, session, goalCmd || finalMessage, myStreamMeta)
+      : luna.processMessageStream(finalMessage, { ...baseTurnOpts, mode: ['instant', 'thinking'].includes(mode) ? mode : 'instant' });
 
     // Wave 11: dedup by event id only. Content-based dedup was swallowing
     // thinking updates and repeated response/tool events.
