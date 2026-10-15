@@ -42,6 +42,35 @@ if (pool) {
 }
 
 /**
+ * v14.3 — Auto-migração no boot: garante que a tabela de sessões de chat
+ * exista antes da primeira escrita. Antes disso, uma instalação nova morria
+ * com "relation luna_chat_sessions does not exist" na primeira conversa.
+ * Fire-and-forget: loga e segue (o JSON fallback cobre se o banco estiver fora).
+ */
+async function ensureChatTables() {
+  if (!DB_ENABLED) return;
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS luna_chat_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      title TEXT,
+      mode TEXT,
+      persona TEXT,
+      provider TEXT,
+      messages JSONB DEFAULT '[]'::jsonb,
+      event_ledger JSONB DEFAULT '[]'::jsonb,
+      last_acked_event_id TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    console.log('[DB] tabela luna_chat_sessions verificada/criada');
+  } catch (err) {
+    console.warn(`[DB] auto-migração falhou (JSON fallback ativo): ${err.message}`);
+  }
+}
+ensureChatTables();
+
+/**
  * Retry wrapper for Neon PostgreSQL instability (ETIMEDOUT / ENETUNREACH)
  */
 async function _withRetry(fn, operationName = 'db') {

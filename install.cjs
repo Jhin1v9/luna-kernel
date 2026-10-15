@@ -209,7 +209,28 @@ async function main() {
     ? path.join(HOME, 'Documents', 'NEXO DIGITAL')
     : path.join(HOME, 'Documents', 'NEXO DIGITAL');
   const nexoBasePath = await ask('Caminho base da pasta NEXO DIGITAL', defaultNexoBase);
-  const databaseUrl = await ask('DATABASE_URL do PostgreSQL (ex: postgres://user:pass@localhost:5432/nexodb)', '');
+  const databaseUrl = await ask('DATABASE_URL do PostgreSQL (ex: postgres://user:pass@localhost:5432/nexodb) — Enter p/ pular (modo JSON)', '');
+  const brainInternalUrl = await ask('URL interna do Brain (memória de longo prazo)', 'http://127.0.0.1:4321');
+  const brainApiToken = await ask('Token do Brain (opcional — Enter p/ pular)', '');
+
+  // v14.3 — Roda de providers: gera config/providers.json com os presets
+  // gratuitos conhecidos (todos desabilitados sem key; pollinations não
+  // precisa de key e entra ligado). A Luna gira pra o próximo sozinha quando
+  // um provider falha (429/quota/5xx).
+  const rodaConfigPath = path.join(LUNA_DIR, 'config', 'providers.json');
+  ensureDir(path.dirname(rodaConfigPath));
+  const rodaPresets = {
+    _about: 'Roda de providers da Luna. enabled=true + apiKeyEnv preenchido no .env = provider elegível. A roda é FIFO por priority; ao falhar, gira pro próximo sozinho.',
+    providers: [
+      { id: 'gemini', label: 'Gemini Flash (Google)', model: 'gemini-2.5-flash', transport: 'openai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', apiKeyEnv: 'GEMINI_API_KEY', priority: 10, enabled: false, role: 'ambos' },
+      { id: 'github-gpt4o', label: 'GitHub Models — GPT-4o', model: 'openai/gpt-4o', transport: 'openai', baseUrl: 'https://models.github.ai/inference', apiKeyEnv: 'GITHUB_TOKEN', priority: 20, enabled: false, role: 'chat' },
+      { id: 'openrouter', label: 'OpenRouter', model: 'google/gemini-2.5-flash', transport: 'openai', baseUrl: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', priority: 30, enabled: false, role: 'ambos' },
+      { id: 'nvidia-nemotron', label: 'NVIDIA Nemotron 70B', model: 'nvidia/llama-3.1-nemotron-70b-instruct', transport: 'openai', baseUrl: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', priority: 40, enabled: false, role: 'ambos' },
+      { id: 'pollinations', label: 'Pollinations (sem key)', model: 'openai', transport: 'openai', baseUrl: 'https://text.pollinations.ai/openai', apiKeyEnv: null, priority: 90, enabled: true, role: 'chat' },
+    ],
+  };
+  fs.writeFileSync(rodaConfigPath, JSON.stringify(rodaPresets, null, 2));
+  console.log(`✅ Roda de providers gerada em ${rodaConfigPath} (5 presets — habilite preenchendo as keys no .env)`);
 
   const env = {
     NODE_ENV: 'production',
@@ -237,10 +258,16 @@ async function main() {
     `JWT_SECRET=${env.JWT_SECRET}`,
     `INTERNAL_API_TOKEN=${env.INTERNAL_API_TOKEN}`,
     databaseUrl ? `DATABASE_URL=${databaseUrl}` : '# DATABASE_URL=',
+    `BRAIN_INTERNAL_URL=${brainInternalUrl}`,
+    brainApiToken ? `BRAIN_API_TOKEN=${brainApiToken}` : '# BRAIN_API_TOKEN=',
+    `LUNA_RODA_CONFIG=${rodaConfigPath}`,
     '',
     '# Optional: uncomment and fill to enable features',
     '# TELEGRAM_BOT_TOKEN=',
     '# GEMINI_API_KEY=',
+    '# OPENROUTER_API_KEY=',
+    '# NVIDIA_API_KEY=',
+    '# GITHUB_TOKEN=',
     '# SMTP_HOST=',
     '# SMTP_USER=',
     '# SMTP_PASS=',
