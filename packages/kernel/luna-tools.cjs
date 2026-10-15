@@ -2499,7 +2499,7 @@ async function dashboardGetWhatsAppHistory(params) {
          FROM messages WHERE channel='whatsapp' ORDER BY created_at DESC LIMIT $1`, [limit]);
     }
     if (!rows.length) return ok({ stdout: '💬 Nenhuma mensagem WhatsApp registrada ainda na base (messages vazio). Peça pro Abner mandar uma mensagem nova pra testar o ingest.' });
-    const lines = rows.map(m => `- [${m.created_at?.slice(5, 16) || '?'}] ${m.direction === 'inbound' ? '⬅️' : '➡️'} ${m.author_name || m.sender}: ${(m.body || '(mídia)').slice(0, 120)}`).join('\n');
+    const lines = rows.map(m => `- [${String(m.created_at ?? '').slice(5, 16) || '?'}] ${m.direction === 'inbound' ? '⬅️' : '➡️'} ${m.author_name || m.sender}: ${(m.body || '(mídia)').slice(0, 120)}`).join('\n');
     return ok({ stdout: `💬 ${rows.length} mensagem(ns) WhatsApp recentes:\n${lines}` });
   } catch (e) {
     return err(`Leitura WhatsApp falhou: ${e.message}`);
