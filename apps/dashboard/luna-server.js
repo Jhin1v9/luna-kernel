@@ -168,6 +168,11 @@ app.use('/api/leads', leadsRouter);
 const lunaToolsRouter = require('./routes/luna-tools');
 app.use(lunaToolsRouter);
 
+// v14.4 — Catálogo Luna Web por HTTP (decreto owner 15/10): a Luna do
+// WhatsApp/agent lista e executa as MESMAS tools da Luna Web. Auth interna.
+const lunaWebCatalogRouter = require('./routes/luna-web-catalog');
+app.use('/api/luna-web-catalog', requireSystemAuth, lunaWebCatalogRouter);
+
 // Static files
 const STATIC_DIR = path.join(LUNA_DIR, 'luna-web', 'dist');
 console.log('[Luna Server] Serving static from:', STATIC_DIR, 'exists:', fs.existsSync(STATIC_DIR));
