@@ -485,6 +485,32 @@ router.post('/api/chat', async (req, res) => {
     timestamp: new Date().toISOString(),
   });
 
+  // Comando local de descoberta: não chama provider e sempre mostra os
+  // endereços desta instalação Superclim.
+  if (message.trim().toLowerCase() === '/ajuda') {
+    const helpText = [
+      '🌙 **Acessos da Luna Superclim**',
+      '',
+      '- [Luna Web — conversar comigo](http://localhost:3458/)',
+      '- [Painel da Luna — operação e contatos](http://localhost:3101/)',
+      '- [Brain Atlas Superclim](http://localhost:4321/)',
+      '- [Saúde do orquestrador](http://localhost:3100/health)',
+      '- [Prontidão do orquestrador](http://localhost:3100/ready)',
+      '',
+      'Esses links são locais e funcionam neste computador enquanto os serviços estiverem ligados.',
+    ].join('\n');
+    addMessageToSession(session.id, {
+      id: 'help-' + Date.now(),
+      role: 'assistant',
+      type: 'done',
+      content: helpText,
+      messageId,
+      timestamp: new Date().toISOString(),
+    });
+    session._streamClosed = true;
+    return res.json({ ok: true, sessionId: session.id, status: 'done', localCommand: 'ajuda' });
+  }
+
   // v5.3-fix: Cancel any existing stream for this session before starting a new one.
   // If user sends a new message while Luna is still "thinking", we abort the old
   // stream so it doesn't block forever.
