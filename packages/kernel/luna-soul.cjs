@@ -192,14 +192,10 @@ const DEFAULT_TOOL_RESULT_PROMPT = `[TOOL RESULT]
 // [[response]] / code block JSON. O texto antigo ensinava <luna_tool_call>,
 // contra-treinando o modelo a cada turno do loop.
 const DEFAULT_MINI_REMINDER = `PROTOCOLO (lembrete):
-- Tool: [[action]]
-{"tool":"nome","params":{}}
-[[/action]]
-- Resposta: [[response]]
-texto
-[[/response]]
-- code block \`\`\`json com {"tool":...} / {"response":...} equivale aos blocos.
-- NUNCA use tags XML (<luna_tool_call>, <luna_response>).
+- Tool: code block \`\`\`json com {"tool":"nome","params":{}} — EXCLUSIVAMENTE este formato.
+- Resposta: code block \`\`\`json com {"response":"texto"}
+- NUNCA use [[action]]/[[response]] nem tags XML — soh JSON puro no code block.
+- NAO sabe quais tools existem? Chame {"tool":"listTools","params":{}} primeiro pra ver o indice oficial.
 
 Após receber um resultado, continue a tarefa.`;
 
@@ -465,11 +461,12 @@ Shell script:
 - NEVER say "não tenho acesso" or "não posso verificar" — you have FULL access INSIDE the active workspace
 - End with a USEFUL action suggestion or question — never generic "posso ajudar?"
 
-[FORMAT — DOIS FORMATOS ACEITOS (equivalentes, use UM deles)]
-- Response: \`\`\`json\n{"response": "Sua resposta aqui"}\n\`\`\`  — ou —  [[response]]\nSua resposta\n[[/response]]
-- Tool:    \`\`\`json\n{"tool": "...", "params": {...}}\n\`\`\`  — ou —  [[action]]\n{"tool": "...", "params": {...}}\n[[/action]]
+[FORMAT — JSON PURO (UNICO FORMATO ACEITO)]
+- Response: \`\`\`json\n{"response": "Sua resposta aqui"}\n\`\`\`
+- Tool:    \`\`\`json\n{"tool": "...", "params": {...}}\n\`\`\`
 - Script:  \`\`\`json\n{"script": "..."}\n\`\`\`
-NUNCA use tags XML (<luna_tool_call>, <luna_response>) — nao sao o protocolo oficial.
+NUNCA use [[action]]/[[response]] nem tags XML (<luna_tool_call>, <luna_response>) — soh JSON puro no code block.
+NAO sabe quais tools existem ou quais params usar? Chame primeiro \`\`\`json\n{"tool": "listTools", "params": {}}\n\`\`\` (indice oficial) ou {"tool": "toolInfo", "params": {"name": "NOME"}} (docs da tool).
 NEVER use ipython for file ops — use readFile/writeFile/executeShell.
 ONE tool per message. WAIT for result before next.
 ${buildToolIndex().split('{{WORKSPACE}}').join(workspacePath)}
@@ -2864,7 +2861,10 @@ class LunaSoul extends EventEmitter {
           // same turn and MUST stay in the same Kimi thread.
           const provider = options.provider || defaultProvider();
           const forceNewChat = safety === 1 && shouldForceNewChat({ provider, isFirstMessage, bridgeRetryCount, autoCompactAttempted });
-          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: forceNewChat, isAutoContinue: safety > 1 }, provider);
+          // v14.4-fix: se a extensao vai injetar o tool-result na pagina, a ponte so observa
+          const _skipSubmitOnce = options.__skipBridgeSubmit === true;
+          if (_skipSubmitOnce) options = { ...options, __skipBridgeSubmit: false };
+          const stream = this.kimiBridge.sendMessageStream(userId, loopContext.prompt, { mode, files: options.files, newChat: forceNewChat, isAutoContinue: safety > 1, skipSubmit: _skipSubmitOnce }, provider);
 
           for await (const event of stream) {
             // v14.0: Reset watchdog on each event
@@ -3123,14 +3123,20 @@ class LunaSoul extends EventEmitter {
                 // Emit response_detected for frontend
                 yield { type: 'response_detected', text: cleanResponse, source: 'delimited_protocol', sessionId };
 
-                // PROTOCOL COMPLETION: Cancel stream immediately
-                // The V2 protocol is the authority - don't wait for stream_end
-                console.log(`[PROTO][STREAM_CANCEL_REQUESTED] time=${Date.now()} reason=v2_response_complete`);
-                try {
-                  await this.kimiBridge.cancelStream(userId, true); // soft-cancel: stop Kimi, drain queue
-                  console.log(`[PROTO][STREAM_CANCELLED] time=${Date.now()}`);
-                } catch (cancelErr) {
-                  console.log(`[PROTO][STREAM_CANCEL_ERROR] time=${Date.now()} error=${cancelErr.message}`);
+                // v14.3-fix (owner 2026-10-19): NUNCA cancelar a stream com tools
+                // pendentes — o cancel engolia o loopback dos resultados.
+                if (domActionPromises.length === 0) {
+                  // PROTOCOL COMPLETION: Cancel stream immediately
+                  // The V2 protocol is the authority - don't wait for stream_end
+                  console.log(`[PROTO][STREAM_CANCEL_REQUESTED] time=${Date.now()} reason=v2_response_complete`);
+                  try {
+                    await this.kimiBridge.cancelStream(userId, true); // soft-cancel: stop Kimi, drain queue
+                    console.log(`[PROTO][STREAM_CANCELLED] time=${Date.now()}`);
+                  } catch (cancelErr) {
+                    console.log(`[PROTO][STREAM_CANCEL_ERROR] time=${Date.now()} error=${cancelErr.message}`);
+                  }
+                } else {
+                  console.log(`[PROTO][STREAM_CANCEL_SKIPPED] time=${Date.now()} reason=tools_pending count=${domActionPromises.length}`);
                 }
               }
               break;
@@ -3140,7 +3146,7 @@ class LunaSoul extends EventEmitter {
               // v2.0: Delimited protocol - unknown output (turn ended without protocol)
               console.log(`[PROTOCOL][UNKNOWN_RECEIVED] time=${Date.now()} reason=${event.reason} textLength=${event.text?.length || 0}`);
               // Emit format repair prompt
-              loopInput = 'Formato de saída não reconhecido. Use exatamente um destes formatos:\n\n<luna_tool_call>\n{"name":"tool","arguments":{}}\n</luna_tool_call>\n\nou\n\n<luna_response>\ntexto\n</luna_response>';
+              loopInput = 'Formato de saída não reconhecido. Responda SEMPRE com UM code block \`\`\`json contendo um objeto JSON completo: {"response": "texto"} para responder ou {"tool": "nome", "params": {...}} para agir. NUNCA use [[action]]/[[response]] nem tags XML. NAO sabe quais tools existem? Chame {"tool": "listTools", "params": {}} primeiro.';
               try {
                 loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false });
               } catch (ctxErr) {
@@ -3259,6 +3265,10 @@ class LunaSoul extends EventEmitter {
             // W6-T4: a context-rebuild throw inside the catch must not escape the generator
             try {
               loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
+              // v14.4-fix ROTA UNICA (pos-cancel): a extensao injeta o resultado.
+              if (this._sendToolResultViaExtension(loopContext.prompt) > 0) {
+                options = { ...options, __skipBridgeSubmit: true };
+              }
             } catch (ctxErr) {
               console.error(`[LUNA-SOUL] _buildContext failed after stream cancel: ${ctxErr.message}`);
               yield { type: 'error', error: `❌ Falha ao reconstruir contexto: ${ctxErr.message}`, sessionId };
@@ -3382,7 +3392,10 @@ class LunaSoul extends EventEmitter {
       // v14.0: PROTOCOL COMPLETION — V2 response detected
       // If the V2 protocol detected a complete response, emit done immediately
       // without waiting for stream_end or completion_candidate
-      if (v2ResponseComplete) {
+      // v14.3-fix: com tools executadas neste turno, cai no fluxo normal de
+      // feedback — dar done aqui engolia o resultado (owner virava transporte
+      // manual colando outputs no chat).
+      if (v2ResponseComplete && domActionResults.length === 0) {
         // Clear watchdog timer
         if (watchdogTimer) {
           clearInterval(watchdogTimer);
@@ -3475,11 +3488,9 @@ class LunaSoul extends EventEmitter {
         const cbCount = (emittedToolCalls.get(cbKey) || 0) + 1;
         emittedToolCalls.set(cbKey, cbCount);
         if (cbCount > 3) {
-          const cbName = parsed.mode === 'SCRIPT' ? 'executeScript' : parsed.tool;
-          yield { type: 'warning', message: '🔁 Circuit breaker: mesma chamada (' + cbName + ') emitida 3x sem progressão — encerrando o loop.', sessionId };
-          const cbResponse = 'Tentei executar ' + cbName + ' várias vezes, mas não consegui progredir. O resultado da última tentativa foi: ' + String(result && result.output ? result.output : '(sem saída)').slice(0, 300) + ' — me diga se quer que eu tente de outro jeito.';
-          yield { type: 'done', result: { success: true, mode: 'CHAT', response: cbResponse, sessionId }, sessionId };
-          return;
+          // v14.3-fix (owner 2026-10-19): circuit breaker NUNCA encerra o turno.
+          // O owner decide quando parar — o loop continua.
+          console.warn('[LUNA-SOUL] mesma chamada (' + (parsed.mode === 'SCRIPT' ? 'executeScript' : parsed.tool) + ') emitida ' + cbCount + 'x — continuando (decreto owner: sem breaker)');
         }
       }
 
@@ -3607,6 +3618,11 @@ class LunaSoul extends EventEmitter {
         console.log(`[TRACE][RESULT_CREATED] time=${Date.now()} sessionId=${sessionId} toolsUsed=${toolsUsed} payloadSize=${loopInput.length} successCount=${successCount} totalCount=${totalCount}`);
         // Always use mini-reminder for tool results (thread already has full prompt)
         loopContext = await this._buildContext(sessionId, loopInput, { ...options, isFirstMessage: false, isToolResult: true });
+        // v14.4-fix ROTA UNICA: a extensao injeta o resultado na pagina do Kimi;
+        // se conectada, a ponte NAO digita (skipSubmit no proximo send).
+        if (this._sendToolResultViaExtension(loopContext.prompt) > 0) {
+          options = { ...options, __skipBridgeSubmit: true };
+        }
         // TRACE: log result submit started (about to call sendMessageStream)
         console.log(`[TRACE][RESULT_SUBMIT_STARTED] time=${Date.now()} sessionId=${sessionId} promptSize=${loopContext.prompt.length}`);
         // v12.6-fix: DOM action results have been folded into loopInput; do not
@@ -4658,7 +4674,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const history = historyLines.join('\n');
 
       // Build full prompt from configurable template (fallback to legacy format)
-      const defaultFirstTemplate = `{{systemPrompt}}\n\n{{systemContext}}\n\n{{desktopSection}}{{workspaceSection}}{{activeFilesSection}}\n\n--- HISTÓRICO ---\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda com EXATAMENTE UM dos formatos oficiais: um code block \`\`\`json com {"response": "..."} ou {"tool": ..., "params": ...} — OU o bloco equivalente [[response]]...[[/response]] / [[action]]...[[/action]]. NUNCA use tags XML (<luna_tool_call>):`;
+      const defaultFirstTemplate = `{{systemPrompt}}\n\n{{systemContext}}\n\n{{desktopSection}}{{workspaceSection}}{{activeFilesSection}}\n\n--- HISTÓRICO ---\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda com EXATAMENTE UM formato oficial: um code block \`\`\`json contendo SEMPRE um objeto JSON completo — {"response": "..."} pra responder ou {"tool": ..., "params": ...} pra agir. NUNCA use [[action]]/[[response]] nem tags XML. NAO sabe quais tools existem ou quais params usar? Chame primeiro {"tool": "listTools", "params": {}} (indice) ou {"tool": "toolInfo", "params": {"name": "NOME"}} (docs):`;
       const firstTemplate = (cfg && cfg.prompts && cfg.prompts.firstMessage) ? cfg.prompts.firstMessage : defaultFirstTemplate;
       const prompt = interpolateTemplate(firstTemplate, {
         systemPrompt,
@@ -4695,7 +4711,12 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         (Boolean(options.provider) && options.provider !== 'kimi');
       // v12.0: tool-loop turns carry only the last 3 events (the Kimi thread
       // already holds the full conversation); follow-ups keep the last 10.
-      const history = historyLines.slice(isToolResult ? -12 : (isStatelessApi ? -30 : -10)).join('\n');
+      // v14.3-fix (owner 2026-10-19): toolLoop NUNCA reenvia historico acumulado
+      // (output inteiro das tools decolava o prompt: 592B -> 13.7KB). A thread CDP
+      // do Kimi Web ja segura a conversa. API stateless PRECISA do historico.
+      const history = (isToolResult && !isStatelessApi)
+        ? ''
+        : historyLines.slice(isStatelessApi ? -30 : -10).join('\n');
 
       // Workspace context (if set) — include in follow-ups too.
       // W8-T1b: derive the workspace from the SESSION user (same derivation as
@@ -4780,7 +4801,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         console.log(`[LUNA-PROMPT] kind=toolLoop bytes=${Buffer.byteLength(prompt, 'utf8')}`);
       } else {
         // v10.21-fix: follow-up prompt contains only history + current user input
-        const defaultFollowUpTemplate = `{{systemContext}}\n\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda com EXATAMENTE UM dos formatos oficiais: um code block \`\`\`json com {"response": "..."} ou {"tool": ..., "params": ...} — OU o bloco equivalente [[response]]...[[/response]] / [[action]]...[[/action]]. NUNCA use tags XML (<luna_tool_call>):`;
+        const defaultFollowUpTemplate = `{{systemContext}}\n\n{{history}}\n\n--- MENSAGEM ATUAL ---\nuser: {{userInput}}\n\nResponda com EXATAMENTE UM formato oficial: um code block \`\`\`json contendo SEMPRE um objeto JSON completo — {"response": "..."} pra responder ou {"tool": ..., "params": ...} pra agir. NUNCA use [[action]]/[[response]] nem tags XML. NAO sabe quais tools existem ou quais params usar? Chame primeiro {"tool": "listTools", "params": {}} (indice) ou {"tool": "toolInfo", "params": {"name": "NOME"}} (docs):`;
         const followUpTemplate = (cfg && cfg.prompts && cfg.prompts.followUp) ? cfg.prompts.followUp : defaultFollowUpTemplate;
         if (followUpTemplate.includes('{{miniReminder}}')) miniReminder = buildMiniReminder({ USER_ID: followUpUserId, WORKSPACE: followUpWorkspacePath });
         prompt = interpolateTemplate(followUpTemplate, {
@@ -5098,6 +5119,75 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       eventBus.push(errorResult);
     }
   }
+
+  // v14.4-fix (owner 2026-10-19) — ROTA UNICA de retorno da tool: quem executa
+  // manda pros dois (frontend SSE + fila da extensao). content.js injeta o
+  // texto no textarea do Kimi e da send — sem depender de canSteer/isGen/CDP.
+  // v14.4-fix (owner 2026-10-19) — ENTREGA ACOPLADA: o resultado que vai ao
+  // frontend TAMBEM vai ao provider. Uma entrega, dois destinos. Se a extensao
+  // nao estiver conectada AGORA, espera ela reconectar (ate 15s) — frontend
+  // ja tem o dado; o provider vai ter tambem. Só depois de esgotado: fallback CDP.
+  _sendToolResultViaExtension(text) {
+    const sleepSync = (ms) => {
+      try {
+        const sab = new Int32Array(new SharedArrayBuffer(4));
+        Atomics.wait(sab, 0, 0, ms);
+      } catch (e) {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) { /* spin de ultima instancia */ }
+      }
+    };
+    const t0 = Date.now();
+    const attempt = () => {
+      try {
+        const app = global.__lunaApp;
+        const h = (app && app.locals && app.locals.extensionHandler) || global.__lunaExtHandler || null;
+        if (!h || typeof h._sendToSession !== 'function') {
+          console.warn('[LUNA-SOUL] _sendToolResultViaExtension: HANDLER NAO ENCONTRADO (global.__lunaApp.locals.extensionHandler vazio)');
+          return 0;
+        }
+        let sids = [];
+        if (typeof h.getConnectedSessions === 'function') {
+          sids = h.getConnectedSessions() || [];
+        } else if (h.sessions && typeof h.sessions.keys === 'function') {
+          sids = Array.from(h.sessions.keys()).filter(sid => {
+            const s = h.sessions.get(sid);
+            return s && (Date.now() - (s.lastPing || 0)) < 60000;
+          });
+        }
+        if (sids.length === 0) {
+          console.log('[LUNA-SOUL] _sendToolResultViaExtension: 0 sessoes conectadas no momento (extensao dormindo/reconectando?)');
+          return 0;
+        }
+        let sent = 0;
+        for (const sid of sids) {
+          try {
+            h._sendToSession(sid, { type: 'tool_result', result: text, text: text, source: 'luna-soul-feedback' });
+            sent++;
+          } catch (e) { /* sessao morreu entre a listagem e o envio — ignora */ }
+        }
+        console.log('[LUNA-SOUL] tool result -> extensao (' + sent + '/' + sids.length + ' sessoes, ' + String(text).length + ' chars, +' + (Date.now() - t0) + 'ms)');
+        return sent;
+      } catch (e) {
+        console.warn('[LUNA-SOUL] _sendToolResultViaExtension erro: ' + e.message);
+        return 0;
+      }
+    };
+    let sent = attempt();
+    let esperado = 0;
+    while (sent === 0 && esperado < 15000) {
+      sleepSync(2000);
+      esperado += 2000;
+      sent = attempt();
+    }
+    if (sent === 0) {
+      console.warn('[LUNA-SOUL] ⚠⚠ ENTREGA ACOPLADA FALHOU: extensao nao reconectou em 15s. Frontend recebeu, provider NAO vai receber pela extensao — caindo no fallback CDP (pode travar no canSteer). VERIFIQUE A EXTENSAO (recarregar no chrome://extensions).');
+    } else if (esperado > 0) {
+      console.log('[LUNA-SOUL] entrega acoplada recuperada apos ' + esperado + 'ms de espera — extensao reconectou');
+    }
+    return sent;
+  }
+
 
   /** ACTION mode — execute a tool */
   async _handleAction(parsed, sessionId, options, emitProgress = null, eventBus = null, toolInstanceId = null) {

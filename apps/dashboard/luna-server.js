@@ -380,6 +380,17 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(STATIC_DIR, 'index.html'));
 });
 
+// v5.5-fix (2026-10-19): EADDRINUSE mata o processo IMEDIATAMENTE
+// (sem depender do uncaughtException). Garante pm2 respawn limpo.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error('[LUNA-FATAL] Porta ' + PORT + ' em uso — exit(1) pra pm2 respawnar limpo');
+    process.exit(1);
+  }
+  console.error('[LUNA-FATAL] Erro no server:', err.message);
+  process.exit(1);
+});
+
 server.listen(PORT, () => {
   console.log(`🌙 Luna Web rodando em http://localhost:${PORT}`);
   console.log(`   luna-dir: ${LUNA_DIR}`);

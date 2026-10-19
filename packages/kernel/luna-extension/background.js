@@ -85,12 +85,13 @@ async function registerSession() {
       try {
         await chrome.storage.session.set({ lunaSessionId: sessionId });
       } catch (e) {}
-      // Start polling (only if not already created)
-      chrome.alarms.get('luna-poll').then((a) => {
-        if (!a) {
-          chrome.alarms.create('luna-poll', { periodInMinutes: 0.1 }); // every 6s
-        }
-      });
+      // v12.0-fix (2026-10-19): Chrome clampa alarmes MV3 em 30s — o "poll de
+      // 6s" era 30s na real. Polling real a cada 3s via setInterval; o alarme
+      // keepalive mantem o SW vivo e o handler 'luna-poll' continua OK.
+      if (!globalThis.__lunaPollInterval) {
+        globalThis.__lunaPollInterval = setInterval(pollServer, 3000);
+        pollServer();
+      }
       return true;
     }
   } catch (e) {
@@ -181,7 +182,11 @@ async function handleContentMessage(message, tab) {
 }
 
 async function routeToTab(payload) {
-  if (!payload.tabId) return;
+  if (!payload.tabId) {
+    // v12.0-fix: drop silencioso era invisivel no debug
+    console.warn('[Luna BG] routeToTab: mensagem SEM tabId — drop:', payload.type);
+    return;
+  }
   try {
     await chrome.tabs.sendMessage(payload.tabId, {
       type: 'luna_server_response',

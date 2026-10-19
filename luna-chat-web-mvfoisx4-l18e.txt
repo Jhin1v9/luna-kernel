@@ -1,0 +1,37 @@
+[Usuario] Teste multi-tool agora: 1) cria o arquivo teste-multi.txt na raiz do luna-kernel com o conteúdo "multi ok", 2) lista os arquivos da pasta packages/kernel, 3) conta quantas linhas tem o luna-soul.cjs, 4) cria a pasta backup-teste e move o teste-multi.txt pra lá. Executa tudo em sequencia e me mostra o resultado de cada passo.
+
+---
+
+[Sistema] Bora, Abner! 🌙 Executando o teste multi-tool em sequência. Passo 1/4: criando o arquivo teste-multi.txt na raiz do luna-kernel...
+
+---
+
+[Sistema] 
+
+---
+
+[Usuario] Teste multi-tool agora: 1) cria o arquivo teste-multi.txt na raiz do luna-kernel com o conteúdo "multi ok", 2) lista os arquivos da pasta packages/kernel, 3) conta quantas linhas tem o luna-soul.cjs, 4) cria a pasta backup-teste e move o teste-multi.txt pra lá. Executa tudo em sequencia e me mostra o resultado de cada passo.
+
+---
+
+[Sistema] plain   Copy
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] JSON   Copy
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 

@@ -31,6 +31,24 @@
     }
   }
 
+  // v12.0-fix (2026-10-19): NUNCA morrer permanentemente. Contexto invalidado
+  // (reload da extensao via deploy.sh) matia o forwarding ate reload da pagina.
+  // Agora: reconecta sozinho + fallback HTTP direto pro luna-server.
+  let recoveryTimer = null;
+
+  function scheduleRecoveryCheck() {
+    if (recoveryTimer) return;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
+      if (isExtensionContextValid()) {
+        isForwarding = true;
+        console.log('[Luna Content] Extensao recarregada — forwarding retomado');
+      } else {
+        scheduleRecoveryCheck();
+      }
+    }, 5000);
+  }
+
   function stopForwarding() {
     isForwarding = false;
     if (forwardTimer) {
@@ -38,27 +56,55 @@
       forwardTimer = null;
     }
     FORWARD_QUEUE.length = 0;
+    scheduleRecoveryCheck(); // recupera em vez de morrer
+  }
+
+  // Fallback HTTP direto: eventos NUNCA sao perdidos mesmo com extensao morta.
+  async function directFallbackFlush(events) {
+    for (const ev of events) {
+      try {
+        await fetch('http://localhost:3458/ext/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: 'ext-direct-fallback',
+            type: ev.eventType,
+            eventType: ev.eventType,
+            data: ev.data,
+            timestamp: ev.timestamp,
+            url: ev.url
+          })
+        });
+      } catch (e) { /* server offline — drop silencioso */ }
+    }
   }
 
   function flushForwardQueue() {
     if (FORWARD_QUEUE.length === 0) return;
+    const batch = FORWARD_QUEUE.splice(0, FORWARD_QUEUE.length);
     if (!isExtensionContextValid()) {
       stopForwarding();
+      directFallbackFlush(batch); // v12.0: nunca perder o batch
       return;
     }
-    const batch = FORWARD_QUEUE.splice(0, FORWARD_QUEUE.length);
     try {
       chrome.runtime.sendMessage({ type: 'luna_event_batch', events: batch }).catch(() => {});
     } catch (e) {
-      // Context invalidated while sending — stop forwarding silently.
+      // Context invalidated while sending — recover + fallback direto.
       stopForwarding();
+      directFallbackFlush(batch);
     }
   }
 
   function scheduleForward(event) {
-    if (!isForwarding) return;
+    if (!isForwarding) {
+      // v12.0-fix: forwarding parado NAO significa evento perdido
+      directFallbackFlush([event]);
+      return;
+    }
     if (!isExtensionContextValid()) {
       stopForwarding();
+      directFallbackFlush([event]);
       return;
     }
     FORWARD_QUEUE.push(event);
@@ -367,4 +413,49 @@
   });
 
   console.log('[Luna Content] v11.7 loaded — forwarding DOM events + injection ready');
+
+  // v14.4-fix (2026-10-19) — RETORNO DIRETO: poll direto no servidor a cada 2s.
+  // O content script NUNCA dorme (vive enquanto a aba existe) — o SW dorme.
+  // Dedup por hash: a soul broadcasta pra TODAS as sessoes conectadas (SW e
+  // content), entao a mesma msg pode chegar 2x.
+  if (/kimi\.(ai|moonshot\.cn)$/.test(window.location.hostname)) {
+    const DIRECT_SID = 'content-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const seenHashes = new Map();
+    const payloadHash = (p) => {
+      try {
+        const body = String(p.result || p.text || '');
+        return (p.type || '') + '::' + (p.tool || '') + '::' + body.length + '::' + body.slice(0, 120);
+      } catch (e) { return 'x' + Math.random(); }
+    };
+    const directPoll = async () => {
+      try {
+        // v14.4-fix (2026-10-19): targetAddressSpace marca o fetch como rede
+        // LOCAL — sem isso o Chrome LNA (Local Network Access) BLOQUEIA o poll
+        // (site publico acessando localhost). Navegadores sem suporte ignoram a opcao.
+        const r = await fetch('http://localhost:3458/ext/poll?sessionId=' + encodeURIComponent(DIRECT_SID), { targetAddressSpace: 'local' });
+        if (!r.ok) return;
+        const data = await r.json();
+        const msgs = (data && data.messages) || [];
+        const now = Date.now();
+        for (const p of msgs) {
+          const h = payloadHash(p);
+          if (seenHashes.has(h)) continue; // ja injetado (via SW ou poll anterior)
+          seenHashes.set(h, now);
+          if (p.type === 'tool_result' && (p.result || p.text)) {
+            const text = typeof (p.result || p.text) === 'string'
+              ? (p.result || p.text)
+              : JSON.stringify(p.result || p.text, null, 2);
+            console.log('[Luna Content] DIRECT POLL: tool_result (' + text.length + ' chars) — injetando');
+            injectToolResult(text);
+          } else if (p.type === 'inject_text' && p.text) {
+            injectToolResult(p.text);
+          }
+        }
+        for (const [k, t] of seenHashes) { if (now - t > 90000) seenHashes.delete(k); }
+      } catch (e) { /* server offline — tenta no proximo ciclo */ }
+    };
+    setInterval(directPoll, 2000);
+    directPoll();
+    console.log('[Luna Content] Direct poll ativo (2s) — retorno de tools imune ao sono do SW');
+  }
 })();

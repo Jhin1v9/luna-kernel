@@ -60,6 +60,16 @@ class LunaExtensionHandler extends EventEmitter {
     const express = require('express');
     const app = appOrServer;
 
+    // v14.4-fix (2026-10-19): CORS pro CONTENT SCRIPT fazer poll DIRETO no
+    // /ext/poll (o SW pode estar dormindo — o content vive enquanto a aba existe).
+    app.use('/ext', (req, res, next) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') return res.sendStatus(204);
+      next();
+    });
+
     // Parse JSON body
     app.use('/ext', express.json());
 

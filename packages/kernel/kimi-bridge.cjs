@@ -8587,7 +8587,7 @@ class KimiBridge {
     // `processing`, an unbounded wait here would hang every future message
     // BEFORE sending anything, with no event. Past 60s the previous stream is
     // provably dead — force-clear the flag and continue sending.
-    const PROCESSING_DRAIN_TIMEOUT_MS = 60_000;
+    const PROCESSING_DRAIN_TIMEOUT_MS = 10_000; // v14.3-fix (2026-10-19): era 60s — a proxima msg esperava 1min pro force-clear ("mando msg e ele revive")
     if (session?.processing) {
       const drainDeadline = Date.now() + PROCESSING_DRAIN_TIMEOUT_MS;
       while (session?.processing) {
@@ -8776,14 +8776,20 @@ class KimiBridge {
       // W7-T4: Lexical-safe fill. Playwright's fill() does not register in the
       // React/Lexical contenteditable (text visible in the DOM but EditorState
       // empty → Enter becomes a no-op and the message sits unsent in the box).
-      await this._fillContentEditable(inputLocator, text);
-      await page.waitForTimeout(500);
-      // TRACE: log bridge send started (about to call _submitWithVerification)
-      console.log(`[TRACE][BRIDGE_SEND_STARTED] time=${Date.now()} userId=${hashUserId(userId)} textLen=${text.length} provider=${resolvedProvider}`);
-      // W7-T4: verify-and-retry submit — typed text must never sit unsent.
-      await this._submitWithVerification(page, inputLocator, text, { provider: resolvedProvider });
-      // TRACE: log bridge send completed
-      console.log(`[TRACE][BRIDGE_SEND_COMPLETED] time=${Date.now()} userId=${hashUserId(userId)}`);
+      // v14.4-fix (owner 2026-10-19): skipSubmit — quando a extensao injeta o
+      // tool-result na pagina (rota unica), a ponte NAO digita de novo.
+      if (!options.skipSubmit) {
+        await this._fillContentEditable(inputLocator, text);
+        await page.waitForTimeout(500);
+        // TRACE: log bridge send started (about to call _submitWithVerification)
+        console.log(`[TRACE][BRIDGE_SEND_STARTED] time=${Date.now()} userId=${hashUserId(userId)} textLen=${text.length} provider=${resolvedProvider}`);
+        // W7-T4: verify-and-retry submit — typed text must never sit unsent.
+        await this._submitWithVerification(page, inputLocator, text, { provider: resolvedProvider });
+        // TRACE: log bridge send completed
+        console.log(`[TRACE][BRIDGE_SEND_COMPLETED] time=${Date.now()} userId=${hashUserId(userId)}`);
+      } else {
+        log.info('[sendMessageStream] skipSubmit=true — extensao injeta o texto; ponte apenas observa a resposta');
+      }
       // Wave2-fix: discard everything the poller observed during send-prep —
       // it describes the PREVIOUS turn's DOM, not this message.
       queue.events.length = 0;
