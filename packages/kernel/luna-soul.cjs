@@ -5162,7 +5162,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
         let sent = 0;
         for (const sid of sids) {
           try {
-            h._sendToSession(sid, { type: 'tool_result', result: text, text: text, source: 'luna-soul-feedback' });
+            h._sendToSession(sid, { type: 'tool_result', result: text, text: text, source: 'luna-soul-feedback', id: 'tr-' + Date.now() + '-' + (++global.__lunaResultCounter || (global.__lunaResultCounter = 1)) });
             sent++;
           } catch (e) { /* sessao morreu entre a listagem e o envio — ignora */ }
         }

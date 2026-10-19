@@ -89,6 +89,43 @@ const PATHS = {
   masterPrompt: path.join(LUNA_KERNEL_DIR, 'LUNA_MASTER_PROMPT.md'),
 };
 
+// ── Prompt Config Bootstrap (v14.4-fix 2026-10-19) ──
+// O REPO eh a fonte da verdade: packages/kernel/config/luna-prompt-config.json
+// No boot: runtime (~/.luna/kernel/config/) inexistente → copia do template.
+// Runtime com _templateVersion menor que o template → backup + sync.
+// Assim PC novo / reinstalacao nasce com o config correto, zero manual.
+const PROMPT_CONFIG_TEMPLATE = path.join(__dirname, 'luna-prompt-config.json');
+function ensurePromptConfig() {
+  try {
+    if (!fs.existsSync(PROMPT_CONFIG_TEMPLATE)) return false;
+    let tpl = null;
+    try { tpl = JSON.parse(fs.readFileSync(PROMPT_CONFIG_TEMPLATE, 'utf8')); } catch { return false; }
+    const dest = PATHS.promptConfig;
+    if (!fs.existsSync(dest)) {
+      const dir = path.dirname(dest);
+      try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch {}
+      fs.copyFileSync(PROMPT_CONFIG_TEMPLATE, dest);
+      console.log('[LunaConfig] prompt-config criado do template do repo (install novo)');
+      return true;
+    }
+    const tplV = parseFloat(tpl._templateVersion || 0);
+    let cur = null;
+    try { cur = JSON.parse(fs.readFileSync(dest, 'utf8')); } catch { return false; }
+    const curV = parseFloat(cur._templateVersion || 0);
+    if (tplV > curV) {
+      const bak = dest + '.bak-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      try { fs.copyFileSync(dest, bak); } catch {}
+      fs.copyFileSync(PROMPT_CONFIG_TEMPLATE, dest);
+      console.log('[LunaConfig] prompt-config sincronizado: v' + curV + ' -> v' + tplV + ' (backup: ' + path.basename(bak) + ')');
+    }
+    return true;
+  } catch (err) {
+    console.warn('[LunaConfig] ensurePromptConfig: ' + err.message);
+    return false;
+  }
+}
+ensurePromptConfig();
+
 // ── Kimi Bridge ──
 const KIMI = {
   maxPages: parseInt(process.env.KIMI_MAX_PAGES, 10) || 5,

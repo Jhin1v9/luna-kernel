@@ -439,8 +439,12 @@
         const now = Date.now();
         for (const p of msgs) {
           const h = payloadHash(p);
+          // v14.4-fix: dedup PRIMARIO por id unico (quando a soul envia);
+          // hash continua como fallback pra msgs antigas sem id.
+          if (p.id && seenHashes.has('id:' + p.id)) continue;
           if (seenHashes.has(h)) continue; // ja injetado (via SW ou poll anterior)
           seenHashes.set(h, now);
+          if (p.id) seenHashes.set('id:' + p.id, now);
           if (p.type === 'tool_result' && (p.result || p.text)) {
             const text = typeof (p.result || p.text) === 'string'
               ? (p.result || p.text)

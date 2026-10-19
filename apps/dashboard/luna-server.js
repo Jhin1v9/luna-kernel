@@ -382,9 +382,40 @@ app.get('*', (req, res) => {
 
 // v5.5-fix (2026-10-19): EADDRINUSE mata o processo IMEDIATAMENTE
 // (sem depender do uncaughtException). Garante pm2 respawn limpo.
+// v5.6-fix (2026-10-19): GUARDA DE INSTANCIA UNICA — fim dos zumbis.
+// Grava o proprio PID ao subir. Se a porta estiver ocupada, a nova instancia
+// MATA a anterior (pelo PID registrado) e sai — pm2 respawna e acha porta livre.
+const LUNA_PID_FILE = path.join(require('os').tmpdir(), 'luna-server-3458.pid');
+server.on('listening', () => {
+  try { fs.writeFileSync(LUNA_PID_FILE, String(process.pid)); } catch {}
+});
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error('[LUNA-FATAL] Porta ' + PORT + ' em uso — exit(1) pra pm2 respawnar limpo');
+    let matou = false;
+    try {
+      const oldPid = parseInt(fs.readFileSync(LUNA_PID_FILE, 'utf8').trim(), 10);
+      if (oldPid && oldPid !== process.pid) {
+        try { process.kill(oldPid); matou = true; } catch {}
+      }
+    } catch {}
+    if (!matou) {
+      // v5.7-fix: FALLBACK — sem PID file (instancia anterior pre-guarda): mata
+      // qualquer node luna-server.js (menos esta instancia) via guard-kill.ps1.
+      try {
+        const { execSync: _ex } = require('child_process');
+        const _ps1 = require('path').join(__dirname, 'guard-kill.ps1');
+        const _out = _ex('powershell -NoProfile -ExecutionPolicy Bypass -File ' + _ps1 + ' -Me ' + process.pid, { encoding: 'utf8', timeout: 15000 });
+        if (_out && _out.trim()) console.log('[LUNA] guarda-fallback: ' + _out.trim());
+        matou = true;
+      } catch (e2) {
+        console.error('[LUNA-FATAL] guarda-fallback falhou: ' + (e2.message || e2));
+      }
+    }
+    if (matou) {
+      console.log('[LUNA] porta ' + PORT + ' sera liberada — saindo pra pm2 respawnar limpo');
+    } else {
+      console.error('[LUNA-FATAL] porta ' + PORT + ' ocupada e guarda nao conseguiu liberar — exit(1)');
+    }
     process.exit(1);
   }
   console.error('[LUNA-FATAL] Erro no server:', err.message);
