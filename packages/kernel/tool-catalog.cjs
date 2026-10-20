@@ -24,6 +24,9 @@ const { DASHBOARD_TOOL_REGISTRY } = require('./dashboard-tool-registry.cjs');
 // prompt dentro de [[action]] (o WORKSPACE é interpolado depois pelo soul).
 // ─────────────────────────────────────────────────────────────────────────
 const CORE_TOOLS = [
+  // 📞 Chamada de voz (2026-10-21): a Luna DISCA a pedido do usuario; transcrição volta no chat de origem.
+  { name: 'voiceCallPlace', cat: '📞 Chamada', desc: 'INICIA ligacao de voz WhatsApp para contato VERIFICADO no Chat Registry (role=allowed). As falas chegam transcritas no chat de origem; durante a call use callRespond pra falar.', params: '{to, assunto, reply_chat?}', ex: { to: 'Ana Paula', assunto: 'recado a pedido do owner', reply_chat: 'nome do chat de origem' } },
+  { name: 'voiceCallEnd', cat: '📞 Chamada', desc: 'ENCERRA a chamada de voz ativa (o lado do operador/ChatGPT desliga junto). Use quando o owner pedir pra desligar.', params: '{}', ex: {} },
   // 📁 Arquivos
   { name: 'readFile', cat: '📁 Arquivos', desc: 'Lê o conteúdo de um arquivo de texto.', params: '{path}', ex: { path: '{{WORKSPACE}}/notas.txt' } },
   { name: 'writeFile', cat: '📁 Arquivos', desc: 'Cria ou sobrescreve um arquivo.', params: '{path, content}', ex: { path: '{{WORKSPACE}}/hello.js', content: "console.log('oi');" } },
@@ -171,6 +174,8 @@ const EXTRA_DASHBOARD_TOOLS = {
     { name: 'whatsappGroupMembers', desc: 'Lista os membros de um grupo.', params: ['group'] },
     { name: 'whatsappSendMessage', desc: 'Envia msg pra NOME, jid ou número — grupo incluído. FLUXO: listar → escolher → enviar.', params: ['to', 'message'] },
     { name: 'whatsappAllowContact', desc: 'PROTOCOLO NOVO CONTATO: add nome/número na allowlist + diretório (decree owner).', params: ['name', 'phone?', 'note?'] },
+    { name: 'voiceCallPlace', desc: 'INICIA ligacao de voz p/ contato verificado; transcricao volta no chat de origem.', params: ['to', 'assunto', 'reply_chat?'] },
+    { name: 'voiceCallEnd', desc: 'ENCERRA a chamada de voz ativa; operador desliga junto.', params: [] },
   ],
   // ⚙️ 2026-10-14: a Luna CONFIGURA A RODA DE PROVIDERS do painel via tool —
   // o owner manda a key e ela põe direto.

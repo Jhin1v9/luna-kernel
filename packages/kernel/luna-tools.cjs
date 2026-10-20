@@ -25,6 +25,7 @@ const http = require('http');
 const lunaConfig = require('./config/luna-config');
 const workspaceNexoTools = require('./workspace-nexo-tools.cjs');
 const whatsappTools = require('./whatsapp-tools.cjs');
+const voiceCallTools = require('./voice-call-tools.cjs');
 const providerTools = require('./dashboard-providers-tools.cjs');
 const callResponseTools = require('./call-response-tools.cjs');
 const { looksBinary } = require('./lib/text-file.cjs');
@@ -3054,6 +3055,7 @@ function listTools(params) { return require('./tool-catalog.cjs').listTools(para
 function toolInfo(params) { return require('./tool-catalog.cjs').toolInfo(params); }
 
 module.exports = {
+  ...voiceCallTools,
   // Meta-tools (documentação de tools acessível via tool call)
   listTools,
   toolInfo,

@@ -319,6 +319,7 @@ async function whatsappAllowContact(params = {}) {
 }
 
 module.exports = {
+  resolveTarget,
   whatsappListContacts,
   whatsappListGroups,
   whatsappGroupMembers,
