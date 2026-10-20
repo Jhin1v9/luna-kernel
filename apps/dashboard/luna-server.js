@@ -9,12 +9,25 @@ require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 // v5.4-fix: log fatal errors but let the process die so PM2 can restart it cleanly.
 // The previous keep-alive handlers were holding the port open and causing EADDRINUSE
 // when PM2 tried to restart the server.
+// v5.8-fix (2026-10-20): erros de CONEXAO (cliente desconectou, refresh da
+// pagina, socket morto) sao BENIGNOS — loga e continua vivo. So erro real de
+// codigo mata o processo. Sem isso, cada Ctrl+F5 derrubava o kernel.
+const SURVIVABLE_ERRORS = /EPIPE|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ETIMEDOUT|write after end|premature close|aborted|socket hang up/i;
 process.on('uncaughtException', (err) => {
+  if (SURVIVABLE_ERRORS.test(err && err.message ? err.message : String(err))) {
+    console.warn('[LUNA] conexao caiu (benigno, kernel continua vivo): ' + (err && err.message));
+    return;
+  }
   console.error('[LUNA-FATAL] Uncaught Exception:', err.message);
   console.error(err.stack);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason, promise) => {
+  const msg = reason && reason.message ? reason.message : String(reason);
+  if (SURVIVABLE_ERRORS.test(msg)) {
+    console.warn('[LUNA] rejeicao de conexao (benigna, kernel continua vivo): ' + msg);
+    return;
+  }
   console.error('[LUNA-FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
   process.exit(1);
 });

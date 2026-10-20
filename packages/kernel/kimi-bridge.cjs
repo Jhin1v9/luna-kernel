@@ -7082,7 +7082,12 @@ class KimiBridge {
       // is still in the DOM and must not be re-detected. null marker => scan
       // everything, exactly as before (non-Kimi providers, no active send).
       const turnAssistantMarker = (session && typeof session._turnAssistantMarker === 'number') ? session._turnAssistantMarker : null;
-      const chains = provider === 'kimi' ? this._resolveDomSelectorChains(provider) : null;
+      // v14.5-fix (2026-10-20): provider LOGICO ('roda'/fallback) != pagina FISICA.
+      // Se a pagina eh kimi.ai, usa as chains do kimi de qualquer jeito — chains null
+      // fazia selectors.assistant explodir no evaluate (TypeError em loop, poller cego,
+      // STREAM_STALLED em chat novo).
+      const isKimiPage = /kimi\.(ai|moonshot\.cn)/i.test(page.url() || '');
+      const chains = (provider === 'kimi' || isKimiPage) ? this._resolveDomSelectorChains('kimi') : null;
       const structureBased = await page.evaluate(({ selectors, assistantMarker }) => {
         function allMatches(root, sels) {
           const seen = new Set();
@@ -7102,7 +7107,8 @@ class KimiBridge {
           return null;
         }
 
-        const assistants = allMatches(document, selectors.assistant);
+        if (!selectors) return { _empty: true, _debug: { error: 'no-selectors', url: location.href } };
+        const assistants = allMatches(document, selectors.assistant || []);
         const scoped = typeof assistantMarker === 'number' ? assistants.slice(assistantMarker) : assistants;
         const lastAssistant = scoped[scoped.length - 1];
         if (!lastAssistant) return null;
@@ -7521,7 +7527,15 @@ class KimiBridge {
       // v12.4-fix: active thinking/loading indicators are a source-of-truth signal
       // that Kimi is still working, even when the Stop button is hidden/transient.
       const hasLoading = await this._hasActiveLoadingIndicators(page);
-      if (hasLoading && !result.isGenerating) {
+      // v14.7-fix (owner 20/10) — REDE > UI: se o interceptor ja capturou a
+      // resposta COMPLETA da geracao, o modelo TERMINOU de escrever. Indicador
+      // de UI (spinner/cursor/toolcall/thinking) eh INFERENCIA e NAO tem poder
+      // de veto sobre o fato da rede. Sem isso, indicadores fantasma (ex.: o
+      // estado de quota do Kimi) travavam isGen=true pra sempre — a stream nao
+      // completava, a soul nao chegava no toolLoop e o resultado da tool nao
+      // voltava, mesmo com a tool executada e o corpo da resposta na rede.
+      const networkFinished = !!(this.interceptor && this.interceptor._generation > 0 && this.interceptor.completedGeneration === this.interceptor._generation);
+      if (hasLoading && !result.isGenerating && !networkFinished) {
         log.info(`[_detectUiState] forcing isGenerating=true because active loading/thinking indicators are visible`);
         result.isGenerating = true;
       }

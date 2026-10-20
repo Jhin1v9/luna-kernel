@@ -2872,8 +2872,27 @@ class LunaSoul extends EventEmitter {
 
             // v10.13: Drain any completed background actions BEFORE processing stream event
             // This ensures action_end events reach the frontend as soon as tools complete
+            let __turnDeliveredByOwnerRule = false;
             while (eventBus.queue.length > 0) {
-              yield eventBus.queue.shift();
+              const __evt = eventBus.queue.shift();
+              yield __evt;
+              // ═══ REGRA DO OWNER (20/10): ENTREGA AO FRONTEND = FIM DE TURNO ═══
+              // O action_end acabou de ser entregue a Luna Web (SSE). Se nao ha
+              // execucoes pendentes e houve tool de verdade neste turno, o turno
+              // ACABOU — encerrar a stream e cair no toolLoop (que devolve o
+              // resultado ao provider pelo mecanismo acoplado). Estado de UI
+              // (isGen, spinners, indicadores de quota) NAO tem poder de veto
+              // sobre o fato da entrega. Isso mata a classe inteira de stalls
+              // por indicador fantasma.
+              // v2: so fatos — toda tool do turno completou (entry nasce no
+              // inicio e so tem .result quando termina) + entrega acontecendo.
+              if (__evt && __evt.type === 'action_end' && domActionResults.length > 0 && domActionResults.every(r => r && r.result !== undefined)) {
+                __turnDeliveredByOwnerRule = __evt.tool || true;
+              }
+            }
+            if (__turnDeliveredByOwnerRule) {
+              console.log('[LUNA-SOUL] ENTREGA ACOMPLADA (decreto owner 20/10): action_end de "' + __turnDeliveredByOwnerRule + '" entregue ao frontend, zero pendentes — turno encerrado PELA ENTREGA; isGen/indicadores sem veto');
+              break;
             }
 
           switch (event.type) {
@@ -4573,7 +4592,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       if (ev.type === 'user') {
         historyLines.push(`user: ${ev.content}`);
       } else if (ev.type === 'assistant') {
-        historyLines.push(`assistant: ${ev.response || ev.content || '[tool use]'}`);
+        historyLines.push(`Luna: ${ev.response || ev.content || '[tool use]'}`); // v16.0-fix (owner 20/10): marca as msg DELA — o modelo precisa saber o que ele mesmo ja disse
       } else if (ev.type === 'tool_call') {
         // FIX: Truncate tool params in history to prevent context bloat
         const paramsStr = JSON.stringify(ev.params || ev.action?.params || {});

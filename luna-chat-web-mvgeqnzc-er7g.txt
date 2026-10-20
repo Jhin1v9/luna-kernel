@@ -1,0 +1,131 @@
+[Usuario] Investigação completa sobre a cliente Jess (Ona Dance), cadeia completa sem parar:
+1) Pesquisa no brain quem é a Jess e lê a nota completa dela
+2) Lista as solicitações/pedidos atuais dela no workspace (workspaceListRequests)
+3) Puxa o histórico recente das mensagens de WhatsApp dela (dashboardGetWhatsAppHistory)
+4) Compila um resumo estruturado: quem ela é, o que pediu até agora, status de cada pedido, e o que rolou nas últimas mensagens — e ENVIA esse resumo direto pro meu WhatsApp (Abner) com whatsappSendMessage
+Só me responde aqui quando o resumo tiver sido enviado pro meu zap. Bora.
+
+---
+
+[Sistema] Bora, Abner! Começando a investigação da Jess agora — primeiro passo: brain 🌙
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Usuario] Investigação completa sobre a cliente Jess (Ona Dance), cadeia completa sem parar:
+1) Pesquisa no brain quem é a Jess e lê a nota completa dela
+2) Lista as solicitações/pedidos atuais dela no workspace (workspaceListRequests)
+3) Puxa o histórico recente das mensagens de WhatsApp dela (dashboardGetWhatsAppHistory)
+4) Compila um resumo estruturado: quem ela é, o que pediu até agora, status de cada pedido, e o que rolou nas últimas mensagens — e ENVIA esse resumo direto pro meu WhatsApp (Abner) com whatsappSendMessage
+Só me responde aqui quando o resumo tiver sido enviado pro meu zap. Bora.
+
+---
+
+[Sistema] peraí, lendo a ficha completa da Jess no brain 🌙
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] plain   Copy
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] plain   Copy
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] o histórico tá vindo do grupo errado — vou tentar variações do nome dela 🌙
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] compilando o resumo e enviando pro seu zap agora 🌙
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] 
+
+---
+
+[Sistema] plain   Copy
+
+---
+
+[Luna] Resumo enviado pro seu zap, Abner ✅🌙
+
+**Investigação completa:**
+
+🧠 **Quem é a Jess:** Jess Nuñez, decisora da Ona Dance — marca de roupa de pole dance artesanal e sustentável, feita em Barcelona (loja WooCommerce). Só fala espanhol, email info@onadance.com, prefere atendimento humano.
+
+📋 **Pedidos:**
+✅ Cupom criado (COMPLETED)
+⏳ Slider→vídeo do hero — implementado no pre2, aguardando aprovação dela
+⏳ Trustpilot wp-admin — explicar aviso do plugin
+⏳ "Avísame cuando vuelga" — captura de email em produtos esgotados
+
+⚠️ **Ressalvas:**
+1. Workspace sem credencial no .env do luna-agent — cobri pelo brain
+2. Histórico do WhatsApp dela não veio (a tool retornou msgs de outro grupo)
+
+Quer que eu tente o histórico dela de outro jeito?
