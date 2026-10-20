@@ -4727,7 +4727,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const _bridge = this.kimiBridge;
       const isStatelessApi =
         (typeof _bridge?.canSteer === 'function' && _bridge.canSteer() === false) ||
-        (Boolean(options.provider) && options.provider !== 'kimi');
+        (Boolean(options.provider) && options.provider !== 'kimi' && options.provider !== 'roda'); // v16.5-fix (owner 20/10): roda com ponte CDP segura a thread — reidratar reexecutava tools e lotava o provider
       // v12.0: tool-loop turns carry only the last 3 events (the Kimi thread
       // already holds the full conversation); follow-ups keep the last 10.
       // v14.3-fix (owner 2026-10-19): toolLoop NUNCA reenvia historico acumulado
