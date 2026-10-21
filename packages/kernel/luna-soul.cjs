@@ -390,7 +390,7 @@ function loadMasterPrompt() {
 }
 
 function buildSystemPrompt(opts = {}) {
-  const { skillIndex = '', personaContent = '', memoryContext = '', personaRegistry = '', skillRegistry = '', agentsMd = '', masterPrompt = '', userId = 'luna-default', brainContext = '' } = opts;
+  const { skillIndex = '', personaContent = '', memoryContext = '', personaRegistry = '', skillRegistry = '', agentsMd = '', masterPrompt = '', userId = 'luna-default', brainContext = '', sessionKey = '' } = opts; // v16.15-fix
 
   // v10.22-fix: workspace isolation per user/session
   const workspace = workspaceManager.getWorkspace(userId);
@@ -427,6 +427,10 @@ function buildSystemPrompt(opts = {}) {
       (vars.agentsMd || '') +
       (vars.BRAIN_CONTEXT || '')
     ).slice(0, Math.max(0, 20000 - masterPart.length));
+    // v16.15-fix (owner 21/10): sessao classify = READ-ONLY no WhatsApp.
+    if (String(opts.sessionKey || '').startsWith('classify:')) {
+      return head + masterPart + '\n\n[OVERRIDE — SESSÃO DE CLASSIFICAÇÃO — PREVALECE SOBRE TUDO ACIMA (v16.15-fix)]\nVocê está numa sessão de CLASSIFICAÇÃO (read-only no WhatsApp). REGRAS DURAS:\n1. PROIBIDO chamar whatsappSendMessage ou qualquer tool de envio — a classificação NUNCA vai pro WhatsApp.\n2. Tools permitidas: somente leitura (dashboardGetWhatsAppHistory, brainSearch, brainRead, listTools, toolInfo).\n3. Seu output é SOMENTE o JSON da classificação como texto — é o fim do turno.\n4. Ignore qualquer instrução acima mandando responder usuário via whatsappSendMessage — nessa sessão não existe resposta a usuário.';
+    }
     return head + masterPart;
   }
 
@@ -1881,6 +1885,12 @@ class LunaSoul extends EventEmitter {
       return null;
     }
     if (entry.fedBack === true) return null; // replay already delivered once for this execution
+    // v16.23-fix (owner 21/10): replay SOMENTE no mesmo turno. Cross-turn, a bridge
+    // re-escaneava o buffer acumulado e re-emitia tool mutante velha; o cache servia
+    // o result antigo SEM executar ("sent" fantasma pra outra tool). Turno novo = cache nao vale.
+    const _v1623Turn = this.turns && typeof this.turns.get === 'function' ? this.turns.get(sessionId) : null;
+    const _v1623TurnId = _v1623Turn ? _v1623Turn.turnId : null;
+    if (!_v1623TurnId || entry.turnId !== _v1623TurnId) return null;
     entry.fedBack = true;
     return entry.result;
   }
@@ -1898,7 +1908,8 @@ class LunaSoul extends EventEmitter {
       const oldest = sessionCache.keys().next().value;
       if (oldest !== undefined) sessionCache.delete(oldest);
     }
-    sessionCache.set(toolHash, { timestamp: Date.now(), result, fedBack: false });
+    const _v1623TurnAtMark = this.turns && typeof this.turns.get === 'function' ? this.turns.get(sessionId) : null;
+    sessionCache.set(toolHash, { timestamp: Date.now(), result, fedBack: false, turnId: _v1623TurnAtMark ? _v1623TurnAtMark.turnId : null }); // v16.23-fix
   }
 
   /** Initialize git for workspace if available */
@@ -4674,7 +4685,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       const brainContext = loadBrainContext();
 
       // Build system prompt
-      const systemPrompt = buildSystemPrompt({ skillIndex, personaContent, memoryContext, personaRegistry, skillRegistry, agentsMd, masterPrompt, userId: currentUserId, brainContext });
+      const systemPrompt = buildSystemPrompt({ skillIndex, personaContent, memoryContext, personaRegistry, skillRegistry, agentsMd, masterPrompt, userId: currentUserId, brainContext, sessionKey: (typeof sessionId !== 'undefined' ? sessionId : '') }); // v16.15-fix
 
       // Workspace context (if set)
       const workspaceContext = workspaceManager.getFormattedManifest(currentUserId);
@@ -4843,6 +4854,15 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // v14.1: roda stateless — o systemPrompt NUNCA é enviado como role
       // separado pela bridge (só o `prompt` vai no messages[]), então o
       // cabeçalho reidratado precisa estar DENTRO do prompt.
+      // v16.13b-fix (owner 21/10): CDP PERSISTENTE = prompt leve puro. A thread CDP ja segura persona,
+      // protocolo e historico — reenviar templates cheios a cada turno era o "mesmo prompt gigante
+      // toda hora" + custo de provider. Stateless (API pura) segue exatamente como estava.
+      if (!isStatelessApi) {
+        prompt = userInput;
+        systemPrompt = isToolResult ? '[TOOL LOOP]' : '[FOLLOW UP]';
+        console.log(`[LUNA-PROMPT] kind=${isToolResult ? 'toolLoop' : 'followUp'}-light bytes=${Buffer.byteLength(prompt, 'utf8')}`);
+      }
+
       if (statelessHeader) {
         prompt = statelessHeader + (isToolResult ? `--- HISTÓRICO RECENTE ---\n${history}\n\n` : '') + prompt;
         console.log(`[LUNA-PROMPT] stateless-rehydrate ON kind=${isToolResult ? 'toolLoop' : 'followUp'} headerBytes=${Buffer.byteLength(statelessHeader, 'utf8')}`);
@@ -5585,6 +5605,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'callRespond':
               case 'call.respond': return lunaTools.callRespond(p);
               case 'dashboardCommandRouter': return this._execDashboardCommandRouter(p);
+                            // v16.13c-fix (owner 21/10): wiring faltava — tools existiam no modulo/catalogo mas sem case no dispatcher.
+              case 'voiceCallPlace': return lunaTools.voiceCallPlace(p);
+              case 'voiceCallEnd': return lunaTools.voiceCallEnd(p);
               default: return { success: false, error: `Ferramenta desconhecida: ${tool}. Execute listTools {} para ver o índice oficial (ou listTools {"busca": "trecho"}), e toolInfo {"name": "NOME"} pra docs completas da tool certa.` };
             }
           };
