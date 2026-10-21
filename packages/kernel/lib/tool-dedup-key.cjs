@@ -72,6 +72,10 @@ function sortKeys(obj) {
 }
 
 function makeDomEventDedupKey(event) {
+  // v16.25-fix (owner 21/10): identidade por toolId (protocolo delimitado).
+  // Mesmo toolId re-detectado = phantom do MESMO bloco -> suprime.
+  // toolId novo com conteudo identico = acao legitima nova -> executa (decreto).
+  if (event && event.toolId) return event.type + ':tid:' + String(event.toolId);
   const normalizedAction = event.action
     ? { tool: event.action.tool || event.action.type, params: normalizeParams(event.action.tool || event.action.type, event.action.params || event.action) }
     : event.action;

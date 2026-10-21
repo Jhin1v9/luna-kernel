@@ -506,6 +506,15 @@ const TOOL_REGISTRY = {
     },
     meta: { icon: null, color: null, label: null },
   },
+  // v16.20-fix (owner 21/10): schema estrito pro envio — guard era fail-open
+  // (calls com "text"/destino lixo no-opavam; modelo dizia "enviei" sem enviar).
+  "whatsappSendMessage": {
+    schema: {
+      required: ["to", "message"],
+      types: { to: "string", message: "string" },
+    },
+    meta: { icon: "💬", color: "#22c55e", label: null },
+  },
 };
 
 function buildToolSchemas() {
