@@ -900,7 +900,7 @@ class ProviderNetworkInterceptor {
     this._listener = async (response) => {
       const url = response.url();
       log.info('[NetworkInterceptor] response url: ' + url);
-      if (!this._isChatUrl(url)) return;
+      if (!this._isChatUrl(url)) { this._ngtCaptureCandidate(response); return; }
       // v13.0 (F1.1): capture the turn generation at event time. The body of a
       // PREVIOUS turn's chat response can resolve after reset() bumped the
       // generation for the next turn — it must never be parsed into the fresh
@@ -956,6 +956,28 @@ class ProviderNetworkInterceptor {
       hasData: thinking.length > 0 || response.length > 0 || toolCalls.length > 0,
       source: 'network-intercept',
     };
+  }
+
+  // v16.14-fix (NGT-1): captura endpoint-agnostica. Durante geracao ativa, guarda
+  // corpos de resposta NAO reconhecidos por _isChatUrl como candidatos.
+  _ngtCaptureCandidate(response) {
+    try {
+      if (!this._active) return;
+      if (!(this._generation > 0) || this.completedGeneration === this._generation) return;
+      const h = response.headers() || {};
+      const ct = String(h['content-type'] || '');
+      if (ct && !/json|text|event-stream/i.test(ct)) return;
+      const gen = this._generation;
+      response.body().then((buf) => {
+        try {
+          const text = buf.toString('utf-8');
+          if (!text || text.length < 80) return;
+          this._candidates = this._candidates || [];
+          this._candidates.push({ gen, url: response.url(), text: text.slice(0, 500000) });
+          if (this._candidates.length > 8) this._candidates.shift();
+        } catch (_) {}
+      }).catch(() => {});
+    } catch (_) {}
   }
 
   _isChatUrl(url) {
@@ -6834,7 +6856,9 @@ class KimiBridge {
         // in the same tick). The soul's W6-T5 cache policy (1 replay + real re-execute)
         // is the real authority on whether a repeated action runs — the bridge must
         // not drop legitimate re-issues that arrive seconds later.
-        const SEEN_TTL_MS = 2 * 1000;
+        // v16.25-fix (owner 21/10): dedup por IDENTIDADE. toolId = phantom (janela longa);
+        // sem toolId = conteudo so como near-dup de 2s. Acao legitima repetida NUNCA suprimida.
+        const ttlFor = (k) => k.startsWith('tid:') ? 10 * 60 * 1000 : 2 * 1000; // v16.24-fix: janela que cobre o phantom cross-turn
         if (!session._domEventSeen) session._domEventSeen = new Map();
         const seen = session._domEventSeen;
         // W10-T1: key builder extracted to lib/tool-dedup-key.cjs. Only fields
@@ -6844,7 +6868,7 @@ class KimiBridge {
         const key = makeDomEventDedupKey(event);
         const now = Date.now();
         const seenAt = seen.get(key);
-        if (seenAt !== undefined && now - seenAt < SEEN_TTL_MS) {
+        if (seenAt !== undefined && now - seenAt < ttlFor(key)) {
           console.log(`[BRIDGE] phantom drop (${event.type}): key=${key} age=${now - seenAt}ms`);
           return; // phantom re-detection — drop
         }
@@ -7349,6 +7373,40 @@ class KimiBridge {
         const isContextLimit = this._isContextLimitResponse(structureBased.response);
         log.info(`[_poll] dom-structure: thinking=${structureBased.thinking.length}, response=${structureBased.response.length}, tools=${(structureBased.detectedTools || []).length}, isContextLimit=${isContextLimit}, debug=${JSON.stringify(structureBased._debug || {})}`);
         const { _debug, ...rest } = structureBased;
+        // v16.14-fix (NGT-1): REDE MANDA. (1) fato de rede (body completo/correlacao
+        // de conteudo com a cauda da resposta) => isGenerating=false, vetando
+        // TODOS os sinais DOM. (2) resposta estavel >=45s sem rede => completa
+        // + [NET-DEGRADED]. Completude nao depende mais de _isChatUrl allowlist.
+        let _ngtDone = false;
+        try {
+          const _it = this.interceptor;
+          if (_it) {
+            if (_it._generation > 0 && _it.completedGeneration === _it._generation) _ngtDone = true;
+            else {
+              const _norm = (s) => (s || '').replace(/[\s"\\]/g, '');
+              const _txt = _norm(rest.response);
+              if (_txt && _it._candidates && _it._candidates.length) {
+                const _needle = _txt.length > 160 ? _txt.slice(-160) : _txt;
+                _ngtDone = _it._candidates.some((c) => c.gen === _it._generation && c.text && _norm(c.text).includes(_needle));
+              }
+            }
+          }
+        } catch (_) {}
+        if (!_ngtDone && /isgen\s*:\s*false/i.test(String(rest.response || '').slice(-200))) _ngtDone = true; // v16.15-fix: marker do modelo = fim de acao
+        if (_ngtDone) {
+          return { ...rest, isContextLimit, canSteer, isGenerating: false };
+        }
+        const _ngtNow = Date.now();
+        if (rest.response && rest.response === this._ngtLastResp) {
+          if (!this._ngtStableSince) this._ngtStableSince = _ngtNow;
+          else if (_ngtNow - this._ngtStableSince > 45000) {
+            log.info("[NET-DEGRADED] " + MARK + ": resposta estavel ha 45s sem confirmacao de rede -- completando por cap. Endpoint do stream pode ter mudado.");
+            return { ...rest, isContextLimit, canSteer, isGenerating: false, _netDegraded: true };
+          }
+        } else {
+          this._ngtStableSince = 0;
+          this._ngtLastResp = rest.response;
+        }
         return { ...rest, isContextLimit, canSteer, isGenerating };
       }
       const debugStr = structureBased?._debug ? JSON.stringify(structureBased._debug) : 'no-debug';
@@ -8554,6 +8612,18 @@ class KimiBridge {
    * Pattern inspired by ShellAgent's Provider.chat() async generator.
    */
   async *sendMessageStream(userId, text, options = {}, provider = 'kimi') {
+    // v16.21-fix (owner 21/10): dedup de acoes por stream. O tolerant parser do
+    // LUNA-RESCUE re-varre o mesmo texto a cada re-render do DOM/erro de stream e
+    // re-emitia a MESMA tool 3-5x. Mesmo (tool, params) = 1 emissao so por stream.
+    const _v1621Yielded = new Set();
+    const _v1621Dedup = (tool, params) => {
+      try {
+        const key = String(tool) + '|' + JSON.stringify(params || {});
+        if (_v1621Yielded.has(key)) { log.warn('[v16.21] acao duplicada suprimida: ' + tool); return null; }
+        _v1621Yielded.add(key);
+      } catch (_) {}
+      return buildJsonBufferAction(tool, params);
+    };
     if (!text || !text.trim()) {
       throw new Error('Message text is required');
     }
@@ -8837,7 +8907,11 @@ class KimiBridge {
       if (session) {
         session._turnAssistantMarker = resolvedProvider === 'kimi' ? preSendAssistantCount : null;
         if (!options.isAutoContinue) {
-          session._domEventSeen = new Map();
+          // v16.24-fix (owner 21/10): NAO limpar o seen map em send real.
+          // Limpar reabria a janela do phantom cross-turn (DOM ainda mostra o
+          // segmento anterior -> tool JSON velha re-emitida e EXECUTADA de verdade,
+          // pois o replay do soul agora eh turn-scoped). Phantoms ficam suprimidos
+          // pelo seen map + TTL; re-issue legitimo identico so passa apos o TTL.
         }
       }
 
@@ -9236,7 +9310,7 @@ class KimiBridge {
                         if (extracted.type === 'response') {
                           yield { type: 'response_delta', text: extracted.text };
                         } else if (extracted.type === 'tool') {
-                          const actionEvent = buildJsonBufferAction(extracted.tool, extracted.params);
+                          const actionEvent = _v1621Dedup(extracted.tool, extracted.params);
                           if (actionEvent) yield actionEvent;
                         } else if (extracted.type === 'script') {
                           const actionEvent = buildJsonBufferAction('executeScript', { code: extracted.script, language: extracted.language || 'bash' });
@@ -9262,7 +9336,7 @@ class KimiBridge {
                         if (extracted.type === 'response') {
                           yield { type: 'response_delta', text: extracted.text };
                         } else if (extracted.type === 'tool') {
-                          const actionEvent = buildJsonBufferAction(extracted.tool, extracted.params);
+                          const actionEvent = _v1621Dedup(extracted.tool, extracted.params);
                           if (actionEvent) yield actionEvent;
                         } else if (extracted.type === 'script') {
                           const actionEvent = buildJsonBufferAction('executeScript', { code: extracted.script, language: extracted.language || 'bash' });
@@ -9289,7 +9363,7 @@ class KimiBridge {
                     if (cleanR.type === 'response') {
                       yield { type: 'response_delta', text: cleanR.text };
                     } else if (cleanR.type === 'tool') {
-                      const actionEvent = buildJsonBufferAction(cleanR.tool, cleanR.params);
+                      const actionEvent = _v1621Dedup(cleanR.tool, cleanR.params);
                       if (actionEvent) yield actionEvent;
                     } else if (cleanR.type === 'script') {
                       const actionEvent = buildJsonBufferAction('executeScript', { code: cleanR.script, language: cleanR.language || 'bash' });
@@ -9507,10 +9581,28 @@ class KimiBridge {
               // v14.0: Delimited protocol tools can complete even with loading indicators
               // because the tool completion is determined by the protocol, not visual state.
               const stillLoading = await this._hasActiveLoadingIndicators(page);
-              if (stillLoading && delimitedProtocolActionsCount === 0) {
+              // v16.14b-fix (NGT-1b): REDE > UI neste gate tambem. _ngtNetDone2 =
+              // fast-path (completedGeneration) OU correlacao de conteudo
+              // (candidato contendo a cauda de lastResponse nesta geracao).
+              let _ngtNetDone2 = !!(interceptor && interceptor._generation > 0 && interceptor.completedGeneration === interceptor._generation);
+              if (!_ngtNetDone2 && /isgen\s*:\s*false/i.test(String(lastResponse || '').slice(-200))) _ngtNetDone2 = true; // v16.15-fix
+              if (!_ngtNetDone2) {
+                try {
+                  const _norm2 = (s) => (s || '').replace(/[\s"\\]/g, '');
+                  const _txt2 = _norm2(lastResponse);
+                  const _cands2 = interceptor && interceptor._candidates;
+                  if (_txt2 && _cands2 && _cands2.length) {
+                    const _needle2 = _txt2.length > 160 ? _txt2.slice(-160) : _txt2;
+                    _ngtNetDone2 = _cands2.some((c) => c.gen === interceptor._generation && c.text && _norm2(c.text).includes(_needle2));
+                  }
+                } catch (_) {}
+              }
+              if (stillLoading && !_ngtNetDone2 && delimitedProtocolActionsCount === 0) {
                 log.info(`[sendMessageStream] Ignoring completion candidate — active loading/thinking indicators still visible`);
                 break;
               } else if (stillLoading && delimitedProtocolActionsCount > 0) {
+              } else if (stillLoading) {
+                log.info('[sendMessageStream] Allowing completion despite loading indicators — rede conclusiva (NGT-1b)');
                 log.info(`[sendMessageStream] Allowing completion despite loading indicators — ${delimitedProtocolActionsCount} tool(s) executed via delimited protocol`);
               }
               // v13.0 (F1.3): consensus-based acceptance. A lone observational
@@ -9519,7 +9611,7 @@ class KimiBridge {
               // (this turn's chat HTTP body fully arrived — F1.1 generation),
               // or ≥2 independent observational signals, or the DOM poller's
               // composite vote sustained across ≥2 emissions.
-              const networkDone = !!(interceptor && interceptor.completedGeneration === interceptor._generation);
+              const networkDone = _ngtNetDone2 || !!(interceptor && interceptor.completedGeneration === interceptor._generation); // v16.14b-fix: inclui correlacao por candidatos
               const sig = turnEndSignalCounts[ev.signal] !== undefined ? ev.signal : 'unknown';
               turnEndSignalCounts[sig]++;
               const distinctSignals = ['button', 'inactivity', 'dom_vote'].filter(s => turnEndSignalCounts[s] > 0);
@@ -9591,7 +9683,7 @@ class KimiBridge {
           if (orphanExtracted.type === 'response') {
             yield { type: 'response_delta', text: orphanExtracted.text };
           } else if (orphanExtracted.type === 'tool') {
-            const orphanAction = buildJsonBufferAction(orphanExtracted.tool, orphanExtracted.params);
+            const orphanAction = _v1621Dedup(orphanExtracted.tool, orphanExtracted.params);
             if (orphanAction) yield orphanAction;
           } else if (orphanExtracted.type === 'script') {
             const orphanAction = buildJsonBufferAction('executeScript', { code: orphanExtracted.script, language: orphanExtracted.language || 'bash' });
