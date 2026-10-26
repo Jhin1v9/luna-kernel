@@ -93,6 +93,26 @@ async function resolveTarget(to) {
 
   // 3) nome → registry (grupo primeiro, depois individual)
   const n = normName(raw).toLowerCase();
+  // v16.38-fix (owner 21/10): unifica RESPOSTA no chat_id que LEITURA usa.
+  // Consulta messages PRIMEIRO (fonte da leitura, solida) — achou o nome
+  // la, usa o chat_id de la (estavel, nao muda com emoji). Nao achou,
+  // cai no registry abaixo (comportamento atual, nao quebra).
+  try {
+    const msgMatch = await q(
+      "SELECT DISTINCT metadata->>'chat_id' as cid FROM messages WHERE lower(metadata->>'chat_name') = $1 OR lower(metadata->>'chat_name') LIKE $2 LIMIT 1",
+      [n, '%' + n + '%']
+    );
+    if (msgMatch.length && msgMatch[0].cid) {
+      const cid = msgMatch[0].cid;
+      if (cid.includes('@g.us') || cid.startsWith('group:')) {
+        return { chatId: cid, kind: 'group', display: raw };
+      }
+      const digits = cid.replace(/\D/g, '');
+      if (digits.length >= 8) {
+        return { chatId: digits + '@c.us', kind: 'individual', display: raw };
+      }
+    }
+  } catch (_) {}
   const groups = await q(
     "SELECT chat_key, canonical_name FROM chat_registry WHERE kind='group' AND lower(canonical_name) = $1 LIMIT 1",
     [n]
@@ -203,6 +223,55 @@ async function whatsappGroupMembers(params = {}) {
   } catch (e) { return err(e.message); }
 }
 
+async function whatsappClearQueue(params = {}) {
+  // v16.50-clear-queue-v2: sem params = LISTA (nao apaga nada). modo:"uma"+id
+  // apaga uma; modo:"chat"+chat apaga as de um chat; modo:"todas" zera tudo.
+  // Resposta SEMPRE lista id + chat + previa do afetado.
+  const safeJson = (s2) => { try { return JSON.parse(s2 || '{}'); } catch (_) { return {}; } };
+  const prev = (r) => {
+    const meta = safeJson(r.metadata);
+    return r.id + ' | ' + (meta.chat_name || meta.chat_id || '?') + ' | "' + String(r.body).slice(0, 80) + '"';
+  };
+  const NL = String.fromCharCode(10);
+  const modo = String(params.modo || '');
+  const id = String(params.id || '');
+  const chat = String(params.chat || '');
+  try {
+    if (modo === 'todas') {
+      const del = await q(
+        "DELETE FROM messages WHERE direction='outbound' AND send_state <> 'delivered' RETURNING id, metadata, body",
+        []
+      );
+      if (!del.length) return ok('[vazio] Fila ja estava vazia — nada a apagar.');
+      return ok('[ZERADA] ' + del.length + ' mensagem(ns) apagada(s):' + NL + del.map(prev).join(NL));
+    }
+    if (modo === 'uma' && id) {
+      const del = await q(
+        "DELETE FROM messages WHERE id=$1 AND direction='outbound' AND send_state <> 'delivered' RETURNING id, metadata, body",
+        [id]
+      );
+      if (!del.length) return err('id nao achado na fila (ou ja entregue): ' + id);
+      return ok('[apagada 1]' + NL + prev(del[0]));
+    }
+    if (modo === 'chat' && chat) {
+      const del = await q(
+        "DELETE FROM messages WHERE direction='outbound' AND send_state <> 'delivered' AND metadata->>'chat_name' ILIKE $1 RETURNING id, metadata, body",
+        ['%' + chat + '%']
+      );
+      if (!del.length) return ok('[vazio] Nenhuma mensagem pendente do chat "' + chat + '". Fila intacta.');
+      return ok('[apagadas ' + del.length + ' do chat "' + chat + '"]' + NL + del.map(prev).join(NL));
+    }
+    const rows = await q(
+      "SELECT id, metadata, body FROM messages WHERE direction='outbound' AND send_state <> 'delivered' ORDER BY id ASC LIMIT 50",
+      []
+    );
+    if (!rows.length) return ok('[vazio] Fila outbound VAZIA — nada pendente.');
+    const lista = rows.map((r, i) => '[' + (i + 1) + '] ' + prev(r)).join(NL);
+    return ok('[fila ' + rows.length + ' pendente(s)]' + NL + lista + NL + NL + 'Apagar UMA: {"modo":"uma","id":"<uuid>"} | TODAS: {"modo":"todas"} | Por chat: {"modo":"chat","chat":"nome"}');
+  } catch (e2) {
+    return err('falha na operacao da fila: ' + (e2 && e2.message ? e2.message : e2));
+  }
+}
 async function whatsappSendMessage(params = {}) {
   try {
     const to = params.to || params.contact || params.grupo || params.group || params.destinatario || '';
@@ -241,7 +310,21 @@ async function whatsappSendMessage(params = {}) {
     );
     await q("SELECT pg_notify('luna_outbound', $1)", [String(ins[0].id)]);
     const tipo = target.kind === 'group' ? 'grupo' : 'contato';
-    return ok(`💬 Mensagem enfileirada pro ${tipo} '${target.display}' (fila luna_outbound — o whatsplay entrega no WA).`);
+    // v16.43-entrega-honesta: espera o status terminal REAL no banco (max ~20s)
+    let finalState = null;
+    for (let pollI = 0; pollI < 120; pollI++) {
+      await new Promise(r => setTimeout(r, 500));
+      const st = await q("SELECT send_state FROM messages WHERE id=$1", [ins[0].id]);
+      const sv = st.length ? String(st[0].send_state || '') : '';
+      if (sv && sv !== 'queued') { finalState = sv; break; }
+    }
+    if (/fail|error/i.test(finalState || '')) {
+      return err(`❌ Entrega FALHOU pro ${tipo} '${target.display}' — whatsplay recusou/errou. NAO chegou no WhatsApp. Verifique allowlist/registry e tente novamente.`);
+    }
+    if (/deliver|sent|ok/i.test(finalState || '')) {
+      return ok(`✅ Mensagem ENTREGUE no WhatsApp pro ${tipo} '${target.display}'.`);
+    }
+    return err(`⏳ Entrega pro ${tipo} '${target.display}' NAO CONFIRMADA em 60s — ainda processando na fila do whatsplay; NAO reenvie, confira o chat (status: ${finalState || 'sem resposta do whatsplay'}). Pode ter ido — confira o chat antes de repetir.`);
   } catch (e) { return err(`Envio falhou: ${e.message}`); }
 }
 
@@ -324,5 +407,6 @@ module.exports = {
   whatsappListGroups,
   whatsappGroupMembers,
   whatsappSendMessage,
+  whatsappClearQueue,
   whatsappAllowContact,
 };

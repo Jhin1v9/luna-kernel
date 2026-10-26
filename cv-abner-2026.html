@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Abner Gabriel — CV 2026</title>
+<style>
+/* === RESET === */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --accent: #2c7a7b;
+  --accent-dark: #234e52;
+  --text: #222;
+  --text-2: #444;
+  --muted: #777;
+  --border: #d5d5d5;
+  --font-h: "Segoe UI", -apple-system, Roboto, Helvetica, Arial, sans-serif;
+  --font-b: Georgia, "Times New Roman", serif;
+}
+
+html { font-size: 12.5px; }
+
+body {
+  font-family: var(--font-b);
+  color: var(--text);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  background: #eee;
+}
+
+.page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: 10px auto;
+  background: #fff;
+  display: flex;
+  box-shadow: 0 2px 12px rgba(0,0,0,.15);
+}
+
+/* ============ SIDEBAR ============ */
+.sidebar {
+  width: 34%;
+  background: #f4f7f7;
+  padding: 14mm 8mm 12mm 8mm;
+  border-right: 1px solid var(--border);
+}
+
+.photo-wrap { text-align: center; margin-bottom: 5mm; }
+.photo {
+  width: 34mm; height: 34mm;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.side-section { margin-top: 7mm; }
+.side-title {
+  font-family: var(--font-h);
+  font-size: .95rem;
+  font-weight: 700;
+  color: var(--accent-dark);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  text-align: center;
+  padding-bottom: 1.2mm;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 3mm;
+}
+
+.side-item { margin-bottom: 3.5mm; }
+.side-label {
+  font-family: var(--font-h);
+  font-size: .72rem;
+  font-weight: 700;
+  color: var(--text-2);
+  display: block;
+}
+.side-value {
+  font-family: var(--font-h);
+  font-size: .76rem;
+  color: var(--muted);
+  word-break: break-word;
+}
+.side-value a { color: var(--muted); text-decoration: none; }
+
+.skill-list { list-style: none; text-align: center; }
+.skill-list li {
+  font-family: var(--font-h);
+  font-size: .76rem;
+  color: var(--text-2);
+  margin-bottom: 1mm;
+}
+
+/* ============ MAIN ============ */
+.main {
+  width: 66%;
+  padding: 10mm 12mm 8mm 12mm;
+}
+
+.name-block { margin-bottom: 4mm; padding-bottom: 3mm; border-bottom: 1.5px solid var(--accent); }
+.name {
+  font-family: var(--font-h);
+  font-size: 1.7rem;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: -.01em;
+  line-height: 1.1;
+}
+.job-title {
+  font-family: var(--font-h);
+  font-size: .95rem;
+  color: var(--text-2);
+  margin-top: 1mm;
+}
+
+.main-section { margin-bottom: 3.6mm; }
+.main-title {
+  font-family: var(--font-h);
+  font-size: .98rem;
+  font-weight: 700;
+  color: var(--accent-dark);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1mm;
+  margin-bottom: 2.5mm;
+}
+
+.perfil { font-size: .82rem; color: var(--text-2); line-height: 1.5; }
+
+.exp-item { margin-bottom: 3.5mm; }
+.exp-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; }
+.exp-role {
+  font-family: var(--font-h);
+  font-size: .86rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.exp-dates { font-family: var(--font-h); font-size: .72rem; color: var(--muted); white-space: nowrap; }
+.exp-company { font-family: var(--font-h); font-size: .78rem; color: var(--text-2); font-weight: 600; }
+.bullets { list-style: none; margin-top: 1mm; }
+.bullets li {
+  font-size: .77rem;
+  color: var(--text-2);
+  padding-left: 1em;
+  position: relative;
+  margin-bottom: .6mm;
+  line-height: 1.42;
+}
+.bullets li::before { content: "–"; position: absolute; left: 0; color: var(--accent); }
+
+.proj { margin-bottom: 3mm; }
+.proj-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; }
+.proj-name { font-family: var(--font-h); font-size: .84rem; font-weight: 700; color: var(--accent); }
+.proj-name a { color: var(--accent); text-decoration: none; }
+.proj-tech { font-family: var(--font-h); font-size: .7rem; color: var(--muted); white-space: nowrap; }
+.proj-desc { font-size: .77rem; color: var(--text-2); line-height: 1.45; margin-top: .5mm; }
+
+.form-item { margin-bottom: 2.5mm; font-size: .78rem; color: var(--text-2); }
+.form-item .t { font-family: var(--font-h); font-weight: 700; color: var(--text); }
+.form-item .o { font-family: var(--font-h); font-weight: 600; }
+
+.two-col { display: flex; gap: 6mm; }
+.two-col > div { flex: 1; }
+.sub-title {
+  font-family: var(--font-h);
+  font-size: .82rem;
+  font-weight: 700;
+  color: var(--accent-dark);
+  margin-bottom: 1.5mm;
+}
+.lang-line { font-size: .76rem; color: var(--text-2); margin-bottom: .8mm; }
+.lang-line b { font-family: var(--font-h); color: var(--accent); }
+
+.cert-line { font-size: .76rem; color: var(--text-2); margin-bottom: .8mm; }
+
+/* ============ CARTAS (páginas 2 e 3) ============ */
+.carta-page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: 10px auto;
+  background: #fff;
+  padding: 25mm 25mm;
+  box-shadow: 0 2px 12px rgba(0,0,0,.15);
+  font-size: .9rem;
+  color: var(--text);
+  line-height: 1.65;
+}
+.carta-title {
+  font-family: var(--font-h);
+  font-size: 1.05rem;
+  font-weight: 800;
+  text-align: center;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  margin-bottom: 8mm;
+}
+.carta-page p { margin-bottom: 5mm; text-align: justify; }
+.carta-meta {
+  text-align: right;
+  font-family: var(--font-h);
+  font-size: .8rem;
+  color: var(--text-2);
+  margin-bottom: 8mm;
+}
+.carta-sign { margin-top: 10mm; }
+.carta-sign .sign-name {
+  font-family: var(--font-h);
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* === PRINT === */
+@media print {
+  @page { size: A4; margin: 0; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  .page, .carta-page {
+    box-shadow: none;
+    margin: 0;
+    width: 210mm;
+    height: 297mm;
+    min-height: 0;
+    overflow: hidden;
+    page-break-after: always;
+    break-after: page;
+  }
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+
+@media (max-width: 700px) {
+  .page { flex-direction: column; width: 100%; }
+  .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
+  .main { width: 100%; }
+  .carta-page { width: 100%; padding: 12mm; }
+}
+</style>
+</head>
+<body>
+
+<!-- ================= PÁGINA 1: CV ================= -->
+<div class="page">
+
+  <aside class="sidebar">
+    <div class="photo-wrap">
+      <!-- Sustituir src por tu foto profesional (cuadrada) -->
+      <img class="photo" src="https://avatars.githubusercontent.com/u/136101007?v=4" alt="Foto">
+    </div>
+
+    <div class="side-section">
+      <h2 class="side-title">Datos personales</h2>
+      <div class="side-item">
+        <span class="side-label">Teléfono</span>
+        <span class="side-value"><a href="tel:+34685093192">+34 685 093 192</a></span>
+      </div>
+      <div class="side-item">
+        <span class="side-label">Email</span>
+        <span class="side-value"><a href="mailto:abner2002@icloud.com">abner2002@icloud.com</a></span>
+      </div>
+      <div class="side-item">
+        <span class="side-label">Residencia</span>
+        <span class="side-value">Sabadell (Barcelona)</span>
+      </div>
+      <div class="side-item">
+        <span class="side-label">GitHub</span>
+        <span class="side-value"><a href="https://github.com/Jhin1v9">github.com/Jhin1v9</a></span>
+      </div>
+      <div class="side-item">
+        <span class="side-label">LinkedIn</span>
+        <span class="side-value"><a href="https://linkedin.com/in/abner-gabriel">linkedin.com/in/abner-gabriel</a></span>
+      </div>
+    </div>
+
+    <div class="side-section">
+      <h2 class="side-title">Competencias profesionales</h2>
+      <ul class="skill-list">
+        <li>Resolución de problemas</li>
+        <li>Autonomía y disciplina</li>
+        <li>Comunicación directa con cliente</li>
+        <li>Diseño de arquitectura técnica</li>
+        <li>Trabajo bajo presión</li>
+        <li>Aprendizaje continuo</li>
+        <li>Pensamiento de producto</li>
+      </ul>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="name-block">
+      <h1 class="name">Abner Gabriel Ribeiro Mendes</h1>
+      <p class="job-title">Full Stack Developer · Especialista en automatización con IA</p>
+    </div>
+
+    <section class="main-section">
+      <h2 class="main-title">Perfil profesional</h2>
+      <p class="perfil">
+        Desarrollador full stack cofundador de NEXO Digital. He creado <b>Luna</b>, mi proyecto principal y open source: un equipo de sistemas de inteligencia artificial que trabaja 24/7 para mi empresa — ejecuta tareas, guarda la memoria del negocio y atiende a los clientes — además de plataformas de gestión y sitios corporativos para clientes en Barcelona. Me interesa comprender el problema antes de elegir la tecnología, y construyo productos mantenibles que aportan valor real.
+      </p>
+    </section>
+
+    <section class="main-section">
+      <h2 class="main-title">Experiencia laboral</h2>
+
+      <article class="exp-item">
+        <div class="exp-head">
+          <h3 class="exp-role">Full Stack Developer · Cofundador</h3>
+          <span class="exp-dates">Marzo 2026 — Actualidad</span>
+        </div>
+        <p class="exp-company">NEXO Digital — Barcelona, España</p>
+        <ul class="bullets">
+          <li>Diseño y desarrollo de aplicaciones web con React, Next.js, Svelte y TypeScript, priorizando usabilidad y mantenibilidad.</li>
+          <li>Backend con Node.js, PostgreSQL y Supabase: APIs REST, webhooks, tiempo real y despliegue con Docker, Nginx y Linux en servidores propios.</li>
+          <li>Comunicación directa con clientes: de la primera conversación al despliegue y mantenimiento.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="main-section">
+      <h2 class="main-title">Proyectos de impacto</h2>
+
+      <p class="proj-desc" style="margin-bottom:3mm">
+        <b style="font-family:var(--font-h)">Ecosistema Luna</b> — mi proyecto principal, open source: tres sistemas de inteligencia artificial que funcionan juntos como el equipo digital de mi empresa. <b style="font-family:var(--font-h)">Luna Kernel</b> ejecuta, <b style="font-family:var(--font-h)">Luna Brain</b> recuerda y <b style="font-family:var(--font-h)">Luna Agent</b> atiende a los clientes.
+      </p>
+
+      <article class="proj">
+        <div class="proj-head">
+          <h3 class="proj-name"><a href="https://github.com/Jhin1v9/luna-kernel">Luna Kernel — el operador</a></h3>
+          <span class="proj-tech">Open source</span>
+        </div>
+        <p class="proj-desc">
+          Un asistente de IA que trabaja 24/7 en mi propio servidor y ejecuta tareas reales del negocio: organiza archivos, busca información, ejecuta programas y responde por chat, WhatsApp, Telegram y llamadas de voz. Diseñado para no depender de un único proveedor: si uno falla, salta a otro automáticamente sin perder el hilo del trabajo.
+        </p>
+      </article>
+
+      <article class="proj">
+        <div class="proj-head">
+          <h3 class="proj-name">Luna Brain — la memoria</h3>
+        </div>
+        <p class="proj-desc">
+          El recuerdo de la empresa: guarda quién es cada cliente, qué se acordó y qué se aprendió en cada proyecto, para que la información importante no se pierda y cada respuesta tenga contexto. Aprende de los resultados: cada tarea terminada deja una lección que mejora las siguientes.
+        </p>
+      </article>
+
+      <article class="proj">
+        <div class="proj-head">
+          <h3 class="proj-name"><a href="https://github.com/Jhin1v9/luna-agent">Luna Agent — la atención al cliente</a></h3>
+          <span class="proj-tech">Open source</span>
+        </div>
+        <p class="proj-desc">
+          Recibe los mensajes de WhatsApp de los clientes, entiende quién escribe y qué necesita, y crea solicitudes de trabajo para el equipo humano. Las conversaciones se clasifican automáticamente y una persona revisa antes de cerrar: el equipo dedica su tiempo a ejecutar, no a clasificar.
+        </p>
+      </article>
+
+      <article class="proj">
+        <div class="proj-head">
+          <h3 class="proj-name">NEXO Dashboard</h3>
+        </div>
+        <p class="proj-desc">
+          La herramienta interna con la que mi empresa se organiza: tareas, clientes, finanzas y seguimiento de proyectos en una sola plataforma, con la información siempre actualizada en tiempo real.
+        </p>
+      </article>
+
+      <article class="proj">
+        <div class="proj-head">
+          <h3 class="proj-name"><a href="https://github.com/Jhin1v9/HDM-Industrial">HDM Industrial</a></h3>
+        </div>
+        <p class="proj-desc">
+          Sitio web corporativo en producción para una empresa industrial: presencia online profesional, actualizable y con carga rápida.
+        </p>
+      </article>
+
+      <article class="proj">
+        <div class="proj-head">
+          <h3 class="proj-name">Santa Fe Construcciones</h3>
+        </div>
+        <p class="proj-desc">
+          Presencia digital completa para una empresa de construcción activa en Barcelona, Girona y Tarragona: sitio web, buen posicionamiento en Google y formularios de contacto protegidos.
+        </p>
+      </article>
+    </section>
+
+    <section class="main-section">
+      <h2 class="main-title">Formación académica</h2>
+      <div class="form-item">
+        <span class="t">Bachillerato completado</span> — España (Cataluña) y Brasil, con titulación reconocida oficialmente en ambos países.
+      </div>
+      <div class="form-item">
+        <span class="t">Formación técnica en desarrollo web</span> — B7Web, 13 certificaciones + proyectos reales en producción.
+      </div>
+    </section>
+
+    <section class="main-section">
+      <div class="two-col">
+        <div>
+          <h3 class="sub-title">Informática</h3>
+          <p class="lang-line">TypeScript · JavaScript · React · Next.js · Svelte</p>
+          <p class="lang-line">Node.js · REST APIs · Webhooks · PostgreSQL · Supabase</p>
+          <p class="lang-line">Linux · Docker · Nginx · Git · Vercel · Playwright</p>
+          <p class="lang-line">Integración de LLMs · Agentes IA · Automatización</p>
+        </div>
+        <div>
+          <h3 class="sub-title">Idiomas</h3>
+          <p class="lang-line"><b>Español:</b> Bilingüe</p>
+          <p class="lang-line"><b>Portugués:</b> Nativo</p>
+          <p class="lang-line"><b>Catalán:</b> Profesional</p>
+          <p class="lang-line"><b>Inglés:</b> Intermedio (B1, en mejora)</p>
+          <p class="lang-line"><b>Japonés:</b> A2</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="main-section">
+      <h2 class="main-title">Certificaciones</h2>
+      <p class="cert-line"><b style="font-family:var(--font-h)">B7Web</b> — HTML5 · CSS3 · JavaScript · TypeScript · React · Tailwind CSS (13 certificaciones)</p>
+      <p class="cert-line"><b style="font-family:var(--font-h)">Busuu / McGraw Hill</b> — Japonés A2</p>
+    </section>
+  </main>
+</div>
+
+<!-- ================= PÁGINA 2: CARTA OFERTA ================= -->
+<div class="carta-page">
+  <h2 class="carta-title">Oferta de empleo</h2>
+  <p class="carta-meta">Sabadell, a 24 de octubre de 2026</p>
+  <p>A quien corresponda,</p>
+  <p>Me llamo Abner Gabriel Ribeiro Mendes, resido en Sabadell (Barcelona) y les envío mi CV para este proceso de selección.</p>
+  <p>Como pueden ver en mi CV, soy desarrollador full stack con experiencia real construyendo productos digitales: he creado de cero un equipo de sistemas de inteligencia artificial que trabaja 24/7 para mi empresa — ejecuta tareas, guarda la memoria del negocio y atiende a los clientes por WhatsApp y voz —, además de plataformas de gestión y sitios corporativos para clientes en producción. Creo que puedo aportar a las necesidades de su empresa.</p>
+  <p>Me considero un profesional disciplinado, comprometido, con dotes comunicativas y empática, y actualmente estoy buscando una nueva oportunidad laboral donde aportar mis competencias, experiencia y conocimientos.</p>
+  <p>Quedo a su disposición para esta u otras vacantes que puedan tener en el futuro.</p>
+  <p>Un saludo.</p>
+  <div class="carta-sign">
+    <p style="margin-bottom:6mm"><span class="sign-name">Abner Gabriel Ribeiro Mendes</span></p>
+    <p style="margin-bottom:0">+34 685 093 192 · abner2002@icloud.com</p>
+  </div>
+</div>
+
+<!-- ================= PÁGINA 3: AUTOCANDIDATURA ================= -->
+<div class="carta-page">
+  <h2 class="carta-title">Autocandidatura</h2>
+  <p class="carta-meta">Sabadell, a 24 de octubre de 2026</p>
+  <p>A quien corresponda,</p>
+  <p>Me llamo Abner Gabriel Ribeiro Mendes, resido en Sabadell (Barcelona) y les envío mi CV para que me tengan presente en futuros procesos de selección.</p>
+  <p>Como pueden ver en mi CV, soy desarrollador full stack: he creado un equipo de sistemas de inteligencia artificial que trabaja 24/7 para mi empresa — ejecuta tareas, guarda la memoria del negocio y atiende a los clientes por WhatsApp y llamadas de voz — y he llevado a producción plataformas de gestión y sitios corporativos para clientes reales. Creo que podría encajar en el perfil profesional que suele requerir su empresa.</p>
+  <p>Me considero un profesional disciplinado, comprometido, con dotes comunicativas y empática, y actualmente estoy buscando una nueva oportunidad laboral donde aportar mis competencias, experiencia y conocimientos.</p>
+  <p>Quedo a su disposición para futuras vacantes que puedan tener en su empresa.</p>
+  <p>Un saludo.</p>
+  <div class="carta-sign">
+    <p style="margin-bottom:6mm"><span class="sign-name">Abner Gabriel Ribeiro Mendes</span></p>
+    <p style="margin-bottom:0">+34 685 093 192 · abner2002@icloud.com</p>
+  </div>
+</div>
+
+</body>
+</html>

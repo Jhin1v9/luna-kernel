@@ -17,13 +17,11 @@ let sessionId = null;
 let isForwarding = true;
 let isRegistering = false; // v10.7-fix: Prevent concurrent registration
 
-// ── Keep SW alive ──
-chrome.alarms.create('luna-keepalive', { periodInMinutes: 0.17 }); // every ~10s
+// v13.0-fix: alarme keepalive REMOVIDO de proposito — Chrome clampa alarme em
+// 30s e o MV3 mata o SW aos ~30s sem eventos (corrida que perde as vezes).
+// Keep-alive raiz = heartbeat Port vindo do content script (onConnect abaixo):
+// enquanto uma pagina provider vive, HB chega a cada 15s e o SW nunca dorme.
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'luna-keepalive') {
-    // Minimal work to reset idle timer
-    chrome.storage.session.get('luna-active').catch(() => {});
-  }
   if (alarm.name === 'luna-poll') {
     pollServer();
   }
@@ -138,6 +136,20 @@ async function pollServer() {
     // Server may be down — ignore
   }
 }
+
+// ── Heartbeat keep-alive (v13.0-fix) ──
+// O content script abre uma Port e manda {type:"luna:hb"} a cada 15s. Cada
+// mensagem na Port e um EVENTO pro SW => idle timer zera => SW vivo enquanto
+// a pagina vive. Sem pagina: nenhuma Port => SW dorme natural (~30s).
+const lunaHeartbeatPorts = new Set();
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'luna-heartbeat') return;
+  lunaHeartbeatPorts.add(port);
+  port.onMessage.addListener((msg) => {
+    if (msg && msg.type === "luna:hb") port.__lastHb = Date.now();
+  });
+  port.onDisconnect.addListener(() => { lunaHeartbeatPorts.delete(port); });
+});
 
 // ── Message Routing ──
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

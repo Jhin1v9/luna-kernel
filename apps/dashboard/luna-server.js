@@ -425,11 +425,21 @@ server.on('error', (err) => {
       }
     }
     if (matou) {
-      console.log('[LUNA] porta ' + PORT + ' sera liberada — saindo pra pm2 respawnar limpo');
+      console.log('[LUNA] porta ' + PORT + ' sera liberada — retry do listen em 3s (sem exit)');
     } else {
-      console.error('[LUNA-FATAL] porta ' + PORT + ' ocupada e guarda nao conseguiu liberar — exit(1)');
+      console.error('[LUNA-FATAL] porta ' + PORT + ' ocupada e guarda nao conseguiu liberar — retry em 5s');
     }
-    process.exit(1);
+    // v-fix-listen-loop (24/10): era process.exit(1) incondicional — loop infinito:
+    // cada morte gerava TIME_WAIT (EADDRINUSE no proximo boot) e o ciclo se
+    // auto-alimentava. Agora: retry do listen com backoff; exit so apos 12 falhas.
+    // v-fix-listen-loop-v2: retry ETERNO com backoff exponencial (TIME_WAIT 60-120s no
+    // Windows; exit causava crash loop via pm2 respawn). Nunca morre por porta.
+    global.__lunaListenRetries = (global.__lunaListenRetries || 0) + 1;
+    const _tries = global.__lunaListenRetries;
+    const _delay = Math.min(3000 * Math.pow(1.7, _tries), 60000);
+    console.log('[LUNA] retry ' + _tries + ' do listen em ' + Math.round(_delay/1000) + 's');
+    setTimeout(() => { try { server.listen(PORT); } catch (e) { console.error('[LUNA] retry listen: ' + e.message); } }, _delay);
+    return;
   }
   console.error('[LUNA-FATAL] Erro no server:', err.message);
   process.exit(1);

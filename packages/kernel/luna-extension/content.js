@@ -463,3 +463,39 @@
     console.log('[Luna Content] Direct poll ativo (2s) — retorno de tools imune ao sono do SW');
   }
 })();
+
+// ── Luna heartbeat keep-alive (v13.0-fix) ──
+// Mantem o service worker vivo ENQUANTO ESTA PAGINA existir (contrato owner:
+// chromeIsOpen=true => extension=alive). HB de 15s pela Port; se a Port cair
+// (SW renasceu/reload), reconecta — o connect() acorda o SW, que restabelece
+// sessao + poll sozinho. Pagina fechou: este script morre e o SW dorme natural.
+(function lunaHeartbeatKeepalive() {
+  let port = null;
+  let stopped = false;
+  function connect() {
+    if (stopped) return;
+    try {
+      port = chrome.runtime.connect({ name: 'luna-heartbeat' });
+      port.onDisconnect.addListener(() => {
+        port = null;
+        if (!stopped) setTimeout(connect, 1000);
+      });
+      try { port.postMessage({ type: 'luna:hb', t: Date.now(), phase: 'open' }); } catch (e) {}
+    } catch (e) {
+      setTimeout(connect, 2000);
+    }
+  }
+  connect();
+  setInterval(() => {
+    if (stopped) return;
+    if (!port) { connect(); return; }
+    try { port.postMessage({ type: 'luna:hb', t: Date.now() }); }
+    catch (e) { port = null; setTimeout(connect, 1000); }
+  }, 15000);
+  window.addEventListener('beforeunload', () => { stopped = true; });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && port) {
+      try { port.postMessage({ type: 'luna:hb', t: Date.now(), phase: 'focus' }); } catch (e) {}
+    }
+  });
+})();

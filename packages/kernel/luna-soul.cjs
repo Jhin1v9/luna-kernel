@@ -174,7 +174,7 @@ function invalidatePromptCache() {
 // W8-T1c: tool-result and mini-reminder prompt texts are configurable via
 // luna-prompt-config.json (keys: toolResultPrompt, miniReminder). The
 // constants below are the fallback defaults — toolResultPrompt is identical
-// to the text hardcoded in processMessageStream before Wave 8;
+// to the text hardcoded in processMessageStream before Wave 8; // v16.39-fix: isgen=false = EXECUTA a tool AGORA
 // miniReminder mirrors the shipped config file so a missing key changes
 // nothing for templates that reference {{miniReminder}}.
 // v7.2: formato neutro [TOOL RESULT] — nada de XML, coerente com o
@@ -4858,7 +4858,7 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // protocolo e historico — reenviar templates cheios a cada turno era o "mesmo prompt gigante
       // toda hora" + custo de provider. Stateless (API pura) segue exatamente como estava.
       if (!isStatelessApi) {
-        prompt = userInput;
+        prompt = "[ROTEAMENTO — INEGOCIAVEL (v16.26-fix)]: toda resposta a um usuario vai pro CHAT de origem do cabecalho [chat: X | autor: Y] — o campo 'to' do whatsappSendMessage = EXATAMENTE o nome do chat X. NUNCA pro privado do autor Y. (Ex.: autor Enoque no chat 'Production' -> to='Production', nao 'Enoque'.) Prioridade MAIOR que qualquer padrao do historico.\\n\\n" + userInput;
         systemPrompt = isToolResult ? '[TOOL LOOP]' : '[FOLLOW UP]';
         console.log(`[LUNA-PROMPT] kind=${isToolResult ? 'toolLoop' : 'followUp'}-light bytes=${Buffer.byteLength(prompt, 'utf8')}`);
       }

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Currículum — Template</title>
+<style>
+  /* ============================================================
+     TEMPLATE DE CURRÍCULUM + CARTA DE PRESENTACIÓN
+     Regras seguidas (documentos de referência):
+     - Estrutura do CV: Datos personales / Perfil profesional /
+       Competencias profesionales / Experiencia laboral /
+       Formación académica / Informática / Idiomas
+     - Competencias con justificación (guia Adecco "Eres lo que te gusta")
+     - Carta: 2 modelos (Oferta de empleo / Autocandidatura)
+     Todos os dados editáveis no objeto CONFIG (script no fim).
+     ============================================================ */
+  :root{
+    --accent:#0e7c7b;
+    --accent-soft:#e6f4f4;
+    --ink:#1f2933;
+    --muted:#5b6770;
+    --line:#d9e2e2;
+    --paper:#ffffff;
+    --bg:#eef2f2;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{
+    font-family:"Segoe UI",system-ui,-apple-system,Roboto,"Helvetica Neue",Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.5;
+  }
+
+  /* ---------- Barra de ferramentas (não imprime) ---------- */
+  .toolbar{
+    position:sticky;top:0;z-index:50;
+    display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:10px 16px;background:var(--ink);color:#fff;
+  }
+  .toolbar .brand{font-weight:700;letter-spacing:.5px;margin-right:auto;}
+  .toolbar button{
+    border:0;border-radius:6px;padding:8px 14px;font-size:14px;cursor:pointer;
+    background:#33414e;color:#fff;transition:background .15s;
+  }
+  .toolbar button:hover{background:#46586a;}
+  .toolbar button.active{background:var(--accent);}
+  .toolbar button.primary{background:var(--accent);font-weight:600;}
+  .toolbar button.primary:hover{filter:brightness(1.1);}
+  .hint{
+    max-width:900px;margin:14px auto 0;padding:0 16px;
+    font-size:13px;color:var(--muted);
+  }
+  .hint code{background:#fff;padding:2px 6px;border-radius:4px;border:1px solid var(--line);}
+
+  /* ---------- Folha A4 ---------- */
+  .page{
+    width:210mm;min-height:297mm;margin:18px auto 40px;
+    background:var(--paper);box-shadow:0 4px 24px rgba(0,0,0,.12);
+    padding:16mm 14mm;
+  }
+  @media (max-width:840px){
+    .page{width:100%;min-height:auto;padding:24px 18px;margin:12px auto;}
+  }
+
+  /* ---------- Cabeçalho ---------- */
+  .cv-header{display:flex;gap:22px;align-items:center;border-bottom:3px solid var(--accent);padding-bottom:14px;}
+  .photo{
+    width:110px;height:110px;border-radius:50%;flex:0 0 auto;
+    border:4px solid var(--accent-soft);background:var(--accent);
+    display:flex;align-items:center;justify-content:center;
+    font-size:36px;font-weight:700;color:#fff;overflow:hidden;
+  }
+  .photo img{width:100%;height:100%;object-fit:cover;}
+  .cv-name{font-size:30px;font-weight:800;letter-spacing:.3px;}
+  .cv-role{font-size:15px;color:var(--accent);font-weight:600;margin-top:2px;}
+  .contact-list{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:8px;font-size:13px;color:var(--muted);}
+  .contact-list span b{color:var(--ink);}
+
+  /* ---------- Secções ---------- */
+  section{margin-top:18px;}
+  h2.sec-title{
+    font-size:14px;text-transform:uppercase;letter-spacing:2px;
+    color:var(--accent);border-bottom:1px solid var(--line);
+    padding-bottom:4px;margin-bottom:10px;font-weight:800;
+  }
+  .profile{font-size:14.5px;color:var(--ink);}
+
+  /* Competências (regra Adecco: competencia + justificación) */
+  .competencias{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;}
+  @media (max-width:640px){.competencias{grid-template-columns:1fr;}}
+  .comp{border-left:3px solid var(--accent);padding:4px 10px;background:var(--accent-soft);border-radius:0 6px 6px 0;}
+  .comp b{font-size:13.5px;}
+  .comp small{display:block;color:var(--muted);font-size:12px;margin-top:1px;}
+
+  /* Experiência / Formação */
+  .entry{margin-bottom:12px;}
+  .entry-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;}
+  .entry-title{font-size:15px;font-weight:700;}
+  .entry-title .place{color:var(--muted);font-weight:500;}
+  .entry-date{font-size:13px;color:var(--muted);white-space:nowrap;}
+  .entry ul{margin:4px 0 0 18px;font-size:13.5px;color:var(--ink);}
+  .entry ul li{margin-bottom:2px;}
+
+  /* Informática / Idiomas em 2 colunas */
+  .duo{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media (max-width:640px){.duo{grid-template-columns:1fr;}}
+  .kv{font-size:14px;margin-bottom:4px;}
+  .kv b{display:inline-block;min-width:150px;}
+  .level-tag{font-size:11px;background:var(--accent-soft);color:var(--accent);border-radius:10px;padding:1px 8px;font-weight:700;}
+
+  /* ---------- Carta de apresentação ---------- */
+  #view-carta{display:none;}
+  .letter-type{display:flex;gap:8px;margin-bottom:16px;}
+  .letter-type button{
+    flex:1;border:1px solid var(--line);background:#fff;border-radius:6px;
+    padding:8px;font-size:13px;cursor:pointer;font-weight:600;color:var(--muted);
+  }
+  .letter-type button.active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);}
+  .letter-body{font-size:15px;line-height:1.8;white-space:pre-wrap;}
+  .letter-body .saludo{font-weight:700;}
+  .letter-field{
+    display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;
+    font-size:13px;color:var(--muted);
+  }
+  .letter-field input{
+    border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:13px;min-width:220px;
+  }
+  .letter-mark{background:#fff3cd;padding:0 3px;border-radius:3px;}
+
+  /* ---------- Impressão ---------- */
+  @media print{
+    body{background:#fff;}
+    .toolbar,.hint,.letter-type,.letter-field{display:none !important;}
+    .page{box-shadow:none;margin:0;width:auto;min-height:auto;padding:0;}
+    #view-carta{display:none !important;}
+  }
+  @page{size:A4;margin:14mm;}
+</style>
+</head>
+<body>
+
+  <!-- Barra de ferramentas (só na tela, não imprime) -->
+  <div class="toolbar">
+    <span class="brand">CV Template · ES</span>
+    <button id="btn-cv" class="active" onclick="showView('cv')">Currículum</button>
+    <button id="btn-carta" onclick="showView('carta')">Carta de presentación</button>
+    <button class="primary" onclick="window.print()">Imprimir / PDF</button>
+  </div>
+
+  <p class="hint">
+    Edita todos los datos en el objeto <code>CONFIG</code> (final del archivo, dentro de <code>&lt;script&gt;</code>).
+    Para añadir tu foto: pon la ruta en <code>CONFIG.foto</code>. Las competencias siguen el ejercicio de la guía Adecco:
+    cada competencia lleva su <b>justificación</b> basada en tus aficiones/experiencia.
+  </p>
+
+  <!-- ==================== VISTA: CURRÍCULUM ==================== -->
+  <div class="page" id="view-cv">
+
+    <header class="cv-header">
+      <div class="photo" id="cv-photo"></div>
+      <div>
+        <div class="cv-name" id="cv-name"></div>
+        <div class="cv-role" id="cv-role"></div>
+        <div class="contact-list" id="cv-contact"></div>
+      </div>
+    </header>
+
+    <section>
+      <h2 class="sec-title">Perfil profesional</h2>
+      <p class="profile" id="cv-profile"></p>
+    </section>
+
+    <section>
+      <h2 class="sec-title">Competencias profesionales</h2>
+      <div class="competencias" id="cv-competencias"></div>
+    </section>
+
+    <section>
+      <h2 class="sec-title">Experiencia laboral</h2>
+      <div id="cv-experiencia"></div>
+    </section>
+
+    <section>
+      <h2 class="sec-title">Formación académica</h2>
+      <div id="cv-formacion"></div>
+    </section>
+
+    <section class="duo">
+      <div>
+        <h2 class="sec-title">Informática</h2>
+        <div id="cv-informatica"></div>
+      </div>
+      <div>
+        <h2 class="sec-title">Idiomas</h2>
+        <div id="cv-idiomas"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ==================== VISTA: CARTA ==================== -->
+  <div class="page" id="view-carta">
+
+    <div class="letter-type">
+      <button id="lt-oferta" class="active" onclick="setLetterType('oferta')">Oferta de empleo</button>
+      <button id="lt-auto" onclick="setLetterType('autocandidatura')">Autocandidatura</button>
+    </div>
+
+    <div class="letter-field">
+      <label>Empresa destinatária (opcional):</label>
+      <input id="inp-empresa" placeholder="Nombre de la empresa" oninput="renderLetter()">
+    </div>
+
+    <div class="letter-body" id="letter-body"></div>
+
+  </div>
+
+<script>
+/* ================================================================
+   CONFIG — EDITA AQUÍ TODOS LOS DATOS
+   (estructura seguida del ejemplo CV + guía Fundación Adecco)
+   ================================================================ */
+const CONFIG = {
+  nombre: "Abner Gabriel",
+  puesto: "Técnico de limpieza de tapicerías / Atención al cliente",
+  foto: "", // pon aquí la ruta de tu foto, ej: "foto.jpg" (si está vacía se muestran tus iniciales)
+
+  contacto: {
+    telefono: "+34 685 093 192",
+    email: "abner2002@icloud.com",
+    residencia: "Sabadell (Barcelona)"
+  },
+
+  perfil: "Me considero una persona activa, con experiencia en el trato personalizado al cliente y gran implicación en mi trabajo.",
+
+  /* Regra da guia Adecco: cada competência com JUSTIFICAÇÃO real
+     (ejercicio práctico: competencia + justificación) */
+  competencias: [
+    { nombre: "Trabajo en equipo",      justificacion: "Acostumbrado a coordinarme con compañeros en servicios de limpieza y atención al cliente." },
+    { nombre: "Empatía",                justificacion: "El trato directo con clientes me ha entrenado para ponerme en el lugar del otro." },
+    { nombre: "Capacidad de trabajar bajo presión", justificacion: "Experiencia atendiendo urgencias y picos de trabajo sin perder calidad." },
+    { nombre: "Autonomía",              justificacion: "Gestión de servicios en domicilios de clientes con total independencia." },
+    { nombre: "Orden y metodicidad",    justificacion: "Los trabajos de limpieza exigen método y atención a los detalles." },
+    { nombre: "Vocación de servicio",   justificacion: "Años de atención al cliente, siempre dispuesto a ayudar." }
+  ],
+
+  /* Formación principal usada también en la carta (modelo DOCX) */
+  formacionPrincipal: "técnico de limpieza de tapicerías",
+  funcionesCarta: "atención directa al cliente, limpieza y tratamiento de tapicerías y gestión de incidencias",
+
+  experiencia: [
+    {
+      puesto: "Técnico de limpieza de tapicerías y agente de atención al cliente",
+      empresa: "Superclim",
+      lugar: "España",
+      fechas: "2022 - 2025",
+      funciones: [
+        "Atención y asesoramiento directo al cliente",
+        "Limpieza y tratamiento de tapicerías a domicilio",
+        "Gestión de incidencias y seguimiento del servicio"
+      ]
+    },
+    {
+      puesto: "Técnico de limpieza de tapicerías y agente de atención al cliente",
+      empresa: "HiperClim",
+      lugar: "Brasil",
+      fechas: "2019 - 2022",
+      funciones: [
+        "Atención al cliente y coordinación de servicios",
+        "Limpieza profesional de tapicerías",
+        "Trabajo en equipo en jornadas de alta demanda"
+      ]
+    }
+  ],
+
+  formacion: [
+    { titulo: "Educación Secundaria", anio: "", centro: "Espronceda / Joaquim Blume / Joan Montllor", lugar: "Barcelona" },
+    { titulo: "Educación Secundaria", anio: "", centro: "Stella Chaves / Candido Xavier", lugar: "Brasil" }
+  ],
+
+  informatica: [
+    { nombre: "Paquete Office", nivel: "usuario" },
+    { nombre: "Internet / navegadores", nivel: "usuario" },
+    { nombre: "Redes sociales", nivel: "usuario" }
+  ],
+
+  idiomas: [
+    { nombre: "Castellano", nivel: "Nativo" },
+    { nombre: "Catalán", nivel: "Avanzado" },
+    { nombre: "Portugués", nivel: "Nativo" },
+    { nombre: "Inglés", nivel: "Medio (B1)" },
+    { nombre: "Japonés", nivel: "Básico (A2)" }
+  ]
+};
+
+/* ================================================================
+   RENDERIZAÇÃO — não precisa mexer daqui pra baixo
+   ================================================================ */
+function initials(name){
+  return name.trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("").toUpperCase();
+}
+
+function renderCV(){
+  const c = CONFIG;
+
+  const photo = document.getElementById("cv-photo");
+  photo.innerHTML = c.foto ? `<img src="${c.foto}" alt="Foto">` : initials(c.nombre);
+
+  document.getElementById("cv-name").textContent = c.nombre;
+  document.getElementById("cv-role").textContent = c.puesto;
+  document.getElementById("cv-contact").innerHTML = `
+    <span><b>Teléfono</b> ${c.contacto.telefono}</span>
+    <span><b>Email</b> ${c.contacto.email}</span>
+    <span><b>Lugar de residencia</b> ${c.contacto.residencia}</span>`;
+
+  document.getElementById("cv-profile").textContent = c.perfil;
+
+  document.getElementById("cv-competencias").innerHTML = c.competencias.map(comp=>`
+    <div class="comp">
+      <b>${comp.nombre}</b>
+      <small>${comp.justificacion}</small>
+    </div>`).join("");
+
+  document.getElementById("cv-experiencia").innerHTML = c.experiencia.map(e=>`
+    <div class="entry">
+      <div class="entry-head">
+        <div class="entry-title">${e.puesto} - <span class="place">${e.empresa} (${e.lugar})</span></div>
+        <div class="entry-date">| ${e.fechas}</div>
+      </div>
+      <ul>${e.funciones.map(f=>`<li>${f}</li>`).join("")}</ul>
+    </div>`).join("");
+
+  document.getElementById("cv-formacion").innerHTML = c.formacion.map(f=>`
+    <div class="entry">
+      <div class="entry-head">
+        <div class="entry-title">${f.titulo}</div>
+        <div class="entry-date">${f.anio ? "- " + f.anio : ""} ${f.centro} (${f.lugar})</div>
+      </div>
+    </div>`).join("");
+
+  document.getElementById("cv-informatica").innerHTML = c.informatica.map(i=>`
+    <div class="kv"><b>${i.nombre}</b> <span class="level-tag">${i.nivel}</span></div>`).join("");
+
+  document.getElementById("cv-idiomas").innerHTML = c.idiomas.map(i=>`
+    <div class="kv"><b>${i.nombre}</b> <span class="level-tag">${i.nivel}</span></div>`).join("");
+}
+
+/* ================================================================
+   CARTA DE PRESENTACIÓN — segue ESTRUTURA EXATA do DOCX
+   (los fragmentos resaltados en el documento van con <span class="letter-mark">)
+   ================================================================ */
+let letterType = "oferta";
+
+function buildLetter(){
+  const c = CONFIG;
+  const empresa = document.getElementById("inp-empresa").value.trim();
+  const destino = empresa ? `de ${empresa}` : "de su empresa";
+
+  const comun = {
+    intro: `Me llamo ${c.nombre}, resido en ${c.contacto.residencia} y les envío mi CV`,
+    cuerpo: `Como pueden ver en mi CV, tengo formación como ${c.formacionPrincipal} y experiencia en dicho ámbito, realizando funciones como ${c.funcionesCarta},`,
+    cierrePersonal: `Me considero un profesional disciplinado, comprometido, con dotes comunicativas y empático, y actualmente estoy buscando una nueva oportunidad laboral donde aportar mis competencias, experiencia y conocimientos.`
+  };
+
+  if (letterType === "oferta") {
+    // Modelo "OFERTA DE EMPLEO" del documento
+    return `A quien corresponda,
+
+${comun.intro} para este proceso de selección.
+
+${comun.cuerpo} por lo que creo que podría encajar en las necesidades ${destino}.
+
+${comun.cierrePersonal}
+
+Quedo a su disposición para esta u otras vacantes que puedan tener en el futuro.
+
+Un saludo.`;
+  } else {
+    // Modelo "AUTOCANDIDATURA" del documento (con los fragmentos marcados)
+    return `A quien corresponda,
+
+${comun.intro} <span class="letter-mark">para que me tengan presente en futuros procesos de selección.</span>
+
+${comun.cuerpo} <span class="letter-mark">por lo que creo que podría encajar en el perfil profesional que suele requerir su empresa.</span>
+
+${comun.cierrePersonal}
+
+Quedo a su disposición <span class="letter-mark">para futuras vacantes</span> que puedan tener en su empresa.
+
+Un saludo.`;
+  }
+}
+
+function renderLetter(){
+  document.getElementById("letter-body").innerHTML = buildLetter();
+}
+
+function setLetterType(t){
+  letterType = t;
+  document.getElementById("lt-oferta").classList.toggle("active", t === "oferta");
+  document.getElementById("lt-auto").classList.toggle("active", t === "autocandidatura");
+  renderLetter();
+}
+
+function showView(v){
+  const isCV = v === "cv";
+  document.getElementById("view-cv").style.display   = isCV ? "block" : "none";
+  document.getElementById("view-carta").style.display = isCV ? "none" : "block";
+  document.getElementById("btn-cv").classList.toggle("active", isCV);
+  document.getElementById("btn-carta").classList.toggle("active", !isCV);
+}
+
+renderCV();
+renderLetter();
+</script>
+</body>
+</html>

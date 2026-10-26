@@ -173,6 +173,7 @@ const EXTRA_DASHBOARD_TOOLS = {
     { name: 'whatsappListGroups', desc: 'Lista grupos do WhatsApp com nº de membros (filtro search).', params: ['search?'] },
     { name: 'whatsappGroupMembers', desc: 'Lista os membros de um grupo.', params: ['group'] },
     { name: 'whatsappSendMessage', desc: 'Envia msg pra NOME, jid ou número — grupo incluído. FLUXO: listar → escolher → enviar.', params: ['to', 'message'] },
+    { name: 'whatsappClearQueue', desc: 'Fila outbound: SEM params = LISTA pendentes (id+chat+previa, nao apaga). modo:"uma"+id apaga uma; modo:"chat"+chat apaga de um chat; modo:"todas" ZERA tudo. Sempre mostra o que apagou.', params: ['modo?', 'id?', 'chat?'] }, // v16.50-clear-queue-v2
     { name: 'whatsappAllowContact', desc: 'PROTOCOLO NOVO CONTATO: add nome/número na allowlist + diretório (decree owner).', params: ['name', 'phone?', 'note?'] },
     { name: 'voiceCallPlace', desc: 'INICIA ligacao de voz p/ contato verificado; transcricao volta no chat de origem.', params: ['to', 'assunto', 'reply_chat?'] },
     { name: 'voiceCallEnd', desc: 'ENCERRA a chamada de voz ativa; operador desliga junto.', params: [] },

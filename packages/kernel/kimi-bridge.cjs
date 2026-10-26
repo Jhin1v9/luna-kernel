@@ -6858,8 +6858,9 @@ class KimiBridge {
         // not drop legitimate re-issues that arrive seconds later.
         // v16.25-fix (owner 21/10): dedup por IDENTIDADE. toolId = phantom (janela longa);
         // sem toolId = conteudo so como near-dup de 2s. Acao legitima repetida NUNCA suprimida.
-        const ttlFor = (k) => k.startsWith('tid:') ? 10 * 60 * 1000 : 2 * 1000; // v16.24-fix: janela que cobre o phantom cross-turn
+        const ttlFor = (k) => k.startsWith('tid:') ? 10 * 60 * 1000 : 30 * 1000; // v16.32-fix: 30s, primeira legitima nao evicted // v16.24-fix: janela que cobre o phantom cross-turn
         if (!session._domEventSeen) session._domEventSeen = new Map();
+        if (!session._toolInFlight) session._toolInFlight = new Map(); else session._toolInFlight.clear(); // v16.39-fix: limpa pending a cada novo evento
         const seen = session._domEventSeen;
         // W10-T1: key builder extracted to lib/tool-dedup-key.cjs. Only fields
         // every source provides go into the key — the extension never sends
@@ -6868,9 +6869,11 @@ class KimiBridge {
         const key = makeDomEventDedupKey(event);
         const now = Date.now();
         const seenAt = seen.get(key);
-        if (seenAt !== undefined && now - seenAt < ttlFor(key)) {
-          console.log(`[BRIDGE] phantom drop (${event.type}): key=${key} age=${now - seenAt}ms`);
-          return; // phantom re-detection — drop
+        if (seenAt === undefined) {
+          console.log(`[BRIDGE] first emit (${event.type}): key=${key} — EXECUTANDO`);
+        } else if (now - seenAt < ttlFor(key)) {
+          console.log(`[BRIDGE] ERROR:CAUSE dedup: suprimido ${event.type} key=${key} age=${now - seenAt}ms — conteudo igual ao visto. Se legítimo, espere ${Math.ceil(ttlFor(key)/1000)}s ou mude o conteúdo.`); // v16.33-fix
+          return;
         }
         if (seen.has(key)) seen.delete(key); // keep FIFO order honest on re-insert
         if (seen.size >= 500) seen.delete(seen.keys().next().value); // FIFO eviction
@@ -7400,7 +7403,7 @@ class KimiBridge {
         if (rest.response && rest.response === this._ngtLastResp) {
           if (!this._ngtStableSince) this._ngtStableSince = _ngtNow;
           else if (_ngtNow - this._ngtStableSince > 45000) {
-            log.info("[NET-DEGRADED] " + MARK + ": resposta estavel ha 45s sem confirmacao de rede -- completando por cap. Endpoint do stream pode ter mudado.");
+            log.info("[NET-DEGRADED] v16.14-fix: resposta estavel ha 45s sem confirmacao de rede -- completando por cap. Endpoint do stream pode ter mudado.");
             return { ...rest, isContextLimit, canSteer, isGenerating: false, _netDegraded: true };
           }
         } else {
@@ -8618,11 +8621,11 @@ class KimiBridge {
     const _v1621Yielded = new Set();
     const _v1621Dedup = (tool, params) => {
       try {
-        const key = String(tool) + '|' + JSON.stringify(params || {});
+        const key = String(tool) + '|' + JSON.stringify(params || {}, Object.keys(params || {}).sort()); // v16.27-fix: chave estrita
         if (_v1621Yielded.has(key)) { log.warn('[v16.21] acao duplicada suprimida: ' + tool); return null; }
         _v1621Yielded.add(key);
       } catch (_) {}
-      return buildJsonBufferAction(tool, params);
+      return { type: 'action', action: { tool, params } }; // v16.27-fix: inline, sem depender do helper tardio (def. em 9068)
     };
     if (!text || !text.trim()) {
       throw new Error('Message text is required');
@@ -9231,7 +9234,7 @@ class KimiBridge {
                 (initialText && r === initialText) ||
                 (previousTurnFinalResponse && r === previousTurnFinalResponse)
               )) {
-                log.info(`[sendMessageStream] dropping state_change that repeats previous-turn response (${r.length} chars)`);
+                log.info(`[sendMessageStream] state_change tem isgen:false? NAO dropa — executa (v16.42). Dropping repeat: (${r.length} chars)`);
                 continue;
               }
 
@@ -9572,7 +9575,7 @@ class KimiBridge {
               // object, ignore the candidate and keep waiting for the rest.
               const looksLikeIncompleteJson = lastResponse && lastResponse.includes('{') && !isJsonComplete(lastResponse);
               if ((resolvedProvider !== 'kimi' && looksLikeIncompleteJson) || (isAccumulatingJson && Date.now() - jsonAccumulatorLastGrowAt < 5000)) {
-                log.warn(`[sendMessageStream] Ignoring completion candidate — response looks like incomplete JSON (${lastResponse.length} chars)`);
+                if (/isgen\s*:\s*false/i.test(String(lastResponse || ''))) { /* v16.42-fix (decreto owner): isgen:false = executa o que pegou. Gates de completion em 2o plano. */ log.info('[sendMessageStream] isgen:false presente — aceitando apesar de JSON incompleto (decreto owner)'); } else log.warn(`[sendMessageStream] Ignoring completion candidate — response looks like incomplete JSON (${lastResponse.length} chars)`);
                 break;
               }
               // v12.4-fix: never declare completion while the DOM still shows active

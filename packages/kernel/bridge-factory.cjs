@@ -1,3 +1,4 @@
+require("dotenv").config({ path: require("path").join(__dirname, "..", "..", ".env") });
 'use strict';
 /**
  * Bridge Factory — seleciona o transporte do cérebro do kernel (Fusão API).
