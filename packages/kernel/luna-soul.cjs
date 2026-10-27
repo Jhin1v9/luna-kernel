@@ -4858,7 +4858,13 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
       // protocolo e historico — reenviar templates cheios a cada turno era o "mesmo prompt gigante
       // toda hora" + custo de provider. Stateless (API pura) segue exatamente como estava.
       if (!isStatelessApi) {
-        prompt = "[ROTEAMENTO — INEGOCIAVEL (v16.26-fix)]: toda resposta a um usuario vai pro CHAT de origem do cabecalho [chat: X | autor: Y] — o campo 'to' do whatsappSendMessage = EXATAMENTE o nome do chat X. NUNCA pro privado do autor Y. (Ex.: autor Enoque no chat 'Production' -> to='Production', nao 'Enoque'.) Prioridade MAIOR que qualquer padrao do historico.\\n\\n" + userInput;
+        // v16.58-history-slim (owner 26/10): so AGORA + ANTES DESSA com rotulos;
+        // o resto do historico vive na conversa da aba (ver ANTIGAS).
+        this._lastUserInputById = this._lastUserInputById || {};
+        const _prevUi = this._lastUserInputById[followUpUserId] || null;
+        const _labeledUi = (_prevUi ? 'ANTIGAS: mensagens anteriores estao na conversa acima.\nMENSAGEM ANTES DESSA: ' + _prevUi + '\n\n' : '') + 'MENSAGEM DE AGORA: ' + userInput;
+        this._lastUserInputById[followUpUserId] = userInput;
+        prompt = "[ROTEAMENTO — INEGOCIAVEL (v16.26-fix)]: toda resposta a um usuario vai pro CHAT de origem do cabecalho [chat: X | autor: Y] — o campo 'to' do whatsappSendMessage = EXATAMENTE o nome do chat X. NUNCA pro privado do autor Y. (Ex.: autor Enoque no chat 'Production' -> to='Production', nao 'Enoque'.) Prioridade MAIOR que qualquer padrao do historico.\\n\\n" + _labeledUi;
         systemPrompt = isToolResult ? '[TOOL LOOP]' : '[FOLLOW UP]';
         console.log(`[LUNA-PROMPT] kind=${isToolResult ? 'toolLoop' : 'followUp'}-light bytes=${Buffer.byteLength(prompt, 'utf8')}`);
       }
@@ -5193,6 +5199,17 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
             const s = h.sessions.get(sid);
             return s && (Date.now() - (s.lastPing || 0)) < 60000;
           });
+        }
+        // v16.60-session-fallback (owner 26/10): filtro de 60s vazio mas o mapa tem
+        // sessao viva (ping por caminho que nao atualiza lastPing, ex. WS) => usa a
+        // MAIS RECENTE independente da idade. Extensao = via rapida do tool loop.
+        if (sids.length === 0 && h.sessions && typeof h.sessions.keys === 'function') {
+          let bestSid = null, bestPing = 0;
+          for (const [sid2, s2] of h.sessions) {
+            const p = (s2 && s2.lastPing) || 0;
+            if (p > bestPing) { bestPing = p; bestSid = sid2; }
+          }
+          if (bestSid) { sids = [bestSid]; console.log('[LUNA-SOUL] filtro 60s vazio — fallback p/ sessao mais recente: ' + bestSid + ' (ping ha ' + Math.round((Date.now() - bestPing) / 1000) + 's)'); }
         }
         if (sids.length === 0) {
           console.log('[LUNA-SOUL] _sendToolResultViaExtension: 0 sessoes conectadas no momento (extensao dormindo/reconectando?)');
@@ -5596,6 +5613,9 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
               case 'whatsappListGroups': return lunaTools.whatsappListGroups(p);
               case 'whatsappGroupMembers': return lunaTools.whatsappGroupMembers(p);
               case 'whatsappSendMessage': return lunaTools.whatsappSendMessage(p);
+              // v16.57 (owner 26/10): case faltava — a tool existia no modulo/catalogo/registry
+              // mas o dispatcher do cerebro caiava no default 'Ferramenta desconhecida'.
+              case 'whatsappClearQueue': return lunaTools.whatsappClearQueue(p);
               case 'whatsappAllowContact': return lunaTools.whatsappAllowContact(p);
               case 'dashboardConfigProvider': return lunaTools.dashboardConfigProvider(p);
               case 'dashboardListProviders': return lunaTools.dashboardListProviders(p);
@@ -5795,6 +5815,11 @@ COMECE AGORA — primeira ferramenta (sem introdução, sem explicação):`;
           } else {
             result = await routerFn();
           }
+        } else if (typeof lunaTools[tool] === 'function') {
+          // v16.61-chain-fallback (owner 26/10): fallback generico — a tool EXISTE no
+          // lunaTools (exportada) mas sem branch nessa cadeia: executa direto. So cai
+          // no "desconhecida" se nao existir de verdade. Fim do whack-a-mole de cases.
+          result = await lunaTools[tool](params);
         } else {
           result = { success: false, error: `Ferramenta desconhecida: ${tool}. Use uma das ferramentas disponíveis.` };
         }
