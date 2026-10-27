@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Luna DOM Observer",
-  "version": "2.10.8",
+  "version": "2.11.0",
   "description": "Real-time Kimi Web DOM observer — streams tool calls and responses to Luna server",
   "permissions": [
     "activeTab",
@@ -34,14 +34,18 @@
         "https://chat.deepseek.com/*",
         "https://deepseek.com/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["injected.js"],
+      "resources": [
+        "injected.js"
+      ],
       "matches": [
         "https://www.kimi.ai/*",
         "https://kimi.ai/*",

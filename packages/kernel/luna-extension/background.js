@@ -65,6 +65,14 @@ async function registerSession() {
     if (stored.lunaSessionId) {
       sessionId = stored.lunaSessionId;
       console.log('[Luna BG] Restored session:', sessionId);
+      // v13.3-poll-on-restore: o early return original deixava a extensao
+      // SEM poll quando a sessao vinha do storage — lastPing congelava, o
+      // cleanup(120s) matava a sessao e o kernel via '0 sessoes conectadas'
+      // ate o proximo reload. Agora o poll inicia tambem no caminho de restore.
+      if (!globalThis.__lunaPollInterval) {
+        globalThis.__lunaPollInterval = setInterval(pollServer, 3000);
+        pollServer();
+      }
       return true;
     }
   } catch (e) {}
@@ -248,4 +256,4 @@ registerSession();
 // This handles the case where the extension was loaded after the tab was already open.
 reinjectAllProviderTabs();
 
-console.log('[Luna BG] Service Worker loaded v11.6');
+console.log('[Luna BG] Service Worker loaded v13.3 (heartbeat Port + poll-on-restore)');
