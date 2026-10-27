@@ -515,6 +515,17 @@ const TOOL_REGISTRY = {
     },
     meta: { icon: "💬", color: "#22c55e", label: null },
   },
+  whatsappClearQueue: {
+    schema: {
+      required: [],
+      types: { modo: 'string', id: 'string', chat: 'string' },
+    },
+    meta: {
+      description: 'Fila outbound: sem params = LISTA (id+chat+previa); modo:"uma"+id apaga uma; modo:"chat"+chat apaga de um chat; modo:"todas" zera. Sempre mostra o que apagou.',
+      group: 'WhatsApp',
+      risk: 'medium',
+    },
+  },
 };
 
 function buildToolSchemas() {

@@ -230,7 +230,7 @@ async function whatsappClearQueue(params = {}) {
   const safeJson = (s2) => { try { return JSON.parse(s2 || '{}'); } catch (_) { return {}; } };
   const prev = (r) => {
     const meta = safeJson(r.metadata);
-    return r.id + ' | ' + (meta.chat_name || meta.chat_id || '?') + ' | "' + String(r.body).slice(0, 80) + '"';
+    return (meta.owner ? String(meta.owner).toUpperCase() + ' | ' : '') + r.id + ' | ' + (meta.chat_name || meta.chat_id || '?') + ' | "' + String(r.body).slice(0, 80) + '"';
   };
   const NL = String.fromCharCode(10);
   const modo = String(params.modo || '');
@@ -306,7 +306,7 @@ async function whatsappSendMessage(params = {}) {
     }
     const ins = await q(
       "INSERT INTO messages (conversation_id, direction, channel, sender, body, send_state, metadata) VALUES ($1,'outbound','whatsapp','luna',$2,'queued',$3) RETURNING id",
-      [conv[0].id, String(message).slice(0, 900), JSON.stringify({ source: 'kernel-whatsapp-tools', chat_id: chatId, chat_name: target.display })]
+      [conv[0].id, String(message).slice(0, 900), JSON.stringify({ source: 'kernel-whatsapp-tools', chat_id: chatId, chat_name: target.display, owner: 'luna' })]
     );
     await q("SELECT pg_notify('luna_outbound', $1)", [String(ins[0].id)]);
     const tipo = target.kind === 'group' ? 'grupo' : 'contato';
